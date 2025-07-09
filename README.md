@@ -1,16 +1,35 @@
+<div align="center">
+
 ![MedImager Banner](medimager/icons/banner.png)
 
+</div>
+
 <div align="center">
+
+# MedImager
+**A Modern, Cross-Platform DICOM Viewer & Image Analysis Tool**
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python Version](https://img.shields.io/badge/Python-3.9+-brightgreen.svg)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/UI-PySide6-informational.svg)](https://www.qt.io/qt-for-python)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
 
 **English** | [简体中文](README_zh.md)
 
 </div>
 
-# MedImager - A Modern DICOM Viewer & Image Analysis Tool
+MedImager is a powerful, user-friendly, and research-oriented open-source medical image viewer. It aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and advanced analysis features for academic and clinical workflows.
 
 ## 1. Project Vision
 
 Create a powerful, user-friendly, and research-oriented open-source medical image viewer. MedImager aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and advanced analysis features for academic and clinical workflows, aspiring to be an open-source alternative to RadiAnt.
+
+<div align="center">
+
+![MedImager Demo](preview.png)
+
+</div>
 
 ## 2. Core Features (Roadmap)
 
@@ -101,7 +120,7 @@ medimager/
 
 1.  **Clone the repo:**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/1985312383/MedImager.git
     cd MedImager
     ```
 
@@ -140,6 +159,16 @@ scikit-image
 pyinstaller
 # vtk # Add when developing 3D features
 ```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Whether you're fixing a bug, adding a feature, or improving documentation, your help is appreciated. Please feel free to open an issue or submit a pull request.
+
+## 📄 License
+
+This project is licensed under the GNU GENERAL PUBLIC LICENSE. See the [LICENSE](LICENSE) file for details.
 
 ---
 

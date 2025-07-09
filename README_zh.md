@@ -1,12 +1,31 @@
+<div align="center">
+
 ![MedImager Banner](medimager/icons/banner.png)
 
+</div>
+
 <div align="center">
+
+# MedImager
+**一款现代化的、跨平台的 DICOM 查看器与图像分析工具**
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python Version](https://img.shields.io/badge/Python-3.9+-brightgreen.svg)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/UI-PySide6-informational.svg)](https://www.qt.io/qt-for-python)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
 
 [English](README.md) | **简体中文**
 
 </div>
 
-# MedImager - 一款现代化的 DICOM 查看器与图像分析工具
+MedImager 是一款功能强大、用户友好、支持学术研究的开源医学图像查看器。它旨在通过提供流畅的图像交互、多格式支持（DICOM, PNG 等）以及先进的分析功能，来服务于学术研究和临床工作流程。
+
+<div align="center">
+
+![MedImager Demo](preview.png)
+
+</div>
 
 ## 1. 项目愿景
 
@@ -94,14 +113,14 @@ medimager/
 │   └── test_roi.py
 │
 ├── requirements.txt          # Python 依赖项
-└── README.md                 # 英文版文档 (待创建)
+└── README.md                 # 英文版文档
 ```
 
 ## 5. 使用方法
 
 1.  **克隆仓库:**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/1985312383/MedImager.git
     cd MedImager
     ```
 
@@ -143,6 +162,15 @@ pyinstaller
 
 ---
 
+## 🤝 贡献
+
+欢迎各种形式的贡献！无论是修复 Bug、添加新功能，还是改进文档，我们都非常欢迎。请随时开启一个 Issue 或提交一个 Pull Request。
+
+## 📄 许可证
+
+本项目基于 GNU 通用公共许可证 (GNU GENERAL PUBLIC LICENSE)。详情请参阅 [LICENSE](LICENSE) 文件。
+
+---
 
 ## 贡献者
 
