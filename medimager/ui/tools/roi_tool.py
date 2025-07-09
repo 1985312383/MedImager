@@ -214,7 +214,7 @@ class RectangleROITool(BaseTool):
             return
 
         font = viewer.font()
-        font.setPointSize(FONT_SIZE)
+        font.setPointSize(_get_stats_box_settings()['font_size'])
         stats_text = get_stats_text(stats)
         size_rect = calculate_stats_box_size_rect(stats_text, font)
         box_width = size_rect.width()
@@ -330,7 +330,7 @@ class CircleROITool(BaseTool):
             return
 
         font = viewer.font()
-        font.setPointSize(FONT_SIZE)
+        font.setPointSize(_get_stats_box_settings()['font_size'])
         stats_text = get_stats_text(stats)
         size_rect = calculate_stats_box_size_rect(stats_text, font)
         box_width = size_rect.width()
@@ -366,4 +366,4 @@ class CircleROITool(BaseTool):
 
     def wheelEvent(self, event: QWheelEvent) -> bool:
         """不处理滚轮事件，让上一级处理（例如切片）"""
-        return False 
+        return False

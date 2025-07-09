@@ -88,7 +88,7 @@ class BaseTool(ABC):
                     continue
                 
                 # 如果鼠标在ROI内部，则标记为悬停
-                if roi.hit_test((y, x), tol=5) != 'none':
+                if roi.hit_test((y, x), tol=10) != 'none':
                     currently_hovered = idx
                     break 
             
