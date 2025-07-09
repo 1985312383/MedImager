@@ -1,0 +1,6 @@
+name = "默认"
+border_color = "#FFFF00"      # Yellow
+selected_color = "#FF0000"   # Red
+anchor_color = "#FF0000"     # Red
+border_width = 2
+anchor_size = 8 

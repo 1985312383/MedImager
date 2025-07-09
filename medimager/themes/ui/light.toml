@@ -1,0 +1,10 @@
+# 浅色主题配置
+
+# 基础颜色
+background_color = "#F0F0F0"
+text_color = "#000000"
+highlight_color = "#3498DB"
+
+# 主题描述
+name = "浅色主题"
+description = "明亮清爽的浅色界面主题" 

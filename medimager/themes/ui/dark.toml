@@ -1,0 +1,10 @@
+# 深色主题配置
+
+# 基础颜色
+background_color = "#2B2B2B"
+text_color = "#FFFFFF"
+highlight_color = "#3498DB"
+
+# 主题描述
+name = "深色主题"
+description = "护眼的深色界面主题" 
