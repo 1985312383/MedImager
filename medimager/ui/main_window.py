@@ -219,20 +219,6 @@ class MainWindow(QMainWindow):
         load_gammex_action.triggered.connect(self._load_gammex_phantom)
         load_model_menu.addAction(load_gammex_action)
         
-        # 工具菜单
-        tools_menu = menubar.addMenu(self.tr("工具(&T)"))
-        
-        # 测量工具
-        measurement_action = QAction(self.tr("测量工具(&M)"), self)
-        measurement_action.setShortcut("M")
-        measurement_action.setStatusTip(self.tr("激活测量工具"))
-        tools_menu.addAction(measurement_action)
-        
-        # 窗宽窗位工具
-        window_level_action = QAction(self.tr("窗宽窗位(&W)"), self)
-        window_level_action.setShortcut("W")
-        window_level_action.setStatusTip(self.tr("激活窗宽窗位调整工具"))
-        tools_menu.addAction(window_level_action)
         
         # 设置菜单
         settings_menu = menubar.addMenu(self.tr("设置(&S)"))
