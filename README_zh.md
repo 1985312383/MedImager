@@ -1,3 +1,10 @@
+![MedImager Banner](medimager/icons/banner.png)
+
+<div align="center">
+
+[English](README.md) | **简体中文**
+
+</div>
 
 # MedImager - 一款现代化的 DICOM 查看器与图像分析工具
 
@@ -90,109 +97,7 @@ medimager/
 └── README.md                 # 英文版文档 (待创建)
 ```
 
-## 5. 多语言支持 (i18n) 设计
-
-为确保应用具备良好的国际化能力，我们采用 PySide6 官方推荐的 `Qt Linguist` 工作流。
-
-1.  **代码实现**: 所有需要翻译的面向用户的字符串，都必须使用 `self.tr("Your Text Here")` 进行包裹。`tr()` 是 `QObject` 的一个方法，它能标记需要被翻译的文本。
-2.  **生成翻译文件**: 在项目根目录运行 `pylupdate6 medimager -ts medimager/translations/zh_CN.ts` 命令，它会扫描整个 `medimager` 目录下的 Python 文件，并把所有 `tr()` 包裹的字符串提取出来，生成 `zh_CN.ts` 文件。
-3.  **人工翻译**: 使用 Qt 官方提供的 `Qt Linguist` 图形化工具打开 `.ts` 文件，为每一条原文条目填入对应的译文。
-4.  **编译翻译文件**: 翻译完成后，使用 `lrelease medimager/translations/zh_CN.ts` 命令，将 `.ts` 文件编译成程序可直接加载的二进制 `.qm` 文件。
-5.  **加载翻译**: 在 `main.py` 中，根据用户选择的语言或系统默认语言，使用 `QTranslator` 类加载对应的 `.qm` 文件，即可实现界面的动态翻译。
-
-## 6. 详细模块设计
-
-### 6.1. `main.py` (应用程序入口)
-*   **职责**: 初始化 `QApplication`，加载全局配置（如日志、设置），加载多语言翻译文件，创建并显示 `MainWindow`。
-*   **关键逻辑**:
-    *   `main()`:
-        *   创建 `QApplication` 实例。
-        *   创建 `QTranslator` 实例。
-        *   根据 `settings.py` 中的语言设置，加载对应的 `.qm` 文件 (e.g., `translations/zh_CN.qm`) 并安装到 `QApplication`。
-        *   实例化 `MainWindow`。
-        *   显示主窗口并启动事件循环。
-
-### 6.2. `core/image_data_model.py` (数据模型)
-*   **职责**: 作为单个图像序列（如一个CT扫描）的独立数据容器。完全独立于UI，只负责数据的存储、处理和状态维护。
-*   **`ImageDataModel` 类**:
-    *   **属性**:
-        *   `dicom_files: list[pydicom.FileDataset]`: 存储原始的pydicom文件对象列表。
-        *   `pixel_array: np.ndarray`: 存储原始的、完整的像素数据 (3D or 2D)。
-        *   `dicom_header: dict`: 存储关键的、常用的DICOM元数据。
-        *   `current_slice_index: int`: 当前显示的切片索引。
-        *   `window_width: int`: 当前窗宽。
-        *   `window_level: int`: 当前窗位。
-        *   `rois: list[ROI]`: 包含的ROI对象列表。
-        *   `selected_indices: set[int]`: 当前多选的ROI索引集合。
-    *   **方法**:
-        *   `load_dicom_series(file_paths: list[str])`: 从文件路径加载DICOM序列。
-        *   `get_display_slice() -> np.ndarray`: 根据 `current_slice_index` 获取当前切片。
-        *   `apply_window_level(slice_data: np.ndarray) -> np.ndarray`: 将窗宽窗位应用到切片数据，返回8位灰度图数据。
-        *   `set_window(width: int, level: int)`: 设置窗宽窗位，并发出信号。
-        *   `select_roi(idx: int, multi: bool = False)`: 支持Ctrl多选、单选、取消选中。
-        *   `clear_selection()`: 清除所有选中ROI。
-    *   **信号**:
-        *   `image_loaded()`: 当新的图像数据加载完成时发出。
-        *   `data_changed()`: 当模型的数据（如窗宽窗位、ROI等）发生变化时发出，通知视图更新。
-
-### 6.3. `core/roi.py` (ROI形状与几何逻辑)
-*   **职责**: 定义通用的ROI基类（BaseROI），支持多种形状（圆、椭圆、矩形等），并实现锚点、命中测试、移动、缩放等通用接口。
-*   **设计亮点**:
-    *   `BaseROI` 提供统一的锚点、选中、多选、命中测试、拖拽缩放等接口，便于扩展新形状。
-    *   每个ROI子类（如CircleROI、EllipseROI）实现自己的几何逻辑和锚点行为。
-    *   支持"锚点拖拽"时只影响当前锚点和对角锚点，保证交互直观。
-
-### 6.4. `ui/image_viewer.py` (核心图像视图)
-*   **职责**: 作为"视图"，只负责高效地渲染 `ImageDataModel` 提供的数据，并将用户输入（鼠标事件）传递给当前激活的工具。
-*   **`ImageViewer(QGraphicsView)` 类**:
-    *   **内部组件**:
-        *   `QGraphicsScene`: 图形场景。
-        *   `QGraphicsPixmapItem`: 用于显示图像的图元。
-        *   放大镜、十字光标等辅助控件。
-    *   **逻辑**:
-        *   `set_model(model: ImageDataModel)`: 关联一个数据模型。连接模型的 `data_changed` 信号到自己的 `_update_view` 槽。
-        *   `set_tool(tool: BaseTool)`: 设置当前激活的工具，所有鼠标/滚轮事件都委托给工具处理。
-        *   `drawForeground`: 绘制所有ROI及其锚点，选中ROI高亮显示。
-        *   `zoom_in/zoom_out`: 支持缩放并实时发射缩放信号，界面可显示当前缩放比例。
-        *   完全解耦业务逻辑与UI，所有数据变更通过信号驱动。
-
-### 6.5. `ui/tools/*.py` (交互工具架构)
-*   **职责**: 实现具体的交互逻辑，采用"状态模式"。每个工具都是一个独立的状态对象，便于扩展和维护。
-*   **`BaseTool` (抽象基类)**:
-    *   定义所有工具的通用接口，如 `activate(viewer)`, `deactivate()`, `mousePressEvent(...)` 等。
-*   **`DefaultTool(BaseTool)`**:
-    *   默认工具，支持平移、缩放、窗宽窗位、ROI选择/多选、ROI拖动、锚点缩放等复合交互。
-    *   鼠标左键点击ROI支持Ctrl多选，拖动锚点时只影响两个点，保证锚点不乱跑。
-    *   鼠标滚轮/右键缩放时，缩放值实时更新。
-*   **其它工具（如ROI绘制、测量等）**:
-    *   可按需扩展，互斥激活，便于后续支持更多交互类型。
-
-### 6.6. `ui/main_window.py` (主窗口)
-*   **职责**: 应用程序的"指挥中心"。负责创建和布局所有UI组件（菜单栏、工具栏、状态栏、面板、视口），并协调它们之间的交互。
-*   **`MainWindow` 类**:
-    *   **UI组件**:
-        *   `QMenuBar`, `QToolBar`, `QStatusBar`
-        *   停靠面板 (e.g., `SeriesPanel`, `DicomTagPanel`, `AnalysisPanel`)
-        *   中央布局管理器，用于容纳一个或多个 `Viewport`。
-    *   **逻辑**:
-        *   `_init_menus()` / `_init_toolbars()`: 创建 `QAction` 并连接到对应的槽函数。
-        *   管理当前激活的工具，工具栏按钮互斥，切换时自动更新 `ImageViewer` 的工具状态。
-        *   响应模型信号，自动刷新视图和状态栏。
-
-### 6.7. `ui/panels/` (功能面板)
-*   **职责**: 提供序列浏览、DICOM标签查看、ROI分析等功能的可停靠面板。
-*   **设计**:
-    *   每个面板为独立模块，便于扩展和维护。
-    *   通过信号与主窗口和数据模型解耦。
-
-### 6.8. `utils/` (通用工具模块)
-*   **职责**: 提供日志、设置、国际化等通用功能。
-*   **模块**:
-    *   `logger.py`: 全局日志记录，便于调试和问题追踪。
-    *   `settings.py`: 用户偏好设置的保存与加载，基于`QSettings`。
-    *   `i18n.py`: 国际化支持，集成Qt Linguist工作流。
-
-## 7. 开发入门
+## 5. 使用方法
 
 1.  **克隆仓库:**
     ```bash
@@ -216,11 +121,11 @@ medimager/
 
 4.  **运行程序:**
     ```bash
-    python medimager/main.py
+    python medimager/main.py  # 推荐方式
     ```
     或者
-    ```
-    python -m medimager.main
+    ```bash
+    python -m medimager.main  # 开发方法
     ```
 
 ---
@@ -235,3 +140,12 @@ scikit-image
 pyinstaller
 # vtk # 当开始开发 3D 功能时再添加
 ```
+
+---
+
+
+## 贡献者
+
+[![contributors](https://contrib.rocks/image?repo=1985312383/MedImager)](https://github.com/1985312383/MedImager/graphs/contributors)
+
+![Alt](https://repobeats.axiom.co/api/embed/13581311607b3b5dcd5a54cdde3bad22212af439.svg "Repobeats analytics image")
