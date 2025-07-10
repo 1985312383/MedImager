@@ -95,6 +95,7 @@ class SettingsDialog(QDialog):
         # 添加页面
         self._add_page(self.tr("通用"), self._create_general_page)
         self._add_page(self.tr("工具"), self._create_tools_page)
+        self._add_page(self.tr("性能"), self._create_performance_page)
         
         # 移除导航栏的 currentRowChanged 连接，避免不必要的逻辑
         # self.nav_list.currentRowChanged.connect(self.stacked_widget.setCurrentIndex)
@@ -192,6 +193,41 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return page
 
+    def _create_performance_page(self) -> QWidget:
+        """创建性能设置页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        
+        # 页面标题
+        title_label = QLabel(self.tr("性能设置"))
+        title_label.setFont(self._get_title_font())
+        layout.addWidget(title_label)
+        layout.addWidget(self._create_separator())
+        
+        # 应用性能设置
+        performance_group = QGroupBox(self.tr("应用性能设置"))
+        performance_layout = QFormLayout(performance_group)
+        
+        # 缓存大小
+        cache_size_spin = QSpinBox()
+        cache_size_spin.setRange(64, 2048)
+        cache_size_spin.setValue(256)
+        cache_size_spin.setSuffix(" MB")
+        self.setting_widgets['cache_size'] = cache_size_spin
+        performance_layout.addRow(self.tr("缓存大小:"), cache_size_spin)
+        
+        # 线程数量
+        thread_count_spin = QSpinBox()
+        thread_count_spin.setRange(1, 16)
+        thread_count_spin.setValue(4)
+        thread_count_spin.setSuffix(self.tr(" 个"))
+        self.setting_widgets['thread_count'] = thread_count_spin
+        performance_layout.addRow(self.tr("线程数量:"), thread_count_spin)
+        
+        layout.addWidget(performance_group)
+        layout.addStretch()
+        return page
+
     def _create_roi_settings_group(self) -> QGroupBox:
         """创建ROI设置组"""
         group = QGroupBox(self.tr("ROI设置"))
@@ -217,7 +253,7 @@ class SettingsDialog(QDialog):
         self.setting_widgets['roi.custom.border_color'] = border_color_btn
         appearance_layout.addRow(self.tr("边框颜色:"), border_color_btn)
         
-        # 填充颜色 (预留)
+        # 填充颜色
         fill_color_btn = ColorButton()
         self.setting_widgets['roi.custom.fill_color'] = fill_color_btn
         appearance_layout.addRow(self.tr("填充颜色:"), fill_color_btn)
@@ -254,39 +290,70 @@ class SettingsDialog(QDialog):
         
         custom_layout.addWidget(anchor_group)
         
-        # 信息板设置 (预留)
+        # 信息板设置
         info_group = QGroupBox(self.tr("信息板设置"))
-        info_layout = QFormLayout(info_group)
+        info_layout = QVBoxLayout(info_group)
+        
+        # 外观子组
+        info_appearance_group = QGroupBox(self.tr("外观"))
+        info_appearance_layout = QFormLayout(info_appearance_group)
         
         # 背景颜色
         info_bg_color_btn = ColorButton()
         self.setting_widgets['roi.custom.info_bg_color'] = info_bg_color_btn
-        info_layout.addRow(self.tr("背景颜色:"), info_bg_color_btn)
+        info_appearance_layout.addRow(self.tr("背景颜色:"), info_bg_color_btn)
         
         # 文本颜色
         info_text_color_btn = ColorButton()
         self.setting_widgets['roi.custom.info_text_color'] = info_text_color_btn
-        info_layout.addRow(self.tr("文本颜色:"), info_text_color_btn)
+        info_appearance_layout.addRow(self.tr("文本颜色:"), info_text_color_btn)
+        
+        # 边框颜色
+        info_border_color_btn = ColorButton()
+        self.setting_widgets['roi.custom.info_border_color'] = info_border_color_btn
+        info_appearance_layout.addRow(self.tr("边框颜色:"), info_border_color_btn)
         
         # 字体大小
         info_font_size_spin = QSpinBox()
         info_font_size_spin.setRange(8, 24)
         info_font_size_spin.setSuffix(" pt")
         self.setting_widgets['roi.custom.info_font_size'] = info_font_size_spin
-        info_layout.addRow(self.tr("字体大小:"), info_font_size_spin)
+        info_appearance_layout.addRow(self.tr("字体大小:"), info_font_size_spin)
+        
+        # 圆角半径
+        info_radius_spin = QSpinBox()
+        info_radius_spin.setRange(0, 20)
+        info_radius_spin.setSuffix(" px")
+        self.setting_widgets['roi.custom.info_radius'] = info_radius_spin
+        info_appearance_layout.addRow(self.tr("圆角半径:"), info_radius_spin)
+        
+        # 内边距
+        info_padding_spin = QSpinBox()
+        info_padding_spin.setRange(2, 20)
+        info_padding_spin.setSuffix(" px")
+        self.setting_widgets['roi.custom.info_padding'] = info_padding_spin
+        info_appearance_layout.addRow(self.tr("内边距:"), info_padding_spin)
+        
+        info_layout.addWidget(info_appearance_group)
+        
+        # 显示选项子组
+        info_display_group = QGroupBox(self.tr("显示选项"))
+        info_display_layout = QFormLayout(info_display_group)
         
         # 数值精度
         info_precision_spin = QSpinBox()
         info_precision_spin.setRange(0, 6)
         self.setting_widgets['roi.custom.info_precision'] = info_precision_spin
-        info_layout.addRow(self.tr("数值精度:"), info_precision_spin)
+        info_display_layout.addRow(self.tr("数值精度:"), info_precision_spin)
         
         # 自动隐藏
         info_auto_hide_check = QCheckBox(self.tr("鼠标离开时自动隐藏"))
         self.setting_widgets['roi.custom.info_auto_hide'] = info_auto_hide_check
-        info_layout.addRow(info_auto_hide_check)
+        info_display_layout.addRow(info_auto_hide_check)
         
+        info_layout.addWidget(info_display_group)
         custom_layout.addWidget(info_group)
+        
         layout.addWidget(custom_group)
         
         # 连接主题变化和自定义控件启用/禁用的逻辑
@@ -511,6 +578,17 @@ class SettingsDialog(QDialog):
                 measurement_combo.setCurrentIndex(index)
                 measurement_combo.currentIndexChanged.emit(index)
         
+        # 加载性能设置
+        cache_size_spin = self.setting_widgets.get('cache_size')
+        if cache_size_spin:
+            saved_cache_size = self.settings_manager.get_setting('cache_size', 256)
+            cache_size_spin.setValue(saved_cache_size)
+        
+        thread_count_spin = self.setting_widgets.get('thread_count')
+        if thread_count_spin:
+            saved_thread_count = self.settings_manager.get_setting('thread_count', 4)
+            thread_count_spin.setValue(saved_thread_count)
+        
         # 加载自定义设置
         self._load_custom_settings()
 
@@ -581,6 +659,15 @@ class SettingsDialog(QDialog):
             index = measurement_combo.findData('default')
             if index != -1:
                 measurement_combo.setCurrentIndex(index)
+        
+        # 恢复性能设置默认值
+        cache_size_spin = self.setting_widgets.get('cache_size')
+        if cache_size_spin:
+            cache_size_spin.setValue(256)
+        
+        thread_count_spin = self.setting_widgets.get('thread_count')
+        if thread_count_spin:
+            thread_count_spin.setValue(4)
 
     def accept(self):
         """保存设置并关闭对话框"""
@@ -611,9 +698,18 @@ class SettingsDialog(QDialog):
             theme = measurement_combo.itemData(measurement_combo.currentIndex())
             self.settings_manager.set_setting('measurement_theme', theme)
         
+        # 保存性能设置
+        cache_size_spin = self.setting_widgets.get('cache_size')
+        if cache_size_spin:
+            self.settings_manager.set_setting('cache_size', cache_size_spin.value())
+        
+        thread_count_spin = self.setting_widgets.get('thread_count')
+        if thread_count_spin:
+            self.settings_manager.set_setting('thread_count', thread_count_spin.value())
+        
         # 保存自定义设置
         for key, widget in self.setting_widgets.items():
-            if '.' not in key or key.endswith('_theme') or key == 'language':
+            if '.' not in key or key.endswith('_theme') or key in ['language', 'cache_size', 'thread_count']:
                 continue
             
             if isinstance(widget, ColorButton):
@@ -664,7 +760,8 @@ class SettingsDialog(QDialog):
         roi_controls = [
             'roi.custom.border_color', 'roi.custom.fill_color', 'roi.custom.selected_color',
             'roi.custom.border_width', 'roi.custom.anchor_color', 'roi.custom.anchor_size',
-            'roi.custom.info_bg_color', 'roi.custom.info_text_color', 'roi.custom.info_font_size',
+            'roi.custom.info_bg_color', 'roi.custom.info_text_color', 'roi.custom.info_border_color',
+            'roi.custom.info_font_size', 'roi.custom.info_radius', 'roi.custom.info_padding',
             'roi.custom.info_precision', 'roi.custom.info_auto_hide'
         ]
         for control_name in roi_controls:
