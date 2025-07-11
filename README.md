@@ -112,11 +112,13 @@ medimager/
 │   ├── test_dicom_parser.py
 │   └── test_roi.py
 │
-├── requirements.txt        # Python dependencies
+├── pyproject.toml          # Project metadata and dependencies
 └── README_zh.md            # Chinese documentation
 ```
 
 ## 5. Usage
+
+First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an extremely fast Python package installer and resolver.
 
 1.  **Clone the repo:**
     ```bash
@@ -124,41 +126,30 @@ medimager/
     cd MedImager
     ```
 
-2.  **Create and activate a virtual environment:**
+2.  **Setup Environment and Install Dependencies:**
     ```bash
-    python -m venv venv
+    # Create a virtual environment and sync dependencies from pyproject.toml
+    uv venv
+    uv sync
+    ```
+
+3.  **Run the app:**
+    ```bash
+    # `uv run` executes the command within the project's virtual environment,
+    # avoiding the need to activate it in your shell.
+    uv run python medimager/main.py
+    ```
+    For developers who prefer an active environment:
+    ```bash
+    # To activate the environment in your current shell:
     # Windows
-    venv\Scripts\activate
+    .venv\\Scripts\\activate
     # macOS / Linux
-    source venv/bin/activate
+    source .venv/bin/activate
+    
+    # Then you can run commands directly:
+    python medimager/main.py
     ```
-
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **Run the app:**
-    ```bash
-    python medimager/main.py  # Recommended
-    ```
-    or
-    ```bash
-    python -m medimager.main  # For development
-    ```
-
----
-*Initial `requirements.txt` content:*
-
-```
-PySide6
-pydicom
-numpy
-scipy
-scikit-image
-pyinstaller
-# vtk # Add when developing 3D features
-```
 
 ---
 

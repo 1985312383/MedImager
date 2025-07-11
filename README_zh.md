@@ -112,11 +112,13 @@ medimager/
 │   ├── test_dicom_parser.py
 │   └── test_roi.py
 │
-├── requirements.txt          # Python 依赖项
+├── pyproject.toml            # 项目元数据和依赖项
 └── README.md                 # 英文版文档
 ```
 
 ## 5. 使用方法
+
+首先，请确保您已安装 [uv](https://github.com/astral-sh/uv)。它是一个非常快的 Python 包安装和解析工具。
 
 1.  **克隆仓库:**
     ```bash
@@ -124,41 +126,30 @@ medimager/
     cd MedImager
     ```
 
-2.  **创建并激活虚拟环境:**
+2.  **设置环境并安装依赖:**
     ```bash
-    python -m venv venv
+    # 创建虚拟环境并从 pyproject.toml 同步依赖
+    uv venv
+    uv sync
+    ```
+
+3.  **运行程序:**
+    ```bash
+    # `uv run` 会自动使用 .venv 环境，无需手动激活，
+    # 这样可以避免影响当前终端环境。
+    uv run python medimager/main.py
+    ```
+    对于希望激活环境进行开发的开发者：
+    ```bash
+    # 激活虚拟环境:
     # Windows
-    venv\Scripts\activate
+    .venv\\Scripts\\activate
     # macOS / Linux
-    source venv/bin/activate
+    source .venv/bin/activate
+    
+    # 之后就可以直接运行命令:
+    python medimager/main.py
     ```
-
-3.  **安装依赖:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **运行程序:**
-    ```bash
-    python medimager/main.py  # 推荐方式
-    ```
-    或者
-    ```bash
-    python -m medimager.main  # 开发方法
-    ```
-
----
-*初始 `requirements.txt` 文件内容:*
-
-```
-PySide6
-pydicom
-numpy
-scipy
-scikit-image
-pyinstaller
-# vtk # 当开始开发 3D 功能时再添加
-```
 
 ---
 

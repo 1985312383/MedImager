@@ -1,9 +1,0 @@
-PySide6
-pydicom
-numpy
-scipy
-scikit-image
-pillow  # PIL for image loading
-toml    # For theme configuration files
-pyinstaller
-# vtk  # Will be added when 3D features are developed
