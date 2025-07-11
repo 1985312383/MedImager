@@ -221,8 +221,12 @@ class ImageViewer(QGraphicsView):
         else:
             super().mousePressEvent(event)
             
-        # 如果当前工具不是测量工具，但存在测量线，检查是否可以拖拽
-        if (not self.current_tool or not hasattr(self.current_tool, 'draw_measurement_line')) and self.measurement_start_point and self.measurement_end_point:
+        # 只有在当前工具不是测量工具时，才处理ImageViewer的测量线拖拽
+        # 检查工具类型而不是方法存在性
+        is_measurement_tool = (self.current_tool and 
+                              self.current_tool.__class__.__name__ == 'MeasurementTool')
+        
+        if (not self.current_tool or not is_measurement_tool) and self.measurement_start_point and self.measurement_end_point:
             self._check_measurement_line_drag(event)
             
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -232,8 +236,12 @@ class ImageViewer(QGraphicsView):
         else:
             super().mouseMoveEvent(event)
             
-        # 处理测量线拖拽
-        if hasattr(self, '_measurement_dragging') and self._measurement_dragging:
+        # 只有在当前工具不是测量工具时，才处理ImageViewer的测量线拖拽
+        is_measurement_tool = (self.current_tool and 
+                              self.current_tool.__class__.__name__ == 'MeasurementTool')
+        
+        if (not is_measurement_tool and hasattr(self, '_measurement_dragging') and 
+            self._measurement_dragging):
             self._update_measurement_drag(event)
             
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -243,8 +251,12 @@ class ImageViewer(QGraphicsView):
         else:
             super().mouseReleaseEvent(event)
             
-        # 停止测量线拖拽
-        if hasattr(self, '_measurement_dragging') and self._measurement_dragging and event.button() == Qt.LeftButton:
+        # 只有在当前工具不是测量工具时，才处理ImageViewer的测量线拖拽
+        is_measurement_tool = (self.current_tool and 
+                              self.current_tool.__class__.__name__ == 'MeasurementTool')
+        
+        if (not is_measurement_tool and hasattr(self, '_measurement_dragging') and 
+            self._measurement_dragging and event.button() == Qt.LeftButton):
             self._stop_measurement_drag()
             
     def keyPressEvent(self, event) -> None:
@@ -423,16 +435,29 @@ class ImageViewer(QGraphicsView):
         if not self.measurement_start_point or not self.measurement_end_point:
             return
             
-        # 从设置中获取样式
-        theme = self.settings_manager.get_setting('measurement_theme', 'default')
-        
-        line_color = self.settings_manager.get_setting('measurement.custom.line_color', "#00FF00")
-        anchor_color = self.settings_manager.get_setting('measurement.custom.anchor_color', "#00FF00")
-        text_color = self.settings_manager.get_setting('measurement.custom.text_color', "#FFFFFF")
-        bg_color = self.settings_manager.get_setting('measurement.custom.background_color', "#00000080")
-        line_width = self.settings_manager.get_setting('measurement.custom.line_width', 2)
-        anchor_size = self.settings_manager.get_setting('measurement.custom.anchor_size', 8)
-        font_size = self.settings_manager.get_setting('measurement.custom.font_size', 14)
+        # 从主题文件中获取样式
+        try:
+            from medimager.utils.theme_manager import get_theme_settings
+            
+            # 使用统一的主题设置读取函数
+            theme_data = get_theme_settings('measurement')
+            
+            line_color = theme_data.get('line_color', "#00FF00")
+            anchor_color = theme_data.get('anchor_color', "#00FF00")
+            text_color = theme_data.get('text_color', "#FFFFFF")
+            bg_color = theme_data.get('background_color', "#00000080")
+            line_width = theme_data.get('line_width', 2)
+            anchor_size = theme_data.get('anchor_size', 8)
+            font_size = theme_data.get('font_size', 14)
+        except Exception:
+            # 默认设置
+            line_color = "#00FF00"
+            anchor_color = "#00FF00"
+            text_color = "#FFFFFF"
+            bg_color = "#00000080"
+            line_width = 2
+            anchor_size = 8
+            font_size = 14
 
         from PySide6.QtGui import QColor, QPen, QFont, QBrush
         from PySide6.QtCore import QPointF, QRectF, Qt

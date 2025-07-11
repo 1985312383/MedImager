@@ -15,6 +15,42 @@ from medimager.utils.settings import SettingsManager
 from medimager.utils.logger import get_logger
 
 
+def get_theme_settings(category: str, theme_name: str = None) -> Dict[str, Any]:
+    """
+    统一的主题设置读取函数
+    
+    Args:
+        category: 主题类别 ('roi', 'measurement', 'ui')
+        theme_name: 主题名称，如果为None则从设置中获取当前主题
+    
+    Returns:
+        包含主题设置的字典
+    """
+    try:
+        # 如果没有指定主题名称，从设置中获取当前主题
+        if theme_name is None:
+            settings_manager = SettingsManager()
+            theme_name = settings_manager.get_setting(f'{category}_theme', 'default')
+        
+        # 加载主题文件
+        themes_dir = Path(__file__).parent.parent / "themes" / category
+        theme_file = themes_dir / f"{theme_name}.toml"
+        
+        if theme_file.exists():
+            return toml.load(theme_file)
+        else:
+            # 如果主题文件不存在，尝试加载默认主题
+            default_theme_file = themes_dir / "default.toml"
+            if default_theme_file.exists():
+                return toml.load(default_theme_file)
+            
+    except Exception as e:
+        print(f"加载{category}主题文件失败: {e}")
+    
+    # 返回空字典作为备用
+    return {}
+
+
 class ThemeManager(QObject):
     """主题管理器"""
     
@@ -156,6 +192,37 @@ class ThemeManager(QObject):
         
         QToolButton:checked {{
             background-color: {highlight_color};
+            color: white;
+        }}
+        
+        /* 工具栏按钮菜单 */
+        QToolButton::menu-button {{
+            border: none;
+            width: 16px;
+        }}
+        
+        QToolButton::menu-arrow {{
+            image: none;
+            border: none;
+            width: 8px;
+            height: 8px;
+        }}
+        
+        QToolButton::menu-arrow:open {{
+            top: 1px;
+            left: 1px;
+        }}
+        
+        QToolButton[popupMode="1"] {{
+            color: {text_color};
+            padding-right: 16px;
+        }}
+        
+        QToolButton[popupMode="1"]:hover {{
+            color: white;
+        }}
+        
+        QToolButton[popupMode="1"]:checked {{
             color: white;
         }}
         

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import QSettings, QStandardPaths, QObject, Signal
+from medimager.utils.logger import get_logger
 
 
 class PerformanceManager:
@@ -27,6 +28,7 @@ class PerformanceManager:
         self._thread_count: int = 4
         self._cache_data: Dict[str, Any] = {}
         self._cache_lock = threading.Lock()
+        self.logger = get_logger(__name__)
         
     def set_thread_count(self, count: int) -> None:
         """设置线程数量
@@ -46,7 +48,7 @@ class PerformanceManager:
             self._thread_pool.shutdown(wait=True)
             
         self._thread_pool = ThreadPoolExecutor(max_workers=self._thread_count)
-        print(f"线程数量已设置为: {self._thread_count}")
+        self.logger.debug(f"线程数量已设置为: {self._thread_count}")
         
     def get_thread_count(self) -> int:
         """获取当前线程数量
@@ -84,7 +86,7 @@ class PerformanceManager:
         if size_mb < old_size:
             self._cleanup_cache()
             
-        print(f"缓存大小已设置为: {self._cache_size_mb}MB")
+        self.logger.debug(f"缓存大小已设置为: {self._cache_size_mb}MB")
         
     def get_cache_size(self) -> int:
         """获取当前缓存大小

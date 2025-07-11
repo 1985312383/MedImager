@@ -367,14 +367,75 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # 在某些平台上，确保脚本在主线程中运行
+    # 跨平台支持和特殊配置
     if sys.platform.startswith('win'):
-        # 设置AppUserModelID以在Windows任务栏上正确显示图标
+        # Windows 特定配置
         try:
             import ctypes
-            myappid = 'mycompany.myproduct.subproduct.version' # 可随意设置
+            # 设置AppUserModelID以在Windows任务栏上正确显示图标
+            myappid = 'medimager.dicom_viewer.1.0'  # 更具体的应用程序ID
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
-            pass
+            
+            # 设置Windows DPI感知
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception as e:
+            print(f"Windows配置失败: {e}")
+            
+    elif sys.platform.startswith('darwin'):
+        # macOS 特定配置
+        try:
+            # 设置macOS应用程序名称
+            import Foundation
+            bundle = Foundation.NSBundle.mainBundle()
+            if bundle:
+                info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+                if info:
+                    info['CFBundleName'] = 'MedImager'
+                    info['CFBundleDisplayName'] = 'MedImager'
+                    
+            # 设置macOS应用程序图标
+            from PySide6.QtGui import QPixmap
+            from PySide6.QtWidgets import QApplication
+            icon_path = Path("medimager/icons/logo.png")
+            if icon_path.exists():
+                # 在应用程序创建之前设置图标
+                QApplication.setOrganizationName("MedImager")
+                QApplication.setOrganizationDomain("medimager.org")
+                QApplication.setApplicationName("MedImager")
+                
+        except Exception as e:
+            print(f"macOS配置失败: {e}")
+            
+    elif sys.platform.startswith('linux'):
+        # Linux 特定配置
+        try:
+            # 设置Linux桌面环境变量
+            os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
+            
+            # 设置应用程序元数据
+            from PySide6.QtWidgets import QApplication
+            QApplication.setOrganizationName("MedImager")
+            QApplication.setOrganizationDomain("medimager.org")
+            QApplication.setApplicationName("MedImager")
+            QApplication.setApplicationVersion("1.0")
+            
+            # 设置Linux下的高DPI支持
+            os.environ.setdefault('QT_AUTO_SCREEN_SCALE_FACTOR', '1')
+            os.environ.setdefault('QT_ENABLE_HIGHDPI_SCALING', '1')
+            
+        except Exception as e:
+            print(f"Linux配置失败: {e}")
+    
+    # 通用配置
+    try:
+        # 启用高DPI支持
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        
+        # 设置样式
+        QApplication.setStyle('Fusion')
+        
+    except Exception as e:
+        print(f"通用配置失败: {e}")
 
     sys.exit(main()) 

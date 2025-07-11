@@ -109,15 +109,28 @@ class BaseROI(ABC):
 
     def _get_style_from_settings(self) -> Tuple[str, str, str, int, int]:
         """从设置中获取ROI的样式"""
-        prefix = 'roi.custom'
-        
-        border_color = settings.get_setting(f'{prefix}.border_color', "#FFFF00")
-        selected_color = settings.get_setting(f'{prefix}.selected_color', "#FF0000")
-        anchor_color = settings.get_setting(f'{prefix}.anchor_color', "#FF0000")
-        border_width = settings.get_setting(f'{prefix}.border_width', 2)
-        anchor_size = settings.get_setting(f'{prefix}.anchor_size', 8)
-        
-        return border_color, selected_color, anchor_color, border_width, anchor_size
+        try:
+            from medimager.utils.theme_manager import get_theme_settings
+            
+            # 使用统一的主题设置读取函数
+            theme_data = get_theme_settings('roi')
+            
+            return (
+                theme_data.get('border_color', "#FFFF00"),
+                theme_data.get('selected_color', "#FF0000"),
+                theme_data.get('anchor_color', "#FF0000"),
+                theme_data.get('border_width', 2),
+                theme_data.get('anchor_size', 8)
+            )
+        except Exception:
+            # 默认设置
+            return (
+                "#FFFF00",  # border_color
+                "#FF0000",  # selected_color
+                "#FF0000",  # anchor_color
+                2,          # border_width
+                8           # anchor_size
+            )
 
 
 class EllipseROI(BaseROI):

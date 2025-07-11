@@ -13,32 +13,19 @@ from typing import Dict, Optional
 def _get_stats_box_settings():
     """获取信息板设置"""
     try:
-        from medimager.utils.settings import SettingsManager
-        settings = SettingsManager()
+        from medimager.utils.theme_manager import get_theme_settings
         
-        # 检查主题设置（信息板设置跟随ROI主题）
-        roi_theme = settings.get_setting('roi_theme', 'default')
-        if roi_theme != 'custom':
-            # 使用默认主题设置
-            return {
-                'bg_color': '#00000096',
-                'text_color': '#FFFFFF',
-                'border_color': '#FFFFFF',
-                'font_size': 8,
-                'border_radius': 5,
-                'padding': 8,
-                'precision': 1
-            }
+        # 使用统一的主题设置读取函数
+        theme_data = get_theme_settings('roi')
         
-        # 使用自定义设置
         return {
-            'bg_color': settings.get_setting('stats_bg_color', '#00000096'),
-            'text_color': settings.get_setting('stats_text_color', '#FFFFFF'),
-            'border_color': settings.get_setting('stats_border_color', '#FFFFFF'),
-            'font_size': settings.get_setting('stats_font_size', 8),
-            'border_radius': settings.get_setting('stats_border_radius', 5),
-            'padding': settings.get_setting('stats_padding', 8),
-            'precision': settings.get_setting('stats_precision', 1)
+            'bg_color': theme_data.get('info_bg_color', '#00000096'),
+            'text_color': theme_data.get('info_text_color', '#FFFFFF'),
+            'border_color': theme_data.get('info_border_color', '#FFFFFF'),
+            'font_size': theme_data.get('info_font_size', 8),
+            'border_radius': theme_data.get('info_radius', 5),
+            'padding': theme_data.get('info_padding', 8),
+            'precision': theme_data.get('info_precision', 1)
         }
     except Exception:
         # 默认设置

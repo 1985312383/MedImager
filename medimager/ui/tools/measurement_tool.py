@@ -14,7 +14,7 @@ class MeasurementTool(BaseTool):
     功能：
     - 第一次点击设置起始点
     - 第二次点击设置终点，完成测量
-    - 测量完成后可以拖拽锚点或整条线段
+    - 测量完成后可以拖拽锚点调整位置
     - 第三次点击重新开始测量
     - 根据DICOM文件中的像素间距信息计算实际距离（mm）
     - 边界检查：起始点和终止点不能超出图像边界
@@ -31,7 +31,6 @@ class MeasurementTool(BaseTool):
         self.completed_measurements = []  # 存储完成的测量线
         self.dragging = False
         self.dragging_anchor = None  # 'start' 或 'end'
-        self.dragging_line = False
         self.drag_offset = QPointF()
         self.viewer = viewer
         
@@ -52,17 +51,32 @@ class MeasurementTool(BaseTool):
 
     def _get_style_from_settings(self):
         """从设置中获取测量工具的样式"""
-        prefix = 'measurement.custom'
-        
-        return (
-            self.settings_manager.get_setting(f'{prefix}.line_color', "#00FF00"),
-            self.settings_manager.get_setting(f'{prefix}.anchor_color', "#00FF00"),
-            self.settings_manager.get_setting(f'{prefix}.text_color', "#FFFFFF"),
-            self.settings_manager.get_setting(f'{prefix}.background_color', "#00000080"),
-            self.settings_manager.get_setting(f'{prefix}.line_width', 2),
-            self.settings_manager.get_setting(f'{prefix}.anchor_size', 8),
-            self.settings_manager.get_setting(f'{prefix}.font_size', 14),
-        )
+        try:
+            from medimager.utils.theme_manager import get_theme_settings
+            
+            # 使用统一的主题设置读取函数
+            theme_data = get_theme_settings('measurement')
+            
+            return (
+                theme_data.get('line_color', "#00FF00"),
+                theme_data.get('anchor_color', "#00FF00"),
+                theme_data.get('text_color', "#FFFFFF"),
+                theme_data.get('background_color', "#00000080"),
+                theme_data.get('line_width', 2),
+                theme_data.get('anchor_size', 8),
+                theme_data.get('font_size', 14),
+            )
+        except Exception:
+            # 默认设置
+            return (
+                "#00FF00",  # line_color
+                "#00FF00",  # anchor_color
+                "#FFFFFF",  # text_color
+                "#00000080", # background_color
+                2,          # line_width
+                8,          # anchor_size
+                14,         # font_size
+            )
 
     def activate(self):
         """激活测量工具"""
@@ -84,15 +98,21 @@ class MeasurementTool(BaseTool):
         self.start_point = None
         self.end_point = None
         self.measuring = False
+        
+        # 强制停止任何拖拽操作
         self.dragging = False
         self.dragging_anchor = None
+        self.drag_offset = QPointF(0, 0)
         
-        # 增加这行来清除完成状态
+        # 清除完成状态
         self.measurement_completed = False
         
         # 清除预览点，防止显示临时连线
         if hasattr(self, '_preview_point'):
             self._preview_point = None
+        
+        # 恢复默认光标
+        self.viewer.setCursor(Qt.CrossCursor)
         
         # 清除图像查看器中的测量线
         if hasattr(self.viewer, 'clear_measurement_line'):
@@ -101,28 +121,34 @@ class MeasurementTool(BaseTool):
             self.viewer.viewport().update()
 
     def mouse_press_event(self, event: QMouseEvent):
-        """处理鼠标按下事件，设置测量点或开始拖拽"""
+        """处理鼠标按下事件，设置测量点"""
         super().mouse_press_event(event)
         
         if self._press_is_outside:  # 检查是否在图像边界外
             return
             
         if event.button() == Qt.LeftButton:
-            # 如果测量已完成，检查是否点击在锚点或线段上进行拖拽
+            # 优先处理测量完成后的点击
             if self.measurement_completed and self.end_point:
-                anchor_hit = self._check_anchor_hit(self.viewer.last_mouse_scene_pos)
+                # 测量完成后的点击：检查是否是锚点拖拽，还是重新开始测量
+                # 使用统一的坐标系统 - 使用last_mouse_scene_pos
+                click_pos = self.viewer.last_mouse_scene_pos
+                anchor_hit = self._check_anchor_hit(click_pos)
+                
                 if anchor_hit:
                     self._start_anchor_dragging(anchor_hit, event)
                     event.accept()
                     return
-                    
-                # 检查是否点击在测量线上
-                if self._is_click_on_measurement_line(self.viewer.last_mouse_scene_pos):
-                    self._start_line_dragging(event)
+                else:
+                    # 不是锚点位置，重新开始测量
+                    self._reset_measurement()
+                    # 立即设置新的起始点，避免显示临时连线
+                    self.start_point = click_pos
+                    self.measuring = True
+                    self._update_status_message(self.tr("已设置起始点 - 点击设置终点（右键取消）"))
+                    self.viewer.viewport().update()
                     event.accept()
-                    return
-            
-            if not self.measuring:
+            elif not self.measuring:
                 # 第一次点击：设置起始点
                 self._reset_measurement() # 确保开始全新测量
                 self.start_point = self.viewer.last_mouse_scene_pos
@@ -134,15 +160,9 @@ class MeasurementTool(BaseTool):
                 # 第二次点击：设置终点并完成测量
                 self.end_point = self.viewer.last_mouse_scene_pos
                 self._complete_measurement()
-                event.accept()
-            else:
-                # 第三次点击：重新开始测量
-                self._reset_measurement()
-                # 立即设置新的起始点，避免显示临时连线
-                self.start_point = self.viewer.last_mouse_scene_pos
-                self.measuring = True
-                self._update_status_message(self.tr("已设置起始点 - 点击设置终点（右键取消）"))
-                self.viewer.viewport().update()
+                # 设置刚完成标志，防止立即拖拽
+                self.dragging = False
+                self.dragging_anchor = None
                 event.accept()
                 
         elif event.button() == Qt.RightButton:
@@ -157,30 +177,43 @@ class MeasurementTool(BaseTool):
         """处理鼠标移动事件，更新预览线、实时距离显示或拖拽"""
         super().mouse_move_event(event)
         
-        if self.dragging:
-            # 处理拖拽
-            self._update_dragging(event)
-            event.accept()
-        elif self.measuring and self.start_point and not self.end_point:
+        # 如果正在测量但还未完成，显示预览线
+        if self.measuring and self.start_point and not self.end_point:
             # 使用安全坐标作为预览终点
             self._preview_point = self.viewer.last_mouse_scene_pos
             self._update_preview_distance()
             self.viewer.viewport().update()
             event.accept()
-        elif self.end_point:
-            # 更新鼠标指针样式
+        # 如果正在拖拽锚点，更新拖拽
+        elif self.dragging and self.dragging_anchor and self.measurement_completed:
+            # 只要在拖拽状态就处理拖拽，不检查just_completed
+            self._update_dragging(event)
+            event.accept()
+        # 如果测量已完成但没有在拖拽，更新光标样式
+        elif self.end_point and not self.dragging and self.measurement_completed:
+            # 只要测量完成且不在拖拽就更新光标样式
             self._update_cursor_for_hover()
             # 显示最终结果
             self._show_final_measurement()
+        # 其他情况不处理，避免误触
 
     def mouse_release_event(self, event: QMouseEvent):
         """处理鼠标释放事件"""
         super().mouse_release_event(event)
         
-        if self.dragging and event.button() == Qt.LeftButton:
-            self._stop_dragging()
-            event.accept()
-        # 测量完成逻辑已在mouse_press_event中处理
+        if event.button() == Qt.LeftButton:
+            if self.dragging:
+                # 停止拖拽
+                self._stop_dragging()
+                event.accept()
+            else:
+                # 清除刚完成标志，允许后续的锚点拖拽
+                pass # Removed self.just_completed = False
+                
+            # 确保状态正确
+            if self.measurement_completed:
+                self.measuring = False
+        # 其他情况不处理
 
     def key_press_event(self, event: QKeyEvent):
         """处理键盘按键事件"""
@@ -209,23 +242,39 @@ class MeasurementTool(BaseTool):
         # 计算固定屏幕像素大小的检测半径
         transform = self.viewer.transform()
         scale_factor = transform.m11()
-        screen_detection_radius = 15  # 增加检测半径从10到15像素
+        screen_detection_radius = 20  # 增加检测半径到20像素，提高用户体验
         scene_detection_radius = screen_detection_radius / scale_factor
             
         # 检查起始点
         start_distance = self._calculate_pixel_distance(pos, self.start_point)
-        if start_distance <= scene_detection_radius:
-            return 'start'
-            
         # 检查终点
         end_distance = self._calculate_pixel_distance(pos, self.end_point)
-        if end_distance <= scene_detection_radius:
+        
+        # 选择距离最近的锚点，并且距离要小于检测半径
+        if start_distance <= scene_detection_radius and end_distance <= scene_detection_radius:
+            # 如果两个锚点都在检测范围内，选择距离更近的那个
+            return 'start' if start_distance < end_distance else 'end'
+        elif start_distance <= scene_detection_radius:
+            return 'start'
+        elif end_distance <= scene_detection_radius:
             return 'end'
-            
+        
         return None
 
     def _start_anchor_dragging(self, anchor: str, event: QMouseEvent):
         """开始拖拽锚点"""
+        # 基本检查
+        if not self.measurement_completed or not self.end_point or not self.start_point:
+            return
+            
+        # 确保只能拖拽有效的锚点
+        if anchor not in ['start', 'end']:
+            return
+            
+        # 确保当前没有在拖拽
+        if self.dragging:
+            return
+            
         self.dragging = True
         self.dragging_anchor = anchor
         # 记录当前鼠标位置，不需要偏移
@@ -237,18 +286,17 @@ class MeasurementTool(BaseTool):
         else:
             self._update_status_message(self.tr("拖拽终点"))
 
-    def _start_line_dragging(self, event: QMouseEvent):
-        """开始拖拽整条线"""
-        self.dragging = True
-        self.dragging_anchor = 'line'
-        # 记录当前鼠标位置和线段起始点的偏移
-        self.drag_offset = self.viewer.last_mouse_scene_pos - self.start_point
-        self.viewer.setCursor(Qt.ClosedHandCursor)
-        self._update_status_message(self.tr("拖拽测量线"))
+
 
     def _update_dragging(self, event: QMouseEvent):
         """更新拖拽状态"""
-        if not self.dragging:
+        # 多重安全检查
+        if not self.dragging or not self.dragging_anchor or not self.measurement_completed:
+            return
+            
+        # 确保只能拖拽锚点，不能拖拽线段
+        if self.dragging_anchor not in ['start', 'end']:
+            self._stop_dragging()
             return
             
         current_pos = self.viewer.last_mouse_scene_pos
@@ -259,11 +307,6 @@ class MeasurementTool(BaseTool):
         elif self.dragging_anchor == 'end':
             # 直接设置终点为当前鼠标位置
             self.end_point = current_pos
-        elif self.dragging_anchor == 'line':
-            # 拖拽整条线：保持线段的相对位置
-            line_vector = self.end_point - self.start_point
-            self.start_point = current_pos - self.drag_offset
-            self.end_point = self.start_point + line_vector
         
         # 更新测量线显示
         if hasattr(self.viewer, 'set_measurement_line'):
@@ -276,8 +319,12 @@ class MeasurementTool(BaseTool):
 
     def _stop_dragging(self):
         """停止拖拽"""
+        if not self.dragging:
+            return
+            
         self.dragging = False
         self.dragging_anchor = None
+        self.drag_offset = QPointF(0, 0)
         self.viewer.setCursor(Qt.CrossCursor)
         self._update_status_message(self.tr("拖拽完成"))
 
@@ -292,43 +339,11 @@ class MeasurementTool(BaseTool):
         if anchor_hit:
             # 悬停在锚点上
             self.viewer.setCursor(Qt.OpenHandCursor)
-        elif self._is_click_on_measurement_line(current_pos):
-            # 悬停在测量线上
-            self.viewer.setCursor(Qt.OpenHandCursor)
         else:
             # 默认光标
             self.viewer.setCursor(Qt.CrossCursor)
 
-    def _is_click_on_measurement_line(self, click_pos: QPointF) -> bool:
-        """检查点击位置是否在测量线上"""
-        if not self.start_point or not self.end_point:
-            return False
-            
-        # 计算点击位置到测量线的距离
-        line_start = self.start_point
-        line_end = self.end_point
-        
-        # 计算线段长度
-        line_length = self._calculate_pixel_distance(line_start, line_end)
-        if line_length == 0:
-            return False
-            
-        # 计算点击位置到线段的距离
-        # 使用点到线段的距离公式
-        t = max(0, min(1, ((click_pos.x() - line_start.x()) * (line_end.x() - line_start.x()) + 
-                           (click_pos.y() - line_start.y()) * (line_end.y() - line_start.y())) / (line_length * line_length)))
-        
-        # 计算线段上最近的点
-        closest_point = QPointF(
-            line_start.x() + t * (line_end.x() - line_start.x()),
-            line_start.y() + t * (line_end.y() - line_start.y())
-        )
-        
-        # 计算点击位置到最近点的距离
-        distance = self._calculate_pixel_distance(click_pos, closest_point)
-        
-        # 如果距离小于阈值（5像素），认为点击在线段上
-        return distance <= 5
+
 
     def _update_preview_distance(self):
         """更新预览距离显示"""

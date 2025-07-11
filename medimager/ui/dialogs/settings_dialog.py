@@ -356,10 +356,13 @@ class SettingsDialog(QDialog):
         
         layout.addWidget(custom_group)
         
-        # 连接主题变化和自定义控件启用/禁用的逻辑
+        # 连接主题变化和加载主题设置的逻辑
         def on_roi_theme_changed(index):
             theme_name = roi_theme_combo.itemData(index)
-            self._enable_roi_custom_controls(theme_name == 'custom')
+            is_custom = theme_name == 'custom'
+            self._enable_roi_custom_controls(is_custom)
+            # 加载对应主题的设置到自定义控件中
+            self._load_roi_theme(theme_name)
 
         roi_theme_combo.currentIndexChanged.connect(on_roi_theme_changed)
         
@@ -441,10 +444,13 @@ class SettingsDialog(QDialog):
         custom_layout.addWidget(text_group)
         layout.addWidget(custom_group)
         
-        # 连接主题变化和自定义控件启用/禁用的逻辑
+        # 连接主题变化和加载主题设置的逻辑
         def on_measurement_theme_changed(index):
             theme_name = measurement_theme_combo.itemData(index)
-            self._enable_measurement_custom_controls(theme_name == 'custom')
+            is_custom = theme_name == 'custom'
+            self._enable_measurement_custom_controls(is_custom)
+            # 加载对应主题的设置到自定义控件中
+            self._load_measurement_theme(theme_name)
         
         measurement_theme_combo.currentIndexChanged.connect(on_measurement_theme_changed)
         
@@ -504,10 +510,13 @@ class SettingsDialog(QDialog):
             roi_combo.blockSignals(True)
             roi_combo.clear()
             roi_themes = self.themes.get('roi', {})
+            
+            # 确保自定义主题文件存在
+            self._ensure_custom_theme_exists('roi')
+            
             for theme_name, theme_data in roi_themes.items():
                 display_name = theme_data.get('name', theme_name)
                 roi_combo.addItem(display_name, theme_name)
-            roi_combo.addItem(self.tr("自定义"), "custom")
             roi_combo.blockSignals(False)
         
         # 测量工具主题
@@ -516,10 +525,13 @@ class SettingsDialog(QDialog):
             measurement_combo.blockSignals(True)
             measurement_combo.clear()
             measurement_themes = self.themes.get('measurement', {})
+            
+            # 确保自定义主题文件存在
+            self._ensure_custom_theme_exists('measurement')
+            
             for theme_name, theme_data in measurement_themes.items():
                 display_name = theme_data.get('name', theme_name)
                 measurement_combo.addItem(display_name, theme_name)
-            measurement_combo.addItem(self.tr("自定义"), "custom")
             measurement_combo.blockSignals(False)
 
     def _apply_theme(self, category: str, theme_name: str):
@@ -565,6 +577,7 @@ class SettingsDialog(QDialog):
                 index = roi_combo.findData('default')
             if index != -1:
                 roi_combo.setCurrentIndex(index)
+                # 触发主题加载逻辑
                 roi_combo.currentIndexChanged.emit(index)
         
         # 加载测量工具主题
@@ -576,6 +589,7 @@ class SettingsDialog(QDialog):
                 index = measurement_combo.findData('default')
             if index != -1:
                 measurement_combo.setCurrentIndex(index)
+                # 触发主题加载逻辑
                 measurement_combo.currentIndexChanged.emit(index)
         
         # 加载性能设置
@@ -691,12 +705,18 @@ class SettingsDialog(QDialog):
         if roi_combo:
             theme = roi_combo.itemData(roi_combo.currentIndex())
             self.settings_manager.set_setting('roi_theme', theme)
+            # 如果是自定义主题，保存设置到TOML文件
+            if theme == 'custom':
+                self._save_theme_to_file('roi', theme)
         
         # 保存测量工具主题
         measurement_combo = self.setting_widgets.get('measurement_theme')
         if measurement_combo:
             theme = measurement_combo.itemData(measurement_combo.currentIndex())
             self.settings_manager.set_setting('measurement_theme', theme)
+            # 如果是自定义主题，保存设置到TOML文件
+            if theme == 'custom':
+                self._save_theme_to_file('measurement', theme)
         
         # 保存性能设置
         cache_size_spin = self.setting_widgets.get('cache_size')
@@ -707,21 +727,82 @@ class SettingsDialog(QDialog):
         if thread_count_spin:
             self.settings_manager.set_setting('thread_count', thread_count_spin.value())
         
-        # 保存自定义设置
-        for key, widget in self.setting_widgets.items():
-            if '.' not in key or key.endswith('_theme') or key in ['language', 'cache_size', 'thread_count']:
-                continue
-            
-            if isinstance(widget, ColorButton):
-                self.settings_manager.set_setting(key, widget.color().name())
-            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                self.settings_manager.set_setting(key, widget.value())
-            elif isinstance(widget, QCheckBox):
-                self.settings_manager.set_setting(key, widget.isChecked())
-        
         self.settings_manager.save_settings()
         print("设置已保存。")
+    
+    def _save_theme_to_file(self, category: str, theme_name: str):
+        """保存主题设置到TOML文件"""
+        if theme_name != 'custom':
+            return
+        
+        # 收集当前自定义控件的值
+        theme_data = {'name': '自定义'}
+        
+        for key, widget in self.setting_widgets.items():
+            if not key.startswith(f'{category}.custom.'):
+                continue
+                
+            field_name = key.split('.')[-1]  # 获取最后一部分作为字段名
+            
+            if isinstance(widget, ColorButton):
+                theme_data[field_name] = widget.color().name()
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                theme_data[field_name] = widget.value()
+            elif isinstance(widget, QCheckBox):
+                theme_data[field_name] = widget.isChecked()
+        
+        # 保存到TOML文件
+        try:
+            base_themes_dir = Path(__file__).parent.parent.parent / "themes"
+            theme_file = base_themes_dir / category / f"{theme_name}.toml"
+            theme_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(theme_file, 'w', encoding='utf-8') as f:
+                toml.dump(theme_data, f)
+            
+            print(f"自定义{category}主题已保存到: {theme_file}")
+            
+            # 重新加载主题数据
+            self.themes[category][theme_name] = theme_data
+            
+        except Exception as e:
+            print(f"保存主题文件失败: {e}")
 
+    def _ensure_custom_theme_exists(self, category: str):
+        """确保自定义主题文件存在"""
+        try:
+            base_themes_dir = Path(__file__).parent.parent.parent / "themes"
+            custom_theme_file = base_themes_dir / category / "custom.toml"
+            
+            if not custom_theme_file.exists():
+                # 如果自定义主题文件不存在，从默认主题创建
+                default_theme_file = base_themes_dir / category / "default.toml"
+                custom_theme_data = {'name': '自定义'}
+                
+                if default_theme_file.exists():
+                    # 从默认主题复制设置
+                    try:
+                        default_data = toml.load(default_theme_file)
+                        custom_theme_data.update(default_data)
+                        custom_theme_data['name'] = '自定义'  # 确保名称是"自定义"
+                    except Exception as e:
+                        print(f"读取默认主题失败: {e}")
+                
+                # 创建自定义主题文件
+                custom_theme_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(custom_theme_file, 'w', encoding='utf-8') as f:
+                    toml.dump(custom_theme_data, f)
+                
+                print(f"创建自定义{category}主题文件: {custom_theme_file}")
+                
+                # 将新创建的主题添加到内存中的主题数据
+                if category not in self.themes:
+                    self.themes[category] = {}
+                self.themes[category]['custom'] = custom_theme_data
+                
+        except Exception as e:
+            print(f"创建自定义主题文件失败: {e}")
+ 
     def _connect_signals(self):
         """连接信号和槽"""
         # 语言切换信号
@@ -766,7 +847,13 @@ class SettingsDialog(QDialog):
         ]
         for control_name in roi_controls:
             if control_name in self.setting_widgets:
-                self.setting_widgets[control_name].setEnabled(enabled)
+                widget = self.setting_widgets[control_name]
+                widget.setEnabled(enabled)
+                # 设置样式，让禁用的控件不要太暗
+                if not enabled:
+                    widget.setStyleSheet("QWidget:disabled { opacity: 0.9; color: inherit; }")
+                else:
+                    widget.setStyleSheet("")
     
     def _enable_measurement_custom_controls(self, enabled: bool):
         """启用/禁用测量工具自定义控件"""
@@ -778,17 +865,35 @@ class SettingsDialog(QDialog):
         ]
         for control_name in measurement_controls:
             if control_name in self.setting_widgets:
-                self.setting_widgets[control_name].setEnabled(enabled)
+                widget = self.setting_widgets[control_name]
+                widget.setEnabled(enabled)
+                # 设置样式，让禁用的控件不要太暗
+                if not enabled:
+                    widget.setStyleSheet("QWidget:disabled { opacity: 0.9; color: inherit; }")
+                else:
+                    widget.setStyleSheet("")
     
     def _load_roi_theme(self, theme_name: str):
         """加载ROI主题"""
-        # 这里可以实现加载ROI主题的逻辑
-        pass
+        # 从显示名称获取实际的主题名称（数据值）
+        roi_combo = self.setting_widgets.get('roi_theme')
+        if roi_combo:
+            current_index = roi_combo.currentIndex()
+            if current_index >= 0:
+                actual_theme_name = roi_combo.itemData(current_index)
+                if actual_theme_name:
+                    self._apply_theme('roi', actual_theme_name)
     
     def _load_measurement_theme(self, theme_name: str):
         """加载测量工具主题"""
-        # 这里可以实现加载测量工具主题的逻辑
-        pass
+        # 从显示名称获取实际的主题名称（数据值）
+        measurement_combo = self.setting_widgets.get('measurement_theme')
+        if measurement_combo:
+            current_index = measurement_combo.currentIndex()
+            if current_index >= 0:
+                actual_theme_name = measurement_combo.itemData(current_index)
+                if actual_theme_name:
+                    self._apply_theme('measurement', actual_theme_name)
 
     def _update_button_text(self):
         """更新按钮文本"""
