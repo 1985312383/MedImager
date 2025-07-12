@@ -273,6 +273,9 @@ class ViewFrame(QFrame):
                     f"series_id={series_id}")
         
         try:
+            # 先清理旧的工具数据和状态
+            self._clear_tool_data()
+            
             self._series_id = series_id
             self._image_model = image_model # 存储图像模型
             
@@ -315,6 +318,9 @@ class ViewFrame(QFrame):
                 
                 # 清除图像数据
                 self._image_viewer.display_qimage(None)
+                
+                # 清除工具相关数据
+                self._clear_tool_data()
                 
                 # 更新UI
                 self._series_label.setText(self.tr("无序列"))
@@ -397,6 +403,54 @@ class ViewFrame(QFrame):
             self._pixel_value_label.setText("")
         except Exception as e:
             logger.debug(f"[ViewFrame._clear_pixel_info] 清除像素信息失败: {e}")
+    
+    def _clear_tool_data(self) -> None:
+        """清除工具相关数据"""
+        try:
+            # 清除ImageViewer中的ROI相关状态
+            if hasattr(self._image_viewer, 'clear_roi_dependent_state'):
+                self._image_viewer.clear_roi_dependent_state()
+            
+            # 清除测量线
+            if hasattr(self._image_viewer, 'clear_measurement_line'):
+                self._image_viewer.clear_measurement_line()
+            
+            # 清除ImageViewer的模型引用中的ROI数据
+            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
+                model = self._image_viewer.model
+                if hasattr(model, 'clear_all_rois'):
+                    model.clear_all_rois()
+                if hasattr(model, 'clear_selection'):
+                    model.clear_selection()
+            
+            # 清除当前图像模型中的ROI数据（如果存在）
+            if self._image_model:
+                if hasattr(self._image_model, 'clear_all_rois'):
+                    self._image_model.clear_all_rois()
+                if hasattr(self._image_model, 'clear_selection'):
+                    self._image_model.clear_selection()
+            
+            # 断开旧模型的信号连接
+            if self._image_model:
+                try:
+                    self._image_model.data_changed.disconnect(self._update_status_info)
+                    self._image_model.data_changed.disconnect(self._update_image_display)
+                    self._image_model.slice_changed.disconnect(self._update_slice_info)
+                    self._image_model.slice_changed.disconnect(self._update_image_display)
+                except:
+                    pass  # 忽略断开连接的错误
+            
+            # 清除ImageViewer的模型引用
+            if hasattr(self._image_viewer, 'set_model'):
+                self._image_viewer.set_model(None)
+            
+            # 强制重绘视图
+            self._image_viewer.viewport().update()
+            
+            logger.debug(f"[ViewFrame._clear_tool_data] 工具数据清理完成: {self._view_id}")
+            
+        except Exception as e:
+            logger.error(f"[ViewFrame._clear_tool_data] 清理工具数据失败: {e}", exc_info=True)
     
     # 属性访问器
     @property
@@ -496,7 +550,7 @@ class MultiViewerGrid(QWidget):
         logger.debug(f"[MultiViewerGrid.set_layout] 设置网格布局: {rows}x{cols}")
         
         try:
-            if rows < 1 or rows > 3 or cols < 1 or cols > 3:
+            if rows < 1 or rows > 3 or cols < 1 or cols > 4:
                 logger.error(f"[MultiViewerGrid.set_layout] 无效的布局参数: {rows}x{cols}")
                 return False
             
@@ -525,6 +579,12 @@ class MultiViewerGrid(QWidget):
     def _clear_grid(self) -> None:
         """清空网格"""
         logger.debug("[MultiViewerGrid._clear_grid] 清空网格")
+        
+        # 清理所有视图框架的工具数据
+        for view_frame in self._view_frames.values():
+            if view_frame:
+                # 清理工具数据
+                view_frame._clear_tool_data()
         
         # 移除所有视图框架
         for view_frame in self._view_frames.values():

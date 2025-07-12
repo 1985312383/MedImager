@@ -20,12 +20,15 @@ class ViewPosition(Enum):
     TOP_LEFT = (0, 0)
     TOP_CENTER = (0, 1)
     TOP_RIGHT = (0, 2)
+    TOP_FAR_RIGHT = (0, 3)
     MIDDLE_LEFT = (1, 0)
     MIDDLE_CENTER = (1, 1)
     MIDDLE_RIGHT = (1, 2)
+    MIDDLE_FAR_RIGHT = (1, 3)
     BOTTOM_LEFT = (2, 0)
     BOTTOM_CENTER = (2, 1)
     BOTTOM_RIGHT = (2, 2)
+    BOTTOM_FAR_RIGHT = (2, 3)
 
 
 @dataclass
@@ -272,6 +275,12 @@ class MultiSeriesManager(QObject):
             old_binding.series_id = series_id
             self._series_to_views[series_id].add(view_id)
             
+            # 清理序列模型中的ROI数据，确保每次绑定都是干净的状态
+            series_model = self._series_models.get(series_id)
+            if series_model and hasattr(series_model, 'clear_all_rois'):
+                series_model.clear_all_rois()
+                logger.debug(f"[MultiSeriesManager.bind_series_to_view] 清理序列ROI数据: {series_id}")
+            
             logger.info(f"[MultiSeriesManager.bind_series_to_view] 绑定成功: "
                        f"view_id={view_id}, series_id={series_id}")
             self.binding_changed.emit(view_id, series_id)
@@ -332,7 +341,7 @@ class MultiSeriesManager(QObject):
         logger.debug(f"[MultiSeriesManager.set_layout] 开始设置布局: rows={rows}, cols={cols}")
         
         try:
-            if rows < 1 or rows > 3 or cols < 1 or cols > 3:
+            if rows < 1 or rows > 3 or cols < 1 or cols > 4:
                 logger.error(f"[MultiSeriesManager.set_layout] 无效的布局参数: rows={rows}, cols={cols}")
                 return False
             

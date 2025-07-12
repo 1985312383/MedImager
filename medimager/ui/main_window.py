@@ -35,6 +35,7 @@ from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
 from medimager.ui.tools.measurement_tool import MeasurementTool
 from medimager.ui.main_toolbar import create_main_toolbar
+from medimager.ui.widgets.layout_grid_selector import LayoutSelectorButton
 
 logger = get_logger(__name__)
 
@@ -274,31 +275,6 @@ class MainWindow(QMainWindow):
         # 查看菜单
         view_menu = menubar.addMenu(self.tr("查看(&V)"))
         
-        # 布局子菜单
-        layout_menu = view_menu.addMenu(self.tr("视图布局"))
-        
-        layout_actions = [
-            ("1×1", (1, 1)),
-            ("1×2", (1, 2)),
-            ("2×1", (2, 1)),
-            ("2×2", (2, 2)),
-            ("2×3", (2, 3)),
-            ("3×2", (3, 2)),
-            ("3×3", (3, 3))
-        ]
-        
-        self._layout_action_group = QActionGroup(self)
-        for layout_name, (rows, cols) in layout_actions:
-            action = QAction(layout_name, self)
-            action.setCheckable(True)
-            if rows == 1 and cols == 1:
-                action.setChecked(True)
-            action.triggered.connect(lambda checked, r=rows, c=cols: self._set_layout(r, c))
-            self._layout_action_group.addAction(action)
-            layout_menu.addAction(action)
-        
-        view_menu.addSeparator()
-        
         # 显示/隐藏面板
         self.toggle_series_panel_action = QAction(self.tr("显示/隐藏序列面板"), self)
         self.toggle_series_panel_action.setShortcut("F1")
@@ -409,14 +385,10 @@ class MainWindow(QMainWindow):
         multiview_toolbar = QToolBar(self.tr("多视图"), self)
         multiview_toolbar.setObjectName("MultiViewToolBar")
         
-        # 布局选择器
-        layout_label = QLabel(self.tr("布局:"))
-        multiview_toolbar.addWidget(layout_label)
-        
-        self._layout_combo = QComboBox()
-        self._layout_combo.addItems(["1×1", "1×2", "2×1", "2×2", "2×3", "3×2", "3×3"])
-        self._layout_combo.currentTextChanged.connect(self._on_layout_combo_changed)
-        multiview_toolbar.addWidget(self._layout_combo)
+        # 布局选择器按钮
+        self._layout_selector_button = LayoutSelectorButton(self)
+        self._layout_selector_button.layout_selected.connect(self._set_layout)
+        multiview_toolbar.addWidget(self._layout_selector_button)
         
         multiview_toolbar.addSeparator()
         
@@ -577,27 +549,16 @@ class MainWindow(QMainWindow):
         if success:
             logger.info(f"[MainWindow._set_layout] 布局设置成功: {rows}×{cols}")
             
-            # 更新布局选择器
-            layout_text = f"{rows}×{cols}"
-            index = self._layout_combo.findText(layout_text)
-            if index >= 0:
-                self._layout_combo.setCurrentIndex(index)
+            # 更新布局选择器按钮显示
+            self._layout_selector_button.set_current_layout(rows, cols)
         else:
             logger.error(f"[MainWindow._set_layout] 布局设置失败: {rows}×{cols}")
     
     def _set_binding_strategy(self, strategy: BindingStrategy) -> None:
         """设置绑定策略"""
         logger.debug(f"[MainWindow._set_binding_strategy] 设置绑定策略: {strategy}")
-        
         self.binding_manager.set_binding_strategy(strategy)
         logger.info(f"[MainWindow._set_binding_strategy] 绑定策略设置完成: {strategy}")
-    
-    def _on_layout_combo_changed(self) -> None:
-        """处理布局组合框变更"""
-        layout_text = self._layout_combo.currentText()
-        if "×" in layout_text:
-            rows, cols = map(int, layout_text.split("×"))
-            self._set_layout(rows, cols)
     
     def _auto_assign_all_series(self) -> None:
         """自动分配所有序列"""

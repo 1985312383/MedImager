@@ -219,6 +219,7 @@ class ImageViewer(QGraphicsView):
             
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """重写鼠标按下事件，委托给当前工具或处理测量线拖拽"""
+        # 先让工具处理事件
         if self.current_tool:
             self.current_tool.mouse_press_event(event)
         else:
@@ -231,6 +232,22 @@ class ImageViewer(QGraphicsView):
         
         if (not self.current_tool or not is_measurement_tool) and self.measurement_start_point and self.measurement_end_point:
             self._check_measurement_line_drag(event)
+        
+        # 处理视图选中 - 转发给父ViewFrame
+        if event.button() == Qt.LeftButton:
+            parent = self.parent()
+            if parent and hasattr(parent, 'mousePressEvent'):
+                # 创建一个新的事件，坐标转换到父组件
+                parent_pos = self.mapToParent(event.pos())
+                parent_event = QMouseEvent(
+                    event.type(),
+                    parent_pos,
+                    event.globalPosition(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers()
+                )
+                parent.mousePressEvent(parent_event)
             
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """重写鼠标移动事件，委托给当前工具或处理测量线拖拽"""

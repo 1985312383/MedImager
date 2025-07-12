@@ -68,6 +68,7 @@ class ImageDataModel(QObject):
         self.window_width = 400
         self.window_level = 40
         self.rois.clear()
+        self.selected_indices.clear()  # 确保清除ROI选择状态
         
         self.data_changed.emit()
         
@@ -376,6 +377,13 @@ class ImageDataModel(QObject):
             if 0 <= last_selected_index < len(self.rois):
                 return self.rois[last_selected_index]
         return None
+    
+    def clear_all_rois(self) -> None:
+        """清除所有ROI数据"""
+        self.logger.debug("清除所有ROI数据")
+        self.rois.clear()
+        self.selected_indices.clear()
+        self.data_changed.emit()
 
     def _sort_dicom_slices(self, dicom_datasets: List[pydicom.FileDataset]) -> List[pydicom.FileDataset]:
         """按切片位置排序DICOM数据
