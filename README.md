@@ -40,14 +40,19 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
     - [x] DICOM tag viewer.
 - [x] **Image Display:**
     - [x] Smooth pan and zoom 2D viewer.
-    - [ ] Multi-viewport for image comparison.
-    - [ ] Display patient info and image overlays (scale, orientation marker).
+    - [x] Multi-viewport for image comparison.
+    - [x] Display patient info and image overlays (scale, orientation marker).
 - [x] **Image Interaction Tools:**
     - [x] **Windowing:** Interactive adjustment of HU window width/level (WW/WL).
     - [x] **Measurement Tools:**
         - [x] Ruler tool for distance measurement.
         - [x] Ellipse/rectangle ROI tools.
     - [x] **ROI Analysis:** Calculate statistics within ROI (mean, std, area, max/min HU).
+- [x] **User Interface:**
+    - [x] Modern multilingual interface (Chinese/English).
+    - [x] Customizable theme system (light/dark themes).
+    - [x] Complete settings system with tool appearance customization.
+    - [x] Dockable panel layout.
 
 ### V2.0 - Advanced Features
 - [ ] **Multi-Planar Reconstruction (MPR):** View axial, sagittal, and coronal planes from 3D volume data.
