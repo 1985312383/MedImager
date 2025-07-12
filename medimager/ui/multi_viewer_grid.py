@@ -71,6 +71,10 @@ class ViewFrame(QFrame):
         self._image_viewer = ImageViewer(self)
         self._main_layout.addWidget(self._image_viewer, 1)
         
+        # 连接图像查看器的信号以显示坐标和像素值
+        self._image_viewer.pixel_value_changed.connect(self._update_pixel_info)
+        self._image_viewer.cursor_left_image.connect(self._clear_pixel_info)
+        
         # 状态栏
         self._status_bar = self._create_status_bar()
         self._main_layout.addWidget(self._status_bar)
@@ -122,6 +126,16 @@ class ViewFrame(QFrame):
         layout.addWidget(self._slice_label)
         
         layout.addStretch()
+        
+        # 坐标信息
+        self._coordinate_label = QLabel("")
+        self._coordinate_label.setObjectName("coordinateLabel")
+        layout.addWidget(self._coordinate_label)
+        
+        # 像素值信息
+        self._pixel_value_label = QLabel("")
+        self._pixel_value_label.setObjectName("pixelValueLabel")
+        layout.addWidget(self._pixel_value_label)
         
         # 窗宽窗位信息
         self._wl_label = QLabel("")
@@ -200,15 +214,21 @@ class ViewFrame(QFrame):
             self._series_label.setText(series_info)
             
             # 绑定图像数据
-            self._image_viewer.set_image_data_model(image_model)
+            self._image_viewer.set_model(image_model)
             
-            # 连接信号以更新状态信息
+            # 连接信号以更新状态信息和图像显示
             image_model.data_changed.connect(self._update_status_info)
+            image_model.data_changed.connect(self._update_image_display)
             image_model.slice_changed.connect(self._update_slice_info)
+            image_model.slice_changed.connect(self._update_image_display)
             
-            # 初始化状态显示
+            # 初始化状态显示和图像显示
             self._update_status_info()
             self._update_slice_info()
+            self._update_image_display()
+            
+            # 首次绑定时自适应窗格大小
+            self._image_viewer.fit_to_window()
             
             logger.info(f"[ViewFrame.bind_series] 序列绑定成功: {self._view_id} -> {series_id}")
             
@@ -228,12 +248,14 @@ class ViewFrame(QFrame):
                 self._series_info = None
                 
                 # 清除图像数据
-                self._image_viewer.clear_image_data()
+                self._image_viewer.display_qimage(None)
                 
                 # 更新UI
                 self._series_label.setText(self.tr("无序列"))
                 self._slice_label.setText("")
                 self._wl_label.setText("")
+                self._coordinate_label.setText("")
+                self._pixel_value_label.setText("")
                 
                 logger.info(f"[ViewFrame.unbind_series] 序列解绑成功: {self._view_id} <- {old_series_id}")
             
@@ -243,8 +265,8 @@ class ViewFrame(QFrame):
     def _update_status_info(self) -> None:
         """更新状态信息"""
         try:
-            if hasattr(self._image_viewer, '_image_data_model') and self._image_viewer._image_data_model:
-                model = self._image_viewer._image_data_model
+            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
+                model = self._image_viewer.model
                 ww = model.window_width
                 wl = model.window_level
                 self._wl_label.setText(f"W:{ww} L:{wl}")
@@ -254,13 +276,61 @@ class ViewFrame(QFrame):
     def _update_slice_info(self) -> None:
         """更新切片信息"""
         try:
-            if hasattr(self._image_viewer, '_image_data_model') and self._image_viewer._image_data_model:
-                model = self._image_viewer._image_data_model
+            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
+                model = self._image_viewer.model
                 current = model.current_slice_index + 1
                 total = model.slice_count
                 self._slice_label.setText(f"{current}/{total}")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_slice_info] 更新切片信息失败: {e}")
+    
+    def _update_image_display(self) -> None:
+        """更新图像显示"""
+        try:
+            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
+                model = self._image_viewer.model
+                
+                # 获取当前切片数据
+                original_slice = model.get_current_slice_data()
+                
+                if original_slice is not None:
+                    # 应用窗宽窗位设置
+                    display_slice = model.apply_window_level(original_slice)
+                    
+                    # 转换为QImage
+                    from PySide6.QtGui import QImage
+                    height, width = display_slice.shape
+                    bytes_per_line = width
+                    
+                    # 创建QImage
+                    q_image = QImage(display_slice.copy().data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+                    
+                    # 显示图像
+                    self._image_viewer.display_qimage(q_image)
+                    
+                    logger.debug(f"[ViewFrame._update_image_display] 图像显示更新完成: {self._view_id}")
+                else:
+                    # 清空显示
+                    self._image_viewer.display_qimage(None)
+                    
+        except Exception as e:
+            logger.error(f"[ViewFrame._update_image_display] 更新图像显示失败: {e}", exc_info=True)
+    
+    def _update_pixel_info(self, x: int, y: int, value: float) -> None:
+        """更新像素信息显示"""
+        try:
+            self._coordinate_label.setText(f"({x}, {y})")
+            self._pixel_value_label.setText(f"值: {value:.0f}")
+        except Exception as e:
+            logger.debug(f"[ViewFrame._update_pixel_info] 更新像素信息失败: {e}")
+    
+    def _clear_pixel_info(self) -> None:
+        """清除像素信息显示"""
+        try:
+            self._coordinate_label.setText("")
+            self._pixel_value_label.setText("")
+        except Exception as e:
+            logger.debug(f"[ViewFrame._clear_pixel_info] 清除像素信息失败: {e}")
     
     # 属性访问器
     @property
@@ -498,6 +568,9 @@ class MultiViewerGrid(QWidget):
             self._current_layout = layout
             self._clear_grid()
             self._create_view_frames(rows, cols)
+            
+            # 布局变更后，为所有有绑定序列的视图自适应窗格大小
+            self._fit_all_bound_views_to_window()
     
     def _on_binding_changed(self, view_id: str, series_id: str) -> None:
         """处理绑定变更事件"""
@@ -554,4 +627,17 @@ class MultiViewerGrid(QWidget):
         for view_frame in self._view_frames.values():
             if view_frame.is_active:
                 return view_frame
-        return None 
+        return None
+    
+    def _fit_all_bound_views_to_window(self) -> None:
+        """为所有绑定了序列的视图自适应窗格大小"""
+        logger.debug("[MultiViewerGrid._fit_all_bound_views_to_window] 为所有绑定视图自适应窗格大小")
+        
+        try:
+            for view_frame in self._view_frames.values():
+                if view_frame and view_frame.series_id and view_frame.image_viewer:
+                    view_frame.image_viewer.fit_to_window()
+                    logger.debug(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应完成: {view_frame.view_id}")
+                    
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应失败: {e}", exc_info=True) 

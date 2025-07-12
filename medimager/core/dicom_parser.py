@@ -201,3 +201,82 @@ class DicomParser(QObject):
             width = width[0]
             
         return float(center), float(width) 
+    
+    def _group_files_by_series(self, file_paths: List[str]) -> Dict[str, List[str]]:
+        """将DICOM文件按序列分组
+        
+        Args:
+            file_paths: DICOM文件路径列表
+            
+        Returns:
+            Dict[str, List[str]]: 序列UID到文件路径列表的映射
+        """
+        self.logger.debug(f"[DicomParser._group_files_by_series] 开始分组 {len(file_paths)} 个文件")
+        
+        series_groups = {}
+        
+        for file_path in file_paths:
+            try:
+                # 只读取元数据，不读取像素数据以提高性能
+                ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+                
+                # 获取序列实例UID，这是标准的序列标识符
+                series_uid = getattr(ds, 'SeriesInstanceUID', 'Unknown')
+                
+                if series_uid not in series_groups:
+                    series_groups[series_uid] = []
+                    
+                series_groups[series_uid].append(file_path)
+                
+                self.logger.debug(f"[DicomParser._group_files_by_series] 文件 {os.path.basename(file_path)} 分组到序列 {series_uid}")
+                
+            except Exception as e:
+                self.logger.warning(f"[DicomParser._group_files_by_series] 无法读取文件 {file_path}: {e}")
+                continue
+        
+        self.logger.info(f"[DicomParser._group_files_by_series] 分组完成: 发现 {len(series_groups)} 个序列，包含 {sum(len(files) for files in series_groups.values())} 个文件")
+        
+        return series_groups
+    
+    def get_series_info(self, file_path: str) -> Dict[str, Any]:
+        """获取单个DICOM文件的序列信息
+        
+        Args:
+            file_path: DICOM文件路径
+            
+        Returns:
+            Dict[str, Any]: 包含序列信息的字典
+        """
+        try:
+            ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+            
+            info = {
+                'series_instance_uid': getattr(ds, 'SeriesInstanceUID', 'Unknown'),
+                'series_number': getattr(ds, 'SeriesNumber', 'Unknown'),
+                'series_description': getattr(ds, 'SeriesDescription', 'Unknown'),
+                'modality': getattr(ds, 'Modality', 'Unknown'),
+                'patient_name': getattr(ds, 'PatientName', 'Unknown'),
+                'patient_id': getattr(ds, 'PatientID', 'Unknown'),
+                'study_instance_uid': getattr(ds, 'StudyInstanceUID', 'Unknown'),
+                'study_description': getattr(ds, 'StudyDescription', 'Unknown'),
+                'study_date': getattr(ds, 'StudyDate', 'Unknown'),
+                'acquisition_date': getattr(ds, 'AcquisitionDate', 'Unknown'),
+                'slice_thickness': getattr(ds, 'SliceThickness', 'Unknown'),
+                'pixel_spacing': getattr(ds, 'PixelSpacing', 'Unknown'),
+                'rows': getattr(ds, 'Rows', 'Unknown'),
+                'columns': getattr(ds, 'Columns', 'Unknown'),
+            }
+            
+            # 转换一些字段为字符串格式以便显示
+            if hasattr(ds, 'PatientName'):
+                info['patient_name'] = str(ds.PatientName)
+            if hasattr(ds, 'PixelSpacing') and ds.PixelSpacing:
+                info['pixel_spacing'] = f"{ds.PixelSpacing[0]:.2f} x {ds.PixelSpacing[1]:.2f} mm"
+            if hasattr(ds, 'SliceThickness'):
+                info['slice_thickness'] = f"{ds.SliceThickness} mm"
+                
+            return info
+            
+        except Exception as e:
+            self.logger.error(f"[DicomParser.get_series_info] 无法读取文件信息 {file_path}: {e}")
+            return {} 

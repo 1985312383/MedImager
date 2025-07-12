@@ -4,7 +4,7 @@ fill_color = "#FFFF0080"     # Semi-transparent yellow
 selected_color = "#FF0000"   # Red
 anchor_color = "#FF0000"     # Red
 border_width = 2
-anchor_size = 8
+anchor_size = 8 
 
 # 信息板设置
 info_bg_color = "#00000080"    # Semi-transparent black

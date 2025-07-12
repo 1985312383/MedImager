@@ -337,7 +337,9 @@ class ImageViewer(QGraphicsView):
             self.cursor_left_image.emit()
             self.magnifier.hide()
             return
+        
         self.magnifier.show()
+        
         # 更新放大镜
         source_qimage = pixmap.toImage()
         # 定义放大镜源区域大小, 必须是偶数
@@ -355,20 +357,22 @@ class ImageViewer(QGraphicsView):
         # 如果源区域有效则更新放大镜
         if not source_rect.isEmpty() and source_rect.width() > 0 and source_rect.height() > 0:
             self.magnifier.update_magnifier(source_qimage, source_rect)
+        
         # 更新像素值
-        if self.model is None:
-            return
         x = int(scene_pos.x())
         y = int(scene_pos.y())
-        # 检查坐标是否在图像范围内
-        if self.model and self.model.pixel_array is not None:
+        
+        # 检查坐标是否在图像范围内并且模型有效
+        if self.model and self.model.has_image():
             shape = self.model.get_image_shape()
-            if 0 <= x < shape[2] and 0 <= y < shape[1]:
+            if shape and 0 <= x < shape[2] and 0 <= y < shape[1]:
                 # 获取像素值
                 pixel_value = self.model.get_pixel_value(x, y)
                 if pixel_value is not None:
+                    # 发出像素值变化信号
                     self.pixel_value_changed.emit(x, y, pixel_value)
                     return
+        
         # 如果没有有效的像素值，则清除状态
         self.cursor_left_image.emit()
 
@@ -441,7 +445,7 @@ class ImageViewer(QGraphicsView):
             
             # 使用统一的主题设置读取函数
             theme_data = get_theme_settings('measurement')
-            
+        
             line_color = theme_data.get('line_color', "#00FF00")
             anchor_color = theme_data.get('anchor_color', "#00FF00")
             text_color = theme_data.get('text_color', "#FFFFFF")

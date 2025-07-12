@@ -1,22 +1,29 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-MedImager 主程序窗口
-包含主窗口布局、菜单栏和工具栏
+主窗口模块
+
+集成多序列管理器、多视图网格和序列面板的主窗口实现。
+支持多序列加载、多视图布局和序列绑定管理。
 """
+
+import os
+import uuid
 import numpy as np
+from pathlib import Path
+from typing import Optional, List, Tuple, Dict
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
-    QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog
+    QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
+    QButtonGroup, QPushButton, QComboBox, QProgressBar
 )
-from PySide6.QtCore import Qt, QDir
-from PySide6.QtGui import QAction, QImage, QKeySequence, QIcon, QActionGroup
-from typing import Optional, List, Tuple
-import os
-from pathlib import Path
+from PySide6.QtCore import Qt, QDir, QThread, QTimer
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QActionGroup
 
-from medimager.ui.image_viewer import ImageViewer
+from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
+from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.dicom_parser import DicomParser
+from medimager.ui.multi_viewer_grid import MultiViewerGrid
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
 from medimager.ui.dialogs.custom_wl_dialog import CustomWLDialog
@@ -26,23 +33,64 @@ from medimager.utils.settings import SettingsManager
 from medimager.utils.theme_manager import ThemeManager
 from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
+from medimager.ui.tools.measurement_tool import MeasurementTool
 from medimager.ui.main_toolbar import create_main_toolbar
+
+logger = get_logger(__name__)
+
+
+class SeriesLoadingThread(QThread):
+    """序列加载线程
+    
+    在后台线程中加载DICOM序列，避免阻塞UI。
+    """
+    
+    def __init__(self, file_paths: List[str], series_info: SeriesInfo, parent=None):
+        super().__init__(parent)
+        self.file_paths = file_paths
+        self.series_info = series_info
+        self.image_model: Optional[ImageDataModel] = None
+        self.success = False
+        
+    def run(self) -> None:
+        """运行加载任务"""
+        logger.debug(f"[SeriesLoadingThread.run] 开始加载序列: {self.series_info.series_id}")
+        
+        try:
+            # 创建图像数据模型
+            self.image_model = ImageDataModel()
+            
+            # 加载DICOM序列
+            success = self.image_model.load_dicom_series(self.file_paths)
+            
+            if success:
+                self.success = True
+                logger.info(f"[SeriesLoadingThread.run] 序列加载成功: {self.series_info.series_id}")
+            else:
+                logger.error(f"[SeriesLoadingThread.run] 序列加载失败: {self.series_info.series_id}")
+                
+        except Exception as e:
+            logger.error(f"[SeriesLoadingThread.run] 序列加载异常: {e}", exc_info=True)
+            self.success = False
 
 
 class MainWindow(QMainWindow):
-    """应用程序主窗口"""
+    """主窗口
+    
+    支持多序列管理、多视图布局和高级绑定功能的新主窗口。
+    """
     
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """初始化主窗口"""
         super().__init__(parent)
-        self.logger = get_logger(__name__)
+        logger.debug("[MainWindow.__init__] 开始初始化主窗口")
         
         # 初始化设置管理器和主题管理器
         self.settings_manager = SettingsManager()
         self.theme_manager = ThemeManager(self.settings_manager, self)
         
-        # 初始化数据模型
-        self.image_data_model = ImageDataModel()
+        # 初始化核心组件
+        self._init_core_components()
         
         # 初始化UI
         self._init_ui()
@@ -56,72 +104,126 @@ class MainWindow(QMainWindow):
         # 根据初始状态更新UI
         self._update_ui_state()
         
+        # 序列加载状态
+        self._loading_threads: Dict[str, SeriesLoadingThread] = {}
+        
+        logger.info("[MainWindow.__init__] 主窗口初始化完成")
+    
+    def _init_core_components(self) -> None:
+        """初始化核心组件"""
+        logger.debug("[MainWindow._init_core_components] 初始化核心组件")
+        
+        # 多序列管理器
+        self.series_manager = MultiSeriesManager(self)
+        
+        # 序列视图绑定管理器
+        self.binding_manager = SeriesViewBindingManager(self.series_manager, self)
+        
+        # 设置默认绑定策略
+        self.binding_manager.set_binding_strategy(BindingStrategy.AUTO_ASSIGN)
+        
+        # 初始化默认工具
+        self._init_default_tool()
+        
+        logger.debug("[MainWindow._init_core_components] 核心组件初始化完成")
+    
     def _init_ui(self) -> None:
         """初始化用户界面"""
-        self.setGeometry(100, 100, 1600, 900)
-        self.setWindowTitle(self.tr("MedImager - DICOM 查看器与图像分析工具"))
-
+        logger.debug("[MainWindow._init_ui] 初始化主窗口UI")
+        
+        self.setGeometry(100, 100, 1800, 1000)
+        self.setWindowTitle(self.tr("MedImager Pro - 多序列DICOM查看器与分析工具"))
+        
+        # 中央组件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
+        
+        # 主分割器
         main_splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(main_splitter)
-
+        
         # 左侧序列面板
-        self.series_panel = SeriesPanel()
-        self.series_panel.setMinimumWidth(150)
+        self.series_panel = SeriesPanel(
+            self.series_manager,
+            self.binding_manager,
+            self
+        )
+        self.series_panel.setMinimumWidth(300)
+        self.series_panel.setMaximumWidth(500)
         main_splitter.addWidget(self.series_panel)
-
-        # 中央图像查看器
-        self.image_viewer = ImageViewer()
-        main_splitter.addWidget(self.image_viewer)
-
+        
+        # 中央多视图网格
+        self.multi_viewer_grid = MultiViewerGrid(self.series_manager, self)
+        main_splitter.addWidget(self.multi_viewer_grid)
+        
         # 右侧信息面板
         self.dicom_tag_panel = DicomTagPanel()
-        self.dicom_tag_panel.setMinimumWidth(200)
+        self.dicom_tag_panel.setMinimumWidth(250)
+        self.dicom_tag_panel.setMaximumWidth(400)
         main_splitter.addWidget(self.dicom_tag_panel)
         
         # 默认隐藏右侧面板
         self.dicom_tag_panel.hide()
         
-        # 允许子控件被折叠到零尺寸
+        # 设置分割器属性
         main_splitter.setChildrenCollapsible(True)
-
-        # 使用拉伸因子来设置自适应比例
-        main_splitter.setStretchFactor(1, 1) # 让中央图像查看器占据主要空间
+        main_splitter.setStretchFactor(0, 0)  # 序列面板固定宽度
+        main_splitter.setStretchFactor(1, 1)  # 视图网格占主要空间
+        main_splitter.setStretchFactor(2, 0)  # 信息面板固定宽度
         
+        # 初始化菜单、工具栏和状态栏
         self._init_menus()
         self._init_toolbars()
         self._init_statusbar()
-
+        
+        logger.debug("[MainWindow._init_ui] 主窗口UI初始化完成")
+    
     def _connect_signals(self) -> None:
         """连接所有信号和槽"""
-        # 将模型与视图关联
-        self.image_viewer.set_model(self.image_data_model)
+        logger.debug("[MainWindow._connect_signals] 连接主窗口信号槽")
         
-        # 模型信号
-        self.image_data_model.image_loaded.connect(self._on_image_loaded)
-        self.image_data_model.image_loaded.connect(self._update_ui_state)
-        self.image_data_model.data_changed.connect(self._update_viewer)
-        self.image_data_model.data_changed.connect(self._update_ui_state)
-        self.image_data_model.slice_changed.connect(self._on_slice_changed)
-        self.image_data_model.roi_added.connect(self.image_viewer.scene.update) # ROI 添加后更新场景
+        # 核心组件信号
+        self.series_manager.series_added.connect(self._on_series_added)
+        self.series_manager.series_loaded.connect(self._on_series_loaded)
+        self.series_manager.binding_changed.connect(self._on_binding_changed)
+        self.series_manager.layout_changed.connect(self._on_layout_changed)
         
-        # 视图信号
-        self.image_viewer.pixel_value_changed.connect(self._update_status_pixel_value)
-        self.image_viewer.zoom_changed.connect(self._update_status_zoom)
-        self.image_viewer.cursor_left_image.connect(self._clear_pixel_value_status)
-
-        # 面板信号
-        self.series_panel.slice_selected.connect(self.image_data_model.set_current_slice)
-
-    def _init_menus(self):
+        # 绑定管理器信号
+        self.binding_manager.auto_assignment_completed.connect(self._on_auto_assignment_completed)
+        
+        # 序列面板信号
+        self.series_panel.series_selected.connect(self._on_series_selected)
+        self.series_panel.binding_requested.connect(self._on_binding_requested)
+        
+        # 监听活动视图变化以连接切片信号
+        self.series_manager.active_view_changed.connect(self._on_view_activated)
+        
+        # 多视图网格信号
+        self.multi_viewer_grid.view_activated.connect(self._on_view_activated)
+        self.multi_viewer_grid.layout_changed.connect(self._on_grid_layout_changed)
+        
+        # 连接已加载序列的切片变化信号（合并到现有方法中）
+        
+        logger.debug("[MainWindow._connect_signals] 主窗口信号槽连接完成")
+    
+    def _init_menus(self) -> None:
         """初始化菜单栏"""
+        logger.debug("[MainWindow._init_menus] 初始化主窗口菜单")
+        
         menubar = self.menuBar()
         
         # 文件菜单
         file_menu = menubar.addMenu(self.tr("文件(&F)"))
+        
+        # 打开多个DICOM文件夹
+        open_multiple_folders_action = QAction(self.tr("打开多个DICOM文件夹(&M)"), self)
+        open_multiple_folders_action.setShortcut("Ctrl+Shift+O")
+        open_multiple_folders_action.setStatusTip(self.tr("同时打开多个包含DICOM序列的文件夹"))
+        open_multiple_folders_action.triggered.connect(self._open_multiple_dicom_folders)
+        file_menu.addAction(open_multiple_folders_action)
         
         # 打开DICOM文件夹
         open_folder_action = QAction(self.tr("打开DICOM文件夹(&D)"), self)
@@ -133,9 +235,18 @@ class MainWindow(QMainWindow):
         # 打开图像文件
         open_image_action = QAction(self.tr("打开图像文件(&I)"), self)
         open_image_action.setShortcut("Ctrl+O")
-        open_image_action.setStatusTip(self.tr("打开单张图像文件 (DICOM, PNG, JPG, BMP, NPY)"))
+        open_image_action.setStatusTip(self.tr("打开单张图像文件"))
         open_image_action.triggered.connect(self._open_image_file)
         file_menu.addAction(open_image_action)
+        
+        file_menu.addSeparator()
+        
+        # 导入测试数据
+        test_menu = file_menu.addMenu(self.tr("测试数据"))
+        
+        load_test_series_action = QAction(self.tr("加载测试序列"), self)
+        load_test_series_action.triggered.connect(self._load_test_series)
+        test_menu.addAction(load_test_series_action)
         
         file_menu.addSeparator()
         
@@ -149,35 +260,88 @@ class MainWindow(QMainWindow):
         # 查看菜单
         view_menu = menubar.addMenu(self.tr("查看(&V)"))
         
-        # 重置视图
-        reset_view_action = QAction(self.tr("重置视图(&R)"), self)
-        reset_view_action.setShortcut("Ctrl+R")
-        reset_view_action.setStatusTip(self.tr("重置图像查看器到默认状态"))
-        view_menu.addAction(reset_view_action)
+        # 布局子菜单
+        layout_menu = view_menu.addMenu(self.tr("视图布局"))
+        
+        layout_actions = [
+            ("1×1", (1, 1)),
+            ("1×2", (1, 2)),
+            ("2×1", (2, 1)),
+            ("2×2", (2, 2)),
+            ("2×3", (2, 3)),
+            ("3×2", (3, 2)),
+            ("3×3", (3, 3))
+        ]
+        
+        self._layout_action_group = QActionGroup(self)
+        for layout_name, (rows, cols) in layout_actions:
+            action = QAction(layout_name, self)
+            action.setCheckable(True)
+            if rows == 1 and cols == 1:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, r=rows, c=cols: self._set_layout(r, c))
+            self._layout_action_group.addAction(action)
+            layout_menu.addAction(action)
         
         view_menu.addSeparator()
         
         # 显示/隐藏面板
-        self.toggle_left_panel_action = QAction(self.tr("显示/隐藏序列面板"), self)
-        self.toggle_left_panel_action.setShortcut("F1")
-        self.toggle_left_panel_action.setCheckable(True)
-        self.toggle_left_panel_action.setChecked(True)
-        self.toggle_left_panel_action.toggled.connect(self._toggle_left_panel)
-        view_menu.addAction(self.toggle_left_panel_action)
+        self.toggle_series_panel_action = QAction(self.tr("显示/隐藏序列面板"), self)
+        self.toggle_series_panel_action.setShortcut("F1")
+        self.toggle_series_panel_action.setCheckable(True)
+        self.toggle_series_panel_action.setChecked(True)
+        self.toggle_series_panel_action.toggled.connect(self._toggle_series_panel)
+        view_menu.addAction(self.toggle_series_panel_action)
         
-        self.toggle_right_panel_action = QAction(self.tr("显示/隐藏信息面板"), self)
-        self.toggle_right_panel_action.setShortcut("F2")
-        self.toggle_right_panel_action.setCheckable(True)
-        self.toggle_right_panel_action.setChecked(False)
-        self.toggle_right_panel_action.toggled.connect(self._toggle_right_panel)
-        view_menu.addAction(self.toggle_right_panel_action)
+        self.toggle_info_panel_action = QAction(self.tr("显示/隐藏信息面板"), self)
+        self.toggle_info_panel_action.setShortcut("F2")
+        self.toggle_info_panel_action.setCheckable(True)
+        self.toggle_info_panel_action.setChecked(False)
+        self.toggle_info_panel_action.toggled.connect(self._toggle_info_panel)
+        view_menu.addAction(self.toggle_info_panel_action)
+        
+        # 序列菜单
+        series_menu = menubar.addMenu(self.tr("序列(&S)"))
+        
+        # 绑定策略
+        binding_strategy_menu = series_menu.addMenu(self.tr("绑定策略"))
+        
+        self._binding_strategy_group = QActionGroup(self)
+        strategy_actions = [
+            (self.tr("自动分配"), BindingStrategy.AUTO_ASSIGN),
+            (self.tr("保持现有"), BindingStrategy.PRESERVE_EXISTING),
+            (self.tr("替换最旧"), BindingStrategy.REPLACE_OLDEST),
+            (self.tr("询问用户"), BindingStrategy.ASK_USER)
+        ]
+        
+        for strategy_name, strategy in strategy_actions:
+            action = QAction(strategy_name, self)
+            action.setCheckable(True)
+            if strategy == BindingStrategy.AUTO_ASSIGN:
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, s=strategy: self._set_binding_strategy(s))
+            self._binding_strategy_group.addAction(action)
+            binding_strategy_menu.addAction(action)
+        
+        series_menu.addSeparator()
+        
+        # 自动分配序列
+        auto_assign_action = QAction(self.tr("自动分配所有序列"), self)
+        auto_assign_action.setShortcut("Ctrl+A")
+        auto_assign_action.triggered.connect(self._auto_assign_all_series)
+        series_menu.addAction(auto_assign_action)
+        
+        # 清除所有绑定
+        clear_bindings_action = QAction(self.tr("清除所有绑定"), self)
+        clear_bindings_action.triggered.connect(self._clear_all_bindings)
+        series_menu.addAction(clear_bindings_action)
         
         # 窗位菜单
         wl_menu = menubar.addMenu(self.tr("窗位(&W)"))
         
-        # 定义预设窗位 (描述, (窗宽, 窗位))
+        # 预设窗位
         presets: List[Tuple[str, Tuple[int, int]]] = [
-            (self.tr("自动"), (-1, -1)), # -1 作为自动窗位的标记
+            (self.tr("自动"), (-1, -1)),
             (self.tr("腹部"), (400, 50)),
             (self.tr("脑窗"), (80, 40)),
             (self.tr("骨窗"), (2000, 600)),
@@ -188,611 +352,752 @@ class MainWindow(QMainWindow):
         for name, (width, level) in presets:
             action = QAction(name, self)
             action.setStatusTip(self.tr(f"设置为 {name}: W:{width} L:{level}"))
-            # 使用 lambda 捕获 width 和 level
             action.triggered.connect(
                 lambda checked=False, w=width, l=level: self._set_window_level_preset(w, l)
             )
             wl_menu.addAction(action)
-
+        
         wl_menu.addSeparator()
-
+        
         custom_wl_action = QAction(self.tr("自定义"), self)
         custom_wl_action.setStatusTip(self.tr("手动设置窗宽和窗位"))
         custom_wl_action.triggered.connect(self._open_custom_wl_dialog)
         wl_menu.addAction(custom_wl_action)
-
-        # 测试菜单
-        test_menu = menubar.addMenu(self.tr("测试(&T)"))
         
-        # 加载模型子菜单
-        load_model_menu = test_menu.addMenu(self.tr("加载模型"))
+        # 工具菜单
+        tools_menu = menubar.addMenu(self.tr("工具(&T)"))
         
-        # 加载水模测试
-        load_phantom_action = QAction(self.tr("加载水模"), self)
-        load_phantom_action.setStatusTip(self.tr("加载用于测试的NPY格式水模图像"))
-        load_phantom_action.triggered.connect(self._load_debug_phantom)
-        load_model_menu.addAction(load_phantom_action)
-
-        # 加载Gammex模体
-        load_gammex_action = QAction(self.tr("加载Gammex模体"), self)
-        load_gammex_action.setStatusTip(self.tr("加载用于测试的DICOM格式Gammex模体"))
-        load_gammex_action.triggered.connect(self._load_gammex_phantom)
-        load_model_menu.addAction(load_gammex_action)
-        
-        
-        # 设置菜单
-        settings_menu = menubar.addMenu(self.tr("设置(&S)"))
-        
-        # 首选项
-        preferences_action = QAction(self.tr("首选项(&P)"), self)
-        preferences_action.setShortcut("Ctrl+,")
-        preferences_action.setStatusTip(self.tr("打开设置对话框"))
-        preferences_action.triggered.connect(self._open_settings_dialog)
-        settings_menu.addAction(preferences_action)
+        # 设置
+        settings_action = QAction(self.tr("设置(&S)"), self)
+        settings_action.setShortcut("Ctrl+,")
+        settings_action.setStatusTip(self.tr("打开设置对话框"))
+        settings_action.triggered.connect(self._open_settings_dialog)
+        tools_menu.addAction(settings_action)
         
         # 帮助菜单
         help_menu = menubar.addMenu(self.tr("帮助(&H)"))
         
-        # 关于
-        about_action = QAction(self.tr("关于MedImager(&A)"), self)
-        about_action.setStatusTip(self.tr("显示关于信息"))
+        about_action = QAction(self.tr("关于"), self)
+        about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
         
-    def _init_toolbars(self):
+        logger.debug("[MainWindow._init_menus] 主窗口菜单初始化完成")
+    
+    def _init_toolbars(self) -> None:
         """初始化工具栏"""
-        # 使用新的工具栏创建函数
+        logger.debug("[MainWindow._init_toolbars] 初始化主窗口工具栏")
+        
+        # 主工具栏
         main_toolbar = create_main_toolbar(self)
-        self.addToolBar(Qt.TopToolBarArea, main_toolbar)
+        self.addToolBar(main_toolbar)
         
-        # 初始设置默认工具
-        self.image_viewer.set_tool(DefaultTool(self.image_viewer))
+        # 多视图工具栏
+        multiview_toolbar = QToolBar(self.tr("多视图"), self)
+        multiview_toolbar.setObjectName("MultiViewToolBar")
         
-    def _init_statusbar(self):
+        # 布局选择器
+        layout_label = QLabel(self.tr("布局:"))
+        multiview_toolbar.addWidget(layout_label)
+        
+        self._layout_combo = QComboBox()
+        self._layout_combo.addItems(["1×1", "1×2", "2×1", "2×2", "2×3", "3×2", "3×3"])
+        self._layout_combo.currentTextChanged.connect(self._on_layout_combo_changed)
+        multiview_toolbar.addWidget(self._layout_combo)
+        
+        multiview_toolbar.addSeparator()
+        
+        # 自动分配按钮
+        auto_assign_btn = QPushButton(self.tr("自动分配"))
+        auto_assign_btn.setToolTip(self.tr("自动将序列分配到可用视图"))
+        auto_assign_btn.clicked.connect(self._auto_assign_all_series)
+        multiview_toolbar.addWidget(auto_assign_btn)
+        
+        # 清除绑定按钮
+        clear_bindings_btn = QPushButton(self.tr("清除绑定"))
+        clear_bindings_btn.setToolTip(self.tr("清除所有序列绑定"))
+        clear_bindings_btn.clicked.connect(self._clear_all_bindings)
+        multiview_toolbar.addWidget(clear_bindings_btn)
+        
+        self.addToolBar(multiview_toolbar)
+        
+        logger.debug("[MainWindow._init_toolbars] 主窗口工具栏初始化完成")
+    
+    def _init_default_tool(self) -> None:
+        """初始化默认工具"""
+        logger.debug("[MainWindow._init_default_tool] 初始化默认工具")
+        self.current_tool = DefaultTool(None)  # 稍后会传播到各个视图
+        logger.debug("[MainWindow._init_default_tool] 默认工具初始化完成")
+    
+    def _on_tool_selected(self, tool_name: str) -> None:
+        """处理工具选择"""
+        logger.debug(f"[MainWindow._on_tool_selected] 工具选择: {tool_name}")
+        
+        try:
+            # 创建新工具
+            if tool_name == "default":
+                self.current_tool = DefaultTool(None)
+            elif tool_name == "ellipse_roi":
+                self.current_tool = EllipseROITool(None)
+            elif tool_name == "rectangle_roi":
+                self.current_tool = RectangleROITool(None)
+            elif tool_name == "circle_roi":
+                self.current_tool = CircleROITool(None)
+            elif tool_name == "measurement":
+                self.current_tool = MeasurementTool(None)
+            else:
+                logger.warning(f"[MainWindow._on_tool_selected] 未知工具: {tool_name}")
+                return
+            
+            # 将工具传播到所有活动的ImageViewer
+            self._propagate_tool_to_viewers()
+            
+            logger.info(f"[MainWindow._on_tool_selected] 工具切换完成: {tool_name}")
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._on_tool_selected] 工具切换失败: {e}", exc_info=True)
+    
+    def _propagate_tool_to_viewers(self) -> None:
+        """将当前工具传播到所有ImageViewer"""
+        logger.debug("[MainWindow._propagate_tool_to_viewers] 传播工具到视图")
+        
+        try:
+            # 获取所有视图框架
+            view_frames = self.multi_viewer_grid.get_all_view_frames()
+            
+            for view_id, view_frame in view_frames.items():
+                if view_frame and view_frame.image_viewer:
+                    # 为每个ImageViewer创建独立的工具实例
+                    tool_copy = self._create_tool_copy(view_frame.image_viewer)
+                    if tool_copy:
+                        view_frame.image_viewer.set_tool(tool_copy)
+                        logger.debug(f"[MainWindow._propagate_tool_to_viewers] 工具已传播到视图: {view_id}")
+            
+            logger.debug(f"[MainWindow._propagate_tool_to_viewers] 工具传播完成: 影响了{len(view_frames)}个视图")
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._propagate_tool_to_viewers] 工具传播失败: {e}", exc_info=True)
+    
+    def _create_tool_copy(self, image_viewer) -> Optional:
+        """为指定的ImageViewer创建工具副本"""
+        try:
+            if self.current_tool:
+                tool_class = type(self.current_tool)
+                return tool_class(image_viewer)
+            return None
+        except Exception as e:
+            logger.error(f"[MainWindow._create_tool_copy] 创建工具副本失败: {e}", exc_info=True)
+            return None
+    
+    def _propagate_tool_to_single_viewer(self, view_id: str) -> None:
+        """将当前工具传播到指定的视图"""
+        logger.debug(f"[MainWindow._propagate_tool_to_single_viewer] 传播工具到视图: {view_id}")
+        
+        try:
+            view_frame = self.multi_viewer_grid.get_view_frame(view_id)
+            if view_frame and view_frame.image_viewer:
+                tool_copy = self._create_tool_copy(view_frame.image_viewer)
+                if tool_copy:
+                    view_frame.image_viewer.set_tool(tool_copy)
+                    logger.debug(f"[MainWindow._propagate_tool_to_single_viewer] 工具已传播到视图: {view_id}")
+                    
+        except Exception as e:
+            logger.error(f"[MainWindow._propagate_tool_to_single_viewer] 单个视图工具传播失败: {e}", exc_info=True)
+    
+    def _init_statusbar(self) -> None:
         """初始化状态栏"""
+        logger.debug("[MainWindow._init_statusbar] 初始化主窗口状态栏")
+        
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
-        # 添加状态信息标签
-        self.status_label = QLabel(self.tr("就绪"))
-        self.status_bar.addWidget(self.status_label)
+        # 序列计数标签
+        self.series_count_label = QLabel(self.tr("序列: 0"))
+        self.status_bar.addWidget(self.series_count_label)
         
-        # 添加鼠标位置信息（后续实现）
-        self.pixel_pos_label = QLabel(self.tr("鼠标位置: (0, 0)"))
-        self.status_bar.addPermanentWidget(self.pixel_pos_label)
+        # 视图信息标签
+        self.view_info_label = QLabel(self.tr("布局: 1×1"))
+        self.status_bar.addWidget(self.view_info_label)
         
-        # 添加像素值信息（后续实现）
-        self.pixel_value_label = QLabel(self.tr("像素值: 0.00 HU"))
-        self.status_bar.addPermanentWidget(self.pixel_value_label)
+        # 活动视图标签
+        self.active_view_label = QLabel(self.tr("活动视图: --"))
+        self.status_bar.addWidget(self.active_view_label)
         
-        # 初始时隐藏像素信息
-        self.pixel_pos_label.hide()
-        self.pixel_value_label.hide()
-
-        self.zoom_label = QLabel(self.tr("缩放"))
-        self.status_bar.addPermanentWidget(self.zoom_label)
+        # 加载进度条
+        self.loading_progress = QProgressBar()
+        self.loading_progress.setVisible(False)
+        self.status_bar.addPermanentWidget(self.loading_progress)
         
-        # 添加窗宽窗位信息（后续实现）
-        self.wl_label = QLabel(self.tr("窗宽: 0 L: 0"))
-        self.status_bar.addPermanentWidget(self.wl_label)
+        # 准备状态
+        self.status_bar.showMessage(self.tr("准备就绪"))
         
-    def _toggle_left_panel(self, checked: bool):
-        """切换左侧面板的可见性"""
-        self.series_panel.setVisible(checked)
-
-    def _toggle_right_panel(self, checked: bool):
-        """切换右侧面板的可见性"""
-        self.dicom_tag_panel.setVisible(checked)
-        
+        logger.debug("[MainWindow._init_statusbar] 主窗口状态栏初始化完成")
+    
     def _update_ui_state(self) -> None:
-        """根据程序当前状态（如是否加载图像）更新UI元素（如Action）的状态。"""
-        has_image = self.image_data_model is not None and self.image_data_model.pixel_array is not None
+        """更新UI状态"""
+        series_count = self.series_manager.get_series_count()
+        layout = self.series_manager.get_current_layout()
         
-        # 根据是否有图像来启用/禁用相关的Action
-        # 使用新的工具栏系统，通过tool_actions字典访问工具动作
-        if hasattr(self, 'tool_actions'):
-            for tool_name, action in self.tool_actions.items():
-                if tool_name in ["ellipse_roi", "rectangle_roi", "circle_roi", "measurement"]:
-                    action.setEnabled(has_image)
+        # 更新状态栏
+        self.series_count_label.setText(self.tr(f"序列: {series_count}"))
+        self.view_info_label.setText(self.tr(f"布局: {layout[0]}×{layout[1]}"))
         
-        # 未来可以添加更多Action的状态管理
-        # self.save_action.setEnabled(has_image)
-        # self.analysis_action.setEnabled(has_image)
+        # 更新菜单和工具栏状态
+        has_series = series_count > 0
+        # 可以在这里添加菜单项的启用/禁用逻辑
+    
+    def _toggle_series_panel(self, checked: bool) -> None:
+        """切换序列面板显示状态"""
+        logger.debug(f"[MainWindow._toggle_series_panel] 切换序列面板: {checked}")
+        self.series_panel.setVisible(checked)
+    
+    def _toggle_info_panel(self, checked: bool) -> None:
+        """切换信息面板显示状态"""
+        logger.debug(f"[MainWindow._toggle_info_panel] 切换信息面板: {checked}")
+        self.dicom_tag_panel.setVisible(checked)
+    
+    def _set_layout(self, rows: int, cols: int) -> None:
+        """设置视图布局"""
+        logger.debug(f"[MainWindow._set_layout] 设置布局: {rows}×{cols}")
         
-    def _on_image_loaded(self) -> None:
-        """当新图像加载完成时，更新UI"""
-        self.logger.info("图像加载完成信号已接收，正在更新UI...")
-        self.image_viewer.clear_roi_dependent_state() # 清除旧的ROI悬停和统计框状态
-        self._update_panels_on_load()
-        self._update_viewer()  # 关键：更新图像显示
-        self.image_viewer.fit_to_window()
-        self._update_status_wl()
-        # 强制更新缩放值显示
-        self._update_status_zoom(self.image_viewer.transform().m11())
-
-    def _update_viewer(self) -> None:
-        """当图像数据（如窗宽窗位）变化时，更新所有相关UI元素"""
-        # 1. 从模型获取原始的、未处理的显示切片
-        original_slice = self.image_data_model.get_current_slice_data()
-        
-        if original_slice is not None:
-            # 2. 应用当前的窗宽窗位设置，得到8位的显示数据
-            display_slice = self.image_data_model.apply_window_level(original_slice)
+        success = self.series_manager.set_layout(rows, cols)
+        if success:
+            logger.info(f"[MainWindow._set_layout] 布局设置成功: {rows}×{cols}")
             
-            # 3. 将 numpy 数组转换为 QImage
-            height, width = display_slice.shape
-            bytes_per_line = width
-            
-            # 创建 QImage。注意：必须复制数据，否则当 display_slice 被垃圾回收时，
-            # QImage会指向无效内存，导致崩溃或显示不正确。
-            q_image = QImage(display_slice.copy().data, width, height, bytes_per_line, QImage.Format_Grayscale8)
-            
-            self.image_viewer.display_qimage(q_image)
+            # 更新布局选择器
+            layout_text = f"{rows}×{cols}"
+            index = self._layout_combo.findText(layout_text)
+            if index >= 0:
+                self._layout_combo.setCurrentIndex(index)
         else:
-            self.image_viewer.display_qimage(None) # 清空视图
-            
-        self._update_status_wl()
-
-    def _update_status_pixel_value(self, x: int, y: int, value: float) -> None:
-        """更新状态栏中的像素值信息"""
-        self.pixel_pos_label.setText(self.tr("X: {}, Y: {}").format(x, y))
-        self.pixel_value_label.setText(self.tr("像素值: {:.2f} HU").format(value))
+            logger.error(f"[MainWindow._set_layout] 布局设置失败: {rows}×{cols}")
+    
+    def _set_binding_strategy(self, strategy: BindingStrategy) -> None:
+        """设置绑定策略"""
+        logger.debug(f"[MainWindow._set_binding_strategy] 设置绑定策略: {strategy}")
         
-        # 确保控件可见
-        if not self.pixel_pos_label.isVisible():
-            self.pixel_pos_label.show()
-        if not self.pixel_value_label.isVisible():
-            self.pixel_value_label.show()
-
-    def _update_status_zoom(self, zoom_factor: float) -> None:
-        """更新状态栏中的缩放信息"""
-        self.zoom_label.setText(self.tr("缩放: {:.1%}").format(zoom_factor))
+        self.binding_manager.set_binding_strategy(strategy)
+        logger.info(f"[MainWindow._set_binding_strategy] 绑定策略设置完成: {strategy}")
+    
+    def _on_layout_combo_changed(self) -> None:
+        """处理布局组合框变更"""
+        layout_text = self._layout_combo.currentText()
+        if "×" in layout_text:
+            rows, cols = map(int, layout_text.split("×"))
+            self._set_layout(rows, cols)
+    
+    def _auto_assign_all_series(self) -> None:
+        """自动分配所有序列"""
+        logger.debug("[MainWindow._auto_assign_all_series] 开始自动分配所有序列")
         
-    def _clear_pixel_value_status(self) -> None:
-        """清空状态栏中的像素位置和值信息"""
-        self.pixel_pos_label.hide()
-        self.pixel_value_label.hide()
-
-    def _update_status_wl(self) -> None:
-        """更新状态栏中的窗宽窗位信息"""
-        ww = self.image_data_model.window_width
-        wl = self.image_data_model.window_level
-        self.wl_label.setText(self.tr("W: {} L: {}").format(ww, wl))
-
-    def _on_slice_changed(self, index: int) -> None:
-        """当切片变化时，更新UI"""
-        self.series_panel.set_current_slice(index)
+        assigned_count = self.binding_manager.auto_assign_series_to_views()
         
-        # 更新DICOM标签面板以显示当前切片的元数据
-        if self.image_data_model.is_dicom():
-            current_dicom_file = self.image_data_model.get_dicom_file(index)
-            self.dicom_tag_panel.update_tags(current_dicom_file)
-
-    def _set_window_level_preset(self, width: int, level: int) -> None:
-        """根据预设值设置窗宽窗位"""
-        if self.image_data_model:
-            # -1 是自动窗位的标记
-            if width == -1 and level == -1:
-                self.image_data_model._set_default_window_level()
-            else:
-                self.image_data_model.set_window(width, level)
+        self.status_bar.showMessage(self.tr(f"自动分配完成：分配了 {assigned_count} 个序列"), 3000)
+        logger.info(f"[MainWindow._auto_assign_all_series] 自动分配完成: {assigned_count}个序列")
+    
+    def _clear_all_bindings(self) -> None:
+        """清除所有绑定"""
+        logger.debug("[MainWindow._clear_all_bindings] 清除所有绑定")
         
-    def _update_panels_on_load(self) -> None:
-        """在新图像加载时，更新所有面板的内容"""
-        # 如果是DICOM数据，则更新面板
-        if self.image_data_model.is_dicom():
-            dicom_files = self.image_data_model.dicom_files
+        view_ids = self.series_manager.get_all_view_ids()
+        cleared_count = 0
+        
+        for view_id in view_ids:
+            if self.series_manager.unbind_series_from_view(view_id):
+                cleared_count += 1
+        
+        self.status_bar.showMessage(self.tr(f"清除绑定完成：清除了 {cleared_count} 个绑定"), 3000)
+        logger.info(f"[MainWindow._clear_all_bindings] 清除绑定完成: {cleared_count}个绑定")
+    
+    def _open_multiple_dicom_folders(self) -> None:
+        """打开多个DICOM文件夹"""
+        logger.debug("[MainWindow._open_multiple_dicom_folders] 打开多个DICOM文件夹")
+        
+        # 使用文件对话框选择多个文件夹
+        dialog = QFileDialog()
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            folders = dialog.selectedFiles()
+            logger.debug(f"[MainWindow._open_multiple_dicom_folders] 选择了{len(folders)}个文件夹")
             
-            # 更新序列面板
-            self.series_panel.update_series(dicom_files)
-            
-            # 初始显示第一个切片的标签
-            if dicom_files:
-                self.dicom_tag_panel.update_tags(dicom_files[0])
-            else:
-                self.dicom_tag_panel.clear()
-            
-            # 确保面板可见性正确
-            if self.toggle_left_panel_action.isChecked():
-                self.series_panel.show()
-            if self.toggle_right_panel_action.isChecked():
-                self.dicom_tag_panel.show()
-        else:
-            # 如果不是DICOM，则清空并隐藏
-            self.series_panel.clear()
-            self.dicom_tag_panel.clear()
-            self.series_panel.hide()
-            self.dicom_tag_panel.hide()
-
+            for folder in folders:
+                self._load_dicom_folder_as_series(folder)
+    
     def _open_dicom_folder(self) -> None:
-        """打开包含DICOM文件的文件夹"""
-        folder_path = QFileDialog.getExistingDirectory(
+        """打开DICOM文件夹"""
+        logger.debug("[MainWindow._open_dicom_folder] 打开DICOM文件夹")
+        
+        folder = QFileDialog.getExistingDirectory(
             self,
             self.tr("选择DICOM文件夹"),
-            "",
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+            QDir.homePath()
         )
         
-        if folder_path:
-            try:
-                self.logger.info(f"正在扫描DICOM文件夹: {folder_path}")
+        if folder:
+            self._load_dicom_folder_as_series(folder)
+    
+    def _load_dicom_folder_as_series(self, folder_path: str) -> None:
+        """将DICOM文件夹加载为序列"""
+        logger.debug(f"[MainWindow._load_dicom_folder_as_series] 加载DICOM文件夹: {folder_path}")
+        
+        try:
+            # 扫描文件夹中的DICOM文件
+            dicom_files = []
+            folder = Path(folder_path)
+            
+            for file_path in folder.rglob("*"):
+                if file_path.is_file() and file_path.suffix.lower() in ['.dcm', '.dicom', '']:
+                    dicom_files.append(str(file_path))
+            
+            if not dicom_files:
+                QMessageBox.warning(self, self.tr("警告"), self.tr("文件夹中没有找到DICOM文件"))
+                return
+            
+            # 使用DicomParser解析文件获取序列信息
+            temp_parser = DicomParser()
+            series_groups = temp_parser._group_files_by_series(dicom_files)
+            
+            # 为每个序列创建SeriesInfo并添加到管理器
+            for series_uid, files in series_groups.items():
+                if not files:
+                    continue
                 
-                # 扫描文件夹中的所有.dcm文件
-                folder = Path(folder_path)
-                dcm_files = []
-                
-                # 递归搜索所有.dcm文件
-                for file_path in folder.rglob("*.dcm"):
-                    dcm_files.append(str(file_path))
-                
-                # 如果没有找到.dcm文件，尝试查找没有扩展名的文件（某些DICOM文件没有扩展名）
-                if not dcm_files:
-                    self.logger.info("未找到.dcm文件，尝试检测无扩展名的DICOM文件")
-                    import pydicom
+                # 读取第一个文件获取元数据
+                import pydicom
+                try:
+                    first_ds = pydicom.dcmread(files[0], force=True)
                     
-                    for file_path in folder.iterdir():
-                        if file_path.is_file() and not file_path.suffix:
-                            try:
-                                # 尝试用pydicom读取，如果成功说明是DICOM文件
-                                pydicom.dcmread(str(file_path), stop_before_pixels=True)
-                                dcm_files.append(str(file_path))
-                            except:
-                                # 不是DICOM文件，跳过
-                                pass
-                
-                if dcm_files:
-                    self.logger.info(f"找到 {len(dcm_files)} 个DICOM文件")
-                    self.status_label.setText(self.tr(f"正在加载 {len(dcm_files)} 个DICOM文件..."))
-                    
-                    # 按文件名排序
-                    dcm_files.sort()
-                    
-                    # 加载DICOM序列
-                    if self.image_data_model.load_dicom_series(dcm_files):
-                        self.status_label.setText(self.tr(f"成功加载 {len(dcm_files)} 个DICOM文件"))
-                    else:
-                        self.status_label.setText(self.tr("DICOM加载失败"))
-                        QMessageBox.warning(self, self.tr("警告"), self.tr("无法加载DICOM序列"))
-                else:
-                    self.logger.warning(f"在文件夹中未找到DICOM文件: {folder_path}")
-                    QMessageBox.information(
-                        self, 
-                        self.tr("提示"), 
-                        self.tr("在选定的文件夹中未找到DICOM文件")
+                    series_info = SeriesInfo(
+                        series_id=str(uuid.uuid4()),
+                        patient_name=getattr(first_ds, 'PatientName', 'Unknown Patient'),
+                        patient_id=getattr(first_ds, 'PatientID', ''),
+                        study_description=getattr(first_ds, 'StudyDescription', ''),
+                        series_description=getattr(first_ds, 'SeriesDescription', ''),
+                        modality=getattr(first_ds, 'Modality', ''),
+                        acquisition_date=getattr(first_ds, 'AcquisitionDate', ''),
+                        acquisition_time=getattr(first_ds, 'AcquisitionTime', ''),
+                        slice_count=len(files),
+                        series_number=str(getattr(first_ds, 'SeriesNumber', 0)),
+                        study_instance_uid=getattr(first_ds, 'StudyInstanceUID', ''),
+                        series_instance_uid=series_uid,
+                        file_paths=files
                     )
                     
-            except Exception as e:
-                self.logger.error(f"打开DICOM文件夹失败: {e}")
-                QMessageBox.critical(
-                    self, 
-                    self.tr("错误"), 
-                    self.tr(f"打开DICOM文件夹时发生错误:\n{str(e)}")
-                )
-
+                    # 添加序列到管理器
+                    series_id = self.series_manager.add_series(series_info)
+                    
+                    # 在后台线程中加载序列数据
+                    self._load_series_in_background(series_id, files, series_info)
+                    
+                except Exception as e:
+                    logger.error(f"[MainWindow._load_dicom_folder_as_series] 解析DICOM文件失败: {e}")
+                    continue
+            
+            logger.info(f"[MainWindow._load_dicom_folder_as_series] 文件夹加载完成: {folder_path}")
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._load_dicom_folder_as_series] 加载文件夹失败: {e}", exc_info=True)
+            QMessageBox.critical(self, self.tr("错误"), self.tr(f"加载DICOM文件夹失败: {str(e)}"))
+    
+    def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
+        """在后台线程中加载序列"""
+        logger.debug(f"[MainWindow._load_series_in_background] 后台加载序列: {series_id}")
+        
+        # 创建加载线程
+        loading_thread = SeriesLoadingThread(file_paths, series_info, self)
+        loading_thread.finished.connect(lambda: self._on_series_loading_finished(series_id, loading_thread))
+        
+        # 存储线程引用
+        self._loading_threads[series_id] = loading_thread
+        
+        # 显示加载进度
+        self.loading_progress.setVisible(True)
+        self.status_bar.showMessage(self.tr(f"正在加载序列: {series_info.series_description or series_id}"))
+        
+        # 启动线程
+        loading_thread.start()
+    
+    def _on_series_loading_finished(self, series_id: str, loading_thread: SeriesLoadingThread) -> None:
+        """处理序列加载完成"""
+        logger.debug(f"[MainWindow._on_series_loading_finished] 序列加载完成: {series_id}")
+        
+        try:
+            if loading_thread.success and loading_thread.image_model:
+                # 将图像模型添加到管理器
+                success = self.series_manager.load_series_data(series_id, loading_thread.image_model)
+                
+                if success:
+                    logger.info(f"[MainWindow._on_series_loading_finished] 序列数据加载成功: {series_id}")
+                else:
+                    logger.error(f"[MainWindow._on_series_loading_finished] 序列数据加载失败: {series_id}")
+            else:
+                logger.error(f"[MainWindow._on_series_loading_finished] 序列加载失败: {series_id}")
+            
+            # 清理线程引用
+            if series_id in self._loading_threads:
+                del self._loading_threads[series_id]
+            
+            # 如果没有正在加载的序列，隐藏进度条
+            if not self._loading_threads:
+                self.loading_progress.setVisible(False)
+                self.status_bar.showMessage(self.tr("加载完成"), 2000)
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._on_series_loading_finished] 处理加载完成失败: {e}", exc_info=True)
+    
     def _open_image_file(self) -> None:
-        """打开单张图像文件（DICOM, PNG, JPG, BMP, TIFF, NPY）"""
+        """打开图像文件"""
+        logger.debug("[MainWindow._open_image_file] 打开图像文件")
+        
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             self.tr("打开图像文件"),
-            "",
-            self.tr("所有支持的格式 (*.dcm *.png *.jpg *.jpeg *.bmp *.tiff *.tif *.gif *.npy);;DICOM文件 (*.dcm);;图像文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.tif *.gif);;NumPy数组 (*.npy);;所有文件 (*)")
+            QDir.homePath(),
+            self.tr("所有支持的文件 (*.dcm *.dicom *.png *.jpg *.jpeg *.bmp *.npy);;DICOM文件 (*.dcm *.dicom);;图像文件 (*.png *.jpg *.jpeg *.bmp);;NumPy文件 (*.npy)")
         )
         
         if file_path:
-            try:
-                file_path = Path(file_path)
-                suffix = file_path.suffix.lower()
-                
-                if suffix == '.dcm' or not suffix:  # DICOM文件可能没有扩展名
-                    # 尝试作为DICOM文件加载
-                    self.logger.info(f"正在加载DICOM文件: {file_path}")
-                    if self.image_data_model.load_dicom_series([str(file_path)]):
-                        self.status_label.setText(self.tr("DICOM文件加载成功"))
-                    else:
-                        raise Exception("DICOM文件加载失败")
-                        
-                elif suffix == '.npy':
-                    # 加载NumPy数组
-                    self.logger.info(f"正在加载NPY文件: {file_path}")
-                    image_data = np.load(str(file_path))
-                    if self.image_data_model.load_single_image(image_data):
-                        self.status_label.setText(self.tr("NPY文件加载成功"))
-                    else:
-                        raise Exception("NPY文件加载失败")
-                        
-                elif suffix in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.gif']:
-                    # 加载普通图像文件
-                    self.logger.info(f"正在加载图像文件: {file_path}")
-                    success = self._load_common_image_file(file_path)
-                    if success:
-                        self.status_label.setText(self.tr(f"{suffix[1:].upper()}文件加载成功"))
-                    else:
-                        raise Exception(f"{suffix[1:].upper()}文件加载失败")
-                else:
-                    raise Exception(f"不支持的文件格式: {suffix}")
-                    
-            except ImportError:
-                self.logger.error("需要安装Pillow库来加载图像文件")
-                QMessageBox.critical(
-                    self, 
-                    self.tr("错误"), 
-                    self.tr("需要安装Pillow库来加载图像文件。\n请运行: pip install Pillow")
-                )
-            except Exception as e:
-                self.logger.error(f"加载文件失败: {file_path}. 错误: {e}")
-                QMessageBox.critical(self, self.tr("错误"), self.tr(f"无法加载此文件:\n{str(e)}"))
-
-    def _load_common_image_file(self, file_path: Path) -> bool:
-        """加载普通图像文件（PNG, JPG, BMP, TIFF等）
+            self._load_single_image_file(file_path)
+    
+    def _load_single_image_file(self, file_path: str) -> None:
+        """加载单个图像文件"""
+        logger.debug(f"[MainWindow._load_single_image_file] 加载图像文件: {file_path}")
         
-        Args:
-            file_path: 图像文件路径
-            
-        Returns:
-            bool: 是否成功加载
-        """
         try:
-            from PIL import Image
+            # 创建图像数据模型
+            image_model = ImageDataModel()
             
-            # 使用PIL加载图像
-            pil_image = Image.open(str(file_path))
-            
-            # 获取原始图像信息
-            original_mode = pil_image.mode
-            original_size = pil_image.size
-            
-            self.logger.info(f"图像原始信息: 模式={original_mode}, 尺寸={original_size}")
-            
-            # 处理不同的图像模式
-            image_data = None
-            color_interpretation = "MONOCHROME2"  # 默认为灰度
-            
-            if original_mode in ['L', 'LA']:
-                # 灰度图像或带Alpha的灰度图像
-                if original_mode == 'LA':
-                    # 移除Alpha通道
-                    pil_image = pil_image.convert('L')
-                image_data = np.array(pil_image, dtype=np.float32)
-                color_interpretation = "MONOCHROME2"
-                
-            elif original_mode in ['RGB', 'RGBA']:
-                # 彩色图像
-                if original_mode == 'RGBA':
-                    # 移除Alpha通道或转换为RGB
-                    pil_image = pil_image.convert('RGB')
-                
-                # 对于医学图像查看器，我们提供两种选择：
-                # 1. 转换为灰度（用于医学影像分析）
-                # 2. 保持彩色（用于一般图像查看）
-                
-                # 这里我们先转换为灰度，后续可以添加用户选择
-                pil_gray = pil_image.convert('L')
-                image_data = np.array(pil_gray, dtype=np.float32)
-                color_interpretation = "MONOCHROME2"
-                
-                self.logger.info("彩色图像已转换为灰度图像")
-                
-            elif original_mode == 'P':
-                # 调色板图像
-                pil_image = pil_image.convert('RGB').convert('L')
-                image_data = np.array(pil_image, dtype=np.float32)
-                color_interpretation = "MONOCHROME2"
-                
-            elif original_mode in ['1', 'CMYK', 'YCbCr', 'LAB', 'HSV']:
-                # 其他格式，统一转换为灰度
-                pil_image = pil_image.convert('L')
-                image_data = np.array(pil_image, dtype=np.float32)
-                color_interpretation = "MONOCHROME2"
-                
+            # 根据文件扩展名选择加载方法
+            path = Path(file_path)
+            if path.suffix.lower() in ['.dcm', '.dicom']:
+                success = image_model.load_dicom_series([file_path])
+            elif path.suffix.lower() == '.npy':
+                # 加载NumPy文件
+                data = np.load(file_path)
+                success = image_model.load_single_image(data)
             else:
-                self.logger.warning(f"不支持的图像模式: {original_mode}，尝试转换为灰度")
-                pil_image = pil_image.convert('L')
-                image_data = np.array(pil_image, dtype=np.float32)
-                color_interpretation = "MONOCHROME2"
+                # 加载其他图像格式（使用PIL或其他库）
+                try:
+                    from PIL import Image
+                    img = Image.open(file_path)
+                    data = np.array(img)
+                    success = image_model.load_single_image(data)
+                except ImportError:
+                    logger.error("PIL库未安装，无法加载图像文件")
+                    success = False
             
-            if image_data is None:
-                raise Exception("无法处理图像数据")
-            
-            # 创建详细的元数据
-            metadata = {
-                'Filename': file_path.name,
-                'ImageType': file_path.suffix[1:].upper(),
-                'Rows': image_data.shape[0],
-                'Columns': image_data.shape[1],
-                'OriginalImageMode': original_mode,
-                'OriginalSize': original_size,
-                'ColorInterpretation': color_interpretation,
-                'PixelSpacing': [1.0, 1.0],  # 默认像素间距
-                'SliceThickness': 1.0,
-                'StudyDescription': f"Common Image File: {file_path.name}",
-                'SeriesDescription': f"{file_path.suffix[1:].upper()} Image",
-                'Modality': 'OT',  # Other
-                'PatientName': 'N/A',
-                'StudyDate': '',
-                'SeriesNumber': 1,
-                'InstanceNumber': 1,
-                'SamplesPerPixel': 1,
-                'PhotometricInterpretation': color_interpretation,
-                'BitsAllocated': 32,  # 我们使用float32
-                'BitsStored': 32,
-                'HighBit': 31,
-                'PixelRepresentation': 0,  # unsigned
-                'RescaleIntercept': 0.0,
-                'RescaleSlope': 1.0,
-                # 窗宽窗位将由 _set_default_window_level 方法自动计算
-            }
-            
-            self.logger.info(f"图像数据形状: {image_data.shape}")
-            self.logger.info(f"像素值范围: [{np.min(image_data):.2f}, {np.max(image_data):.2f}]")
-            
-            # 加载到数据模型
-            return self.image_data_model.load_single_image(image_data, metadata)
-            
-        except ImportError:
-            self.logger.error("需要安装Pillow库来加载图像文件")
-            raise
+            if success:
+                # 创建序列信息
+                series_info = SeriesInfo(
+                    series_id=str(uuid.uuid4()),
+                    patient_name="Single Image",
+                    series_description=path.name,
+                    modality="IMG",
+                    series_number="1",
+                    slice_count=1,
+                    file_paths=[file_path]
+                )
+                
+                # 添加到管理器
+                series_id = self.series_manager.add_series(series_info)
+                self.series_manager.load_series_data(series_id, image_model)
+                
+                logger.info(f"[MainWindow._load_single_image_file] 图像文件加载成功: {file_path}")
+            else:
+                logger.error(f"[MainWindow._load_single_image_file] 图像文件加载失败: {file_path}")
+                QMessageBox.critical(self, self.tr("错误"), self.tr("无法加载图像文件"))
+                
         except Exception as e:
-            self.logger.error(f"加载普通图像文件失败: {e}")
-            raise
-
-    def _load_phantom_series(self, phantom_name: str, description: str) -> None:
-        """
-        加载指定名称的模体DICOM序列的通用函数。
-
-        Args:
-            phantom_name: 模体文件夹的名称 (e.g., 'water_phantom')。
-            description: 用于日志和消息框的模体描述 (e.g., '水模')。
-        """
+            logger.error(f"[MainWindow._load_single_image_file] 加载图像文件异常: {e}", exc_info=True)
+            QMessageBox.critical(self, self.tr("错误"), self.tr(f"加载图像文件失败: {str(e)}"))
+    
+    def _load_test_series(self) -> None:
+        """加载测试序列"""
+        logger.debug("[MainWindow._load_test_series] 加载测试序列")
+        
         try:
-            phantom_dir = Path("medimager/tests/dcm") / phantom_name
-            self.logger.info(f"开始加载 {description} 序列: {phantom_dir}")
-
-            if not phantom_dir.is_dir():
-                self.logger.error(f"{description} 目录未找到: {phantom_dir}")
-                QMessageBox.warning(self, self.tr("警告"), self.tr(f"{description} 目录 '{phantom_dir}' 未找到。"))
-                return
-
-            file_paths = sorted([str(p) for p in phantom_dir.glob("*.dcm")])
-
-            if not file_paths:
-                self.logger.error(f"{description} 目录中没有找到DCM文件: {phantom_dir}")
-                QMessageBox.warning(self, self.tr("警告"), self.tr(f"在 {description} 目录 '{phantom_dir}' 中没有找到 .dcm 文件。"))
+            # 检查测试数据是否存在
+            test_data_path = Path("medimager/tests/dcm")
+            if not test_data_path.exists():
+                QMessageBox.information(self, self.tr("信息"), self.tr("测试数据不存在"))
                 return
             
-            self.image_data_model.load_dicom_series(file_paths)
-            self.logger.info(f"{description} 序列加载成功")
-
+            # 加载所有测试序列
+            for series_folder in test_data_path.iterdir():
+                if series_folder.is_dir():
+                    self._load_dicom_folder_as_series(str(series_folder))
+            
+            logger.info("[MainWindow._load_test_series] 测试序列加载完成")
+            
         except Exception as e:
-            self.logger.error(f"加载 {description} 时出错: {e}")
-            QMessageBox.critical(self, self.tr("错误"), self.tr(f"加载 {description} 时发生未知错误。"))
-
-    def _load_debug_phantom(self) -> None:
-        """加载调试用的水模DICOM序列"""
-        self._load_phantom_series("water_phantom", self.tr("水模"))
-
-    def _load_gammex_phantom(self) -> None:
-        """加载 Gammex 模体 DICOM 序列"""
-        self._load_phantom_series("gammex_phantom", self.tr("Gammex模体"))
-
-    def _on_module_reloaded(self, module_name: str):
-        """当模块被热重载时调用的槽函数"""
-        self.logger.info(f"模块 '{module_name}' 已被热重载，正在刷新UI...")
-        self.status_label.setText(self.tr(f"模块 '{module_name}' 已更新"))
-
-    def _on_reload_failed(self, module_name: str, error: str):
-        """模块热重载失败回调"""
-        self.status_label.setText(self.tr(f"模块 '{module_name}' 重载失败!"))
-        QMessageBox.critical(
-            self,
-            self.tr("热重载错误"),
-            self.tr(f"模块 {module_name} 重载失败:\n\n{error}")
-        )
-
+            logger.error(f"[MainWindow._load_test_series] 加载测试序列失败: {e}", exc_info=True)
+    
+    def _set_window_level_preset(self, width: int, level: int) -> None:
+        """设置窗宽窗位预设"""
+        logger.debug(f"[MainWindow._set_window_level_preset] 设置窗宽窗位: W:{width} L:{level}")
+        
+        # 获取活动视图的图像模型
+        active_view_id = self.series_manager.get_active_view_id()
+        if not active_view_id:
+            return
+        
+        binding = self.series_manager.get_view_binding(active_view_id)
+        if not binding or not binding.series_id:
+            return
+        
+        image_model = self.series_manager.get_series_model(binding.series_id)
+        if image_model:
+            if width == -1 and level == -1:
+                # 自动窗位
+                image_model._set_default_window_level()
+            else:
+                image_model.set_window(width, level)
+            
+            logger.info(f"[MainWindow._set_window_level_preset] 窗宽窗位设置完成: W:{width} L:{level}")
+    
     def _open_custom_wl_dialog(self) -> None:
         """打开自定义窗宽窗位对话框"""
-        if not self.image_data_model:
-            return
-            
-        dialog = CustomWLDialog(
-            self.image_data_model.window_width,
-            self.image_data_model.window_level,
-            self
-        )
-        if dialog.exec() == QDialog.Accepted:
-            width, level = dialog.get_window_level()
-            self.image_data_model.set_window(width, level)
-
+        logger.debug("[MainWindow._open_custom_wl_dialog] 打开自定义窗宽窗位对话框")
+        
+        # 获取当前活动视图的窗宽窗位
+        active_view_id = self.series_manager.get_active_view_id()
+        current_width, current_level = 400, 40
+        
+        if active_view_id:
+            binding = self.series_manager.get_view_binding(active_view_id)
+            if binding and binding.series_id:
+                image_model = self.series_manager.get_series_model(binding.series_id)
+                if image_model:
+                    current_width = image_model.window_width
+                    current_level = image_model.window_level
+        
+        dialog = CustomWLDialog(current_width, current_level, self)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_width, new_level = dialog.get_window_level()
+            self._set_window_level_preset(new_width, new_level)
+    
     def _open_settings_dialog(self) -> None:
         """打开设置对话框"""
-        # 记录当前的语言设置
-        current_language = self.settings_manager.get_setting('language', 'zh_CN')
+        logger.debug("[MainWindow._open_settings_dialog] 打开设置对话框")
         
-        settings_dialog = SettingsDialog(self.settings_manager, self)
+        dialog = SettingsDialog(self.settings_manager, self)
         
-        # 使用 exec() 来等待对话框关闭
-        if settings_dialog.exec():
-            # 用户点击了确定按钮
-            new_language = self.settings_manager.get_setting('language')
-            
-            # 应用主题等其他即时生效的设置
-            self._apply_new_settings()
-            
-            # 检查语言是否发生了变化
-            if new_language != current_language:
-                # 询问用户是否重启应用程序
-                reply = QMessageBox.question(
-                    self,
-                    self.tr("语言设置"),
-                    self.tr("语言设置已更改。是否立即重启应用程序以应用新的语言设置？\n\n点击'是'立即重启，点击'否'稍后手动重启。"),
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes
-                )
+        if dialog.exec_() == QDialog.Accepted:
+            # 应用新设置
+            self.theme_manager.apply_current_theme()
+            logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
+    
+    def _show_about(self) -> None:
+        """显示关于对话框"""
+        QMessageBox.about(
+            self,
+            self.tr("关于 MedImager Pro"),
+            self.tr("""<h3>MedImager Pro</h3>
+            <p>多序列DICOM查看器与图像分析工具</p>
+            <p>版本: 2.0.0</p>
+            <p>支持多序列加载、多视图布局和高级图像分析功能。</p>
+            """)
+        )
+    
+    # 信号处理方法
+    
+    def _on_series_added(self, series_id: str) -> None:
+        """处理序列添加事件"""
+        logger.debug(f"[MainWindow._on_series_added] 序列添加: {series_id}")
+        self._update_ui_state()
+    
+    def _on_series_loaded(self, series_id: str) -> None:
+        """处理序列加载事件"""
+        logger.debug(f"[MainWindow._on_series_loaded] 序列加载: {series_id}")
+        # 序列加载完成后可以进行自动分配
+        if self.binding_manager.get_binding_strategy() == BindingStrategy.AUTO_ASSIGN:
+            self.binding_manager.auto_assign_series_to_views([series_id])
+    
+    def _on_binding_changed(self, view_id: str, series_id: str) -> None:
+        """处理绑定变更事件"""
+        logger.debug(f"[MainWindow._on_binding_changed] 绑定变更: view_id={view_id}, series_id={series_id}")
+        
+        # 如果绑定的是活动视图，更新DICOM标签面板
+        active_view_id = self.series_manager.get_active_view_id()
+        if view_id == active_view_id and series_id:
+            image_model = self.series_manager.get_series_model(series_id)
+            if image_model and image_model.has_image() and image_model.is_dicom():
+                # 获取当前切片的DICOM数据
+                dicom_dataset = image_model.get_dicom_file(image_model.current_slice_index)
+                self.dicom_tag_panel.update_tags(dicom_dataset)
+        
+        # 当新视图绑定序列时，传播工具到该视图
+        if series_id:  # 绑定了序列
+            self._propagate_tool_to_single_viewer(view_id)
+    
+    def _on_layout_changed(self, layout: tuple) -> None:
+        """处理布局变更事件"""
+        logger.debug(f"[MainWindow._on_layout_changed] 布局变更: {layout}")
+        
+        # 暂时禁用自动分配以避免自动绑定
+        current_strategy = self.binding_manager.get_binding_strategy()
+        if current_strategy == BindingStrategy.AUTO_ASSIGN:
+            self.binding_manager.set_binding_strategy(BindingStrategy.PRESERVE_EXISTING)
+            logger.debug("[MainWindow._on_layout_changed] 暂时禁用自动分配")
+        
+        # 布局切换前清除所有绑定以保证稳定性
+        self._clear_all_bindings()
+        logger.debug("[MainWindow._on_layout_changed] 已清除所有绑定")
+        
+        self._update_ui_state()
+        
+        # 恢复原来的绑定策略
+        if current_strategy == BindingStrategy.AUTO_ASSIGN:
+            # 延迟恢复策略，避免立即触发自动分配
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, lambda: self.binding_manager.set_binding_strategy(current_strategy))
+            logger.debug("[MainWindow._on_layout_changed] 将恢复自动分配策略")
+    
+    def _on_auto_assignment_completed(self, assigned_count: int) -> None:
+        """处理自动分配完成事件"""
+        logger.debug(f"[MainWindow._on_auto_assignment_completed] 自动分配完成: {assigned_count}")
+        self.status_bar.showMessage(self.tr(f"自动分配完成：分配了 {assigned_count} 个序列"), 3000)
+        
+        # 激活第一个有绑定的视图，确保切片信号正确连接
+        if assigned_count > 0:
+            first_bound_view = self.binding_manager.get_first_bound_view()
+            if first_bound_view:
+                logger.debug(f"[MainWindow._on_auto_assignment_completed] 激活第一个有绑定的视图: {first_bound_view}")
+                # 直接调用激活处理程序，而不是依赖信号链，这在初始设置期间更稳定
+                self._on_view_activated(first_bound_view)
+    
+    def _on_series_selected(self, series_id: str) -> None:
+        """处理序列选择事件"""
+        logger.debug(f"[MainWindow._on_series_selected] 序列选择: {series_id}")
+        
+        # 更新DICOM标签面板
+        image_model = self.series_manager.get_series_model(series_id)
+        if image_model and image_model.has_image() and image_model.is_dicom():
+            # 获取第一个DICOM文件的dataset
+            dicom_dataset = image_model.get_dicom_file(0)
+            self.dicom_tag_panel.update_tags(dicom_dataset)
+        else:
+            self.dicom_tag_panel.clear()
+    
+    def _on_binding_requested(self, view_id: str, series_id: str) -> None:
+        """处理绑定请求事件"""
+        logger.debug(f"[MainWindow._on_binding_requested] 绑定请求: view_id={view_id}, series_id={series_id}")
+        
+        success = self.series_manager.bind_series_to_view(view_id, series_id)
+        if success:
+            logger.info(f"[MainWindow._on_binding_requested] 绑定成功: {view_id} -> {series_id}")
+        else:
+            logger.warning(f"[MainWindow._on_binding_requested] 绑定失败: {view_id} -> {series_id}")
+    
+    def _on_view_activated(self, view_id: str) -> None:
+        """处理视图激活事件（合并了活动视图变化的处理逻辑）"""
+        logger.debug(f"[MainWindow._on_view_activated] 视图激活: {view_id}")
+        
+        # 核心逻辑：确保数据模型中的活动视图ID与当前激活的ID同步
+        # 这是为了统一处理来自UI点击和程序化设置的事件
+        if self.series_manager.get_active_view_id() != view_id:
+            # 更新模型。这将触发 active_view_changed 信号，
+            # 该信号会再次调用此方法。上面的检查可防止无限递归。
+            self.series_manager.set_active_view(view_id)
+            # 必须在此处返回，以避免在第一次进入时执行下面的信号连接逻辑，
+            # 真正的连接逻辑将在信号触发的第二次调用中执行。
+            return
+        
+        # 更新状态栏
+        binding = self.series_manager.get_view_binding(view_id)
+        if binding:
+            pos_text = f"{binding.position.value[0]+1}-{binding.position.value[1]+1}"
+            self.active_view_label.setText(self.tr(f"活动视图: {pos_text}"))
+        
+        # 断开之前的连接（如果有的话）
+        if hasattr(self, '_current_active_model'):
+            try:
+                self._current_active_model.slice_changed.disconnect(self._on_slice_changed)
+            except:
+                pass  # 忽略断开连接的错误
+        
+        # 更新DICOM标签面板并连接切片变化信号
+        if binding and binding.series_id:
+            image_model = self.series_manager.get_series_model(binding.series_id)
+            if image_model and image_model.has_image():
+                # 连接切片变化信号
+                image_model.slice_changed.connect(self._on_slice_changed)
+                self._current_active_model = image_model
                 
-                if reply == QMessageBox.Yes:
-                    # 用户选择立即重启
-                    self._restart_application()
+                if image_model.is_dicom():
+                    # 获取当前切片的DICOM数据
+                    dicom_dataset = image_model.get_dicom_file(image_model.current_slice_index)
+                    self.dicom_tag_panel.update_tags(dicom_dataset)
                 else:
-                    # 用户选择稍后重启，显示提示
-                    QMessageBox.information(
-                        self,
-                        self.tr("设置已保存"),
-                        self.tr("语言设置将在下次启动时完全生效。")
-                    )
+                    self.dicom_tag_panel.clear()
+                
+                # 同步序列面板切片选择
+                if hasattr(self.series_panel, 'sync_slice_selection'):
+                    self.series_panel.sync_slice_selection(binding.series_id, image_model.current_slice_index)
+                    
+                logger.debug(f"[MainWindow._on_view_activated] 切片信号连接成功: {binding.series_id}")
             else:
-                # 语言没有变化，只显示保存成功消息
-                QMessageBox.information(
-                    self,
-                    self.tr("设置已保存"),
-                    self.tr("设置已成功保存。")
-                )
+                self._current_active_model = None
+                self.dicom_tag_panel.clear()
+        else:
+            self._current_active_model = None
+            self.dicom_tag_panel.clear()
+    
+    def _on_grid_layout_changed(self, layout: tuple) -> None:
+        """处理网格布局变更事件"""
+        logger.debug(f"[MainWindow._on_grid_layout_changed] 网格布局变更: {layout}")
+        # 这个信号来自MultiViewerGrid，通常不需要额外处理
+        pass
+    
 
-    def _restart_application(self) -> None:
-        """重启应用程序"""
-        import sys
-        import os
-        from PySide6.QtWidgets import QApplication
+    
+    def _on_slice_changed(self, slice_index: int) -> None:
+        """处理切片变化事件（合并了所有切片变化相关的处理逻辑）"""
+        logger.debug(f"[MainWindow._on_slice_changed] 切片变化: {slice_index}")
         
-        # 保存当前窗口状态
-        if self.settings_manager:
-            self.settings_manager.set_setting(
-                'window_geometry', 
-                self.saveGeometry().data().hex()
-            )
-            self.settings_manager.set_setting(
-                'window_state',
-                self.saveState().data().hex()
-            )
-            self.settings_manager.save_settings()
-        
-        # 重启应用程序
-        QApplication.quit()
-        os.execl(sys.executable, sys.executable, *sys.argv)
+        try:
+            # 更新DICOM标签面板
+            if hasattr(self, '_current_active_model') and self._current_active_model:
+                if self._current_active_model.is_dicom():
+                    dicom_dataset = self._current_active_model.get_dicom_file(slice_index)
+                    self.dicom_tag_panel.update_tags(dicom_dataset)
+                    logger.debug(f"[MainWindow._on_slice_changed] DICOM标签面板已更新: 切片{slice_index}")
+            
+            # 同步序列面板切片选择
+            active_view_id = self.series_manager.get_active_view_id()
+            if active_view_id:
+                binding = self.series_manager.get_view_binding(active_view_id)
+                if binding and binding.series_id:
+                    # 调用序列面板的同步方法
+                    if hasattr(self.series_panel, 'sync_slice_selection'):
+                        self.series_panel.sync_slice_selection(binding.series_id, slice_index)
+                    
+        except Exception as e:
+            logger.error(f"[MainWindow._on_slice_changed] 处理切片变化失败: {e}", exc_info=True)
+    
 
-    def _apply_new_settings(self) -> None:
-        """应用新的设置，此处主要处理主题等即时生效的内容"""
-        self.theme_manager.apply_current_theme()
-        # 注意：语言切换不再在这里处理，以避免不完整的UI刷新
-        self.logger.info("新设置已应用 (主题等)")
+    
 
-    def _on_tool_selected(self, tool_name: str):
-        """当工具栏中的工具被选中时调用"""
-        tool_instance = None
-        
-        if tool_name == "default":
-            tool_instance = DefaultTool(self.image_viewer)
-        elif tool_name == "ellipse_roi":
-            tool_instance = EllipseROITool(self.image_viewer)
-        elif tool_name == "rectangle_roi":
-            tool_instance = RectangleROITool(self.image_viewer)
-        elif tool_name == "circle_roi":
-            tool_instance = CircleROITool(self.image_viewer)
-        elif tool_name == "measurement":
-            from medimager.ui.tools.measurement_tool import MeasurementTool
-            tool_instance = MeasurementTool(self.image_viewer)
-        
-        if tool_instance:
-            self.image_viewer.set_tool(tool_instance)
-            self.logger.info(f"工具已切换: {type(tool_instance).__name__}")
-
+    
     def closeEvent(self, event) -> None:
-        """重写关闭事件，保存窗口状态"""
-        self.settings.setValue("main_window/geometry", self.saveGeometry())
+        """处理窗口关闭事件"""
+        logger.debug("[MainWindow.closeEvent] 处理窗口关闭事件")
+        
+        try:
+            # 停止所有加载线程
+            for thread in self._loading_threads.values():
+                if thread.isRunning():
+                    thread.terminate()
+                    thread.wait(1000)  # 等待1秒
+            
+            # 保存设置
+            self.settings_manager.save()
+            
+            logger.info("[MainWindow.closeEvent] 应用程序正常关闭")
+            event.accept()
+            
+        except Exception as e:
+            logger.error(f"[MainWindow.closeEvent] 关闭时发生错误: {e}", exc_info=True)
+            event.accept()  # 即使出错也允许关闭 

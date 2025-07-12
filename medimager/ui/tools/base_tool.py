@@ -72,7 +72,9 @@ class BaseTool(ABC):
             clamped_y = max(image_rect.top(), min(scene_pos.y(), image_rect.bottom()))
             clamped_pos = QPointF(clamped_x, clamped_y)
 
-        self.viewer._update_pixel_info(clamped_pos)
+        # 更新像素值信息（通过信号发送坐标和像素值）
+        if hasattr(self.viewer, '_update_pixel_info'):
+            self.viewer._update_pixel_info(clamped_pos)
         self.viewer.last_mouse_scene_pos = clamped_pos 
 
         # --- ROI Hover Detection ---

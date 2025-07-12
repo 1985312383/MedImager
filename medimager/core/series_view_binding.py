@@ -134,33 +134,58 @@ class SeriesViewBindingManager(QObject):
         Returns:
             成功分配的序列数量
         """
-        logger.debug(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
-                    f"开始自动分配序列: series_ids={series_ids}")
+        logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                   f"开始自动分配序列: series_ids={series_ids}")
+        logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                   f"当前绑定策略: {self._binding_strategy}")
         
         try:
             # 获取要分配的序列列表
             if series_ids is None:
                 series_ids = self._get_unbound_series()
             
+            logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                       f"找到未绑定序列: {len(series_ids)}个 - {series_ids}")
+            
+            if not series_ids:
+                logger.info("[SeriesViewBindingManager.auto_assign_series_to_views] "
+                           "没有未绑定的序列，跳过自动分配")
+                return 0
+            
             # 按照指定顺序排序
             sorted_series = self._sort_series(series_ids)
+            logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                       f"排序后的序列: {sorted_series}")
             
             # 获取可用视图
             available_views = self._get_available_views()
+            logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                       f"找到可用视图: {len(available_views)}个 - {available_views}")
+            
+            if not available_views:
+                logger.info("[SeriesViewBindingManager.auto_assign_series_to_views] "
+                           "没有可用视图，跳过自动分配")
+                return 0
             
             assigned_count = 0
             for i, series_id in enumerate(sorted_series):
                 if i >= len(available_views):
-                    logger.debug(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                    logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
                                f"可用视图已用完，停止分配")
                     break
                 
                 view_id = available_views[i]
+                logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                           f"尝试绑定: series_id={series_id} -> view_id={view_id}")
+                
                 if self._series_manager.bind_series_to_view(view_id, series_id):
                     assigned_count += 1
                     self._record_binding_operation("bind", view_id, series_id)
-                    logger.debug(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                    logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
                                f"自动分配成功: series_id={series_id}, view_id={view_id}")
+                else:
+                    logger.warning(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
+                                  f"绑定失败: series_id={series_id}, view_id={view_id}")
             
             logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
                        f"自动分配完成: 成功分配{assigned_count}个序列")
@@ -265,35 +290,55 @@ class SeriesViewBindingManager(QObject):
             return {}
     
     def _get_unbound_series(self) -> List[str]:
-        """获取未绑定的序列列表"""
+        """获取未绑定的序列列表（仅包含已加载的序列）"""
         logger.debug("[SeriesViewBindingManager._get_unbound_series] 获取未绑定序列")
         
-        all_series = set(self._series_manager.get_all_series_ids())
-        bound_series = set()
+        # 获取所有已加载的序列
+        all_series = set()
+        for series_id in self._series_manager.get_all_series_ids():
+            series_info = self._series_manager.get_series_info(series_id)
+            if series_info and series_info.is_loaded:
+                all_series.add(series_id)
         
+        # 获取已绑定的序列
+        bound_series = set()
         for view_id in self._series_manager.get_all_view_ids():
             binding = self._series_manager.get_view_binding(view_id)
             if binding and binding.series_id:
                 bound_series.add(binding.series_id)
         
+        # 计算未绑定的已加载序列
         unbound = list(all_series - bound_series)
         logger.debug(f"[SeriesViewBindingManager._get_unbound_series] "
-                    f"未绑定序列: {len(unbound)}个")
+                    f"未绑定序列: {len(unbound)}个（仅已加载）, 总序列: {len(self._series_manager.get_all_series_ids())}个")
         
         return unbound
     
     def _get_available_views(self) -> List[str]:
         """获取可用视图列表"""
-        logger.debug("[SeriesViewBindingManager._get_available_views] 获取可用视图")
+        logger.info("[SeriesViewBindingManager._get_available_views] 获取可用视图")
+        
+        all_view_ids = self._series_manager.get_all_view_ids()
+        logger.info(f"[SeriesViewBindingManager._get_available_views] "
+                   f"总视图数: {len(all_view_ids)} - {all_view_ids}")
         
         available = []
-        for view_id in self._series_manager.get_all_view_ids():
+        for view_id in all_view_ids:
             binding = self._series_manager.get_view_binding(view_id)
-            if binding and not binding.series_id:
-                available.append(view_id)
+            if binding:
+                if not binding.series_id:
+                    available.append(view_id)
+                    logger.info(f"[SeriesViewBindingManager._get_available_views] "
+                               f"可用视图: {view_id}")
+                else:
+                    logger.info(f"[SeriesViewBindingManager._get_available_views] "
+                               f"已绑定视图: {view_id} -> {binding.series_id}")
+            else:
+                logger.warning(f"[SeriesViewBindingManager._get_available_views] "
+                              f"视图绑定信息为空: {view_id}")
         
-        logger.debug(f"[SeriesViewBindingManager._get_available_views] "
-                    f"可用视图: {len(available)}个")
+        logger.info(f"[SeriesViewBindingManager._get_available_views] "
+                   f"最终可用视图: {len(available)}个 - {available}")
         
         return available
     
@@ -425,8 +470,9 @@ class SeriesViewBindingManager(QObject):
         """处理序列添加事件"""
         logger.debug(f"[SeriesViewBindingManager._on_series_added] 处理序列添加: {series_id}")
         
-        if self._binding_strategy == BindingStrategy.AUTO_ASSIGN:
-            self.auto_assign_series_to_views([series_id])
+        # 不在序列添加时自动分配，让用户手动控制
+        # 如果需要自动分配，用户可以点击"自动分配"按钮
+        logger.debug(f"[SeriesViewBindingManager._on_series_added] 跳过自动分配，等待用户手动操作")
     
     def _on_layout_changed(self, layout: Tuple[int, int]) -> None:
         """处理布局变更事件"""
@@ -449,3 +495,20 @@ class SeriesViewBindingManager(QObject):
     def get_sort_order(self) -> SortOrder:
         """获取当前排序顺序"""
         return self._sort_order 
+    
+    def get_first_bound_view(self) -> Optional[str]:
+        """获取第一个有绑定的视图ID
+        
+        Returns:
+            第一个有绑定的视图ID，如果没有则返回None
+        """
+        logger.debug("[SeriesViewBindingManager.get_first_bound_view] 查找第一个有绑定的视图")
+        
+        for view_id in self._series_manager.get_all_view_ids():
+            binding = self._series_manager.get_view_binding(view_id)
+            if binding and binding.series_id:
+                logger.debug(f"[SeriesViewBindingManager.get_first_bound_view] 找到第一个有绑定的视图: {view_id}")
+                return view_id
+        
+        logger.debug("[SeriesViewBindingManager.get_first_bound_view] 没有找到有绑定的视图")
+        return None 

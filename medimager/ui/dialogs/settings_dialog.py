@@ -802,7 +802,7 @@ class SettingsDialog(QDialog):
                 
         except Exception as e:
             print(f"创建自定义主题文件失败: {e}")
- 
+
     def _connect_signals(self):
         """连接信号和槽"""
         # 语言切换信号
