@@ -66,6 +66,9 @@ class ImageViewer(QGraphicsView):
         # 设置视图属性
         self._setup_view()
         
+        # 启用拖拽接收
+        self.setAcceptDrops(True)
+        
         # 设置默认工具
         self.set_tool(DefaultTool(self))
         
@@ -281,6 +284,39 @@ class ImageViewer(QGraphicsView):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+    def dragEnterEvent(self, event):
+        """处理拖拽进入事件 - 转发给父ViewFrame"""
+        # 检查父组件是否是ViewFrame
+        parent = self.parent()
+        if parent and hasattr(parent, 'dragEnterEvent'):
+            parent.dragEnterEvent(event)
+        else:
+            super().dragEnterEvent(event)
+    
+    def dragMoveEvent(self, event):
+        """处理拖拽移动事件 - 转发给父ViewFrame"""
+        parent = self.parent()
+        if parent and hasattr(parent, 'dragMoveEvent'):
+            parent.dragMoveEvent(event)
+        else:
+            super().dragMoveEvent(event)
+    
+    def dragLeaveEvent(self, event):
+        """处理拖拽离开事件 - 转发给父ViewFrame"""
+        parent = self.parent()
+        if parent and hasattr(parent, 'dragLeaveEvent'):
+            parent.dragLeaveEvent(event)
+        else:
+            super().dragLeaveEvent(event)
+    
+    def dropEvent(self, event):
+        """处理拖拽放下事件 - 转发给父ViewFrame"""
+        parent = self.parent()
+        if parent and hasattr(parent, 'dropEvent'):
+            parent.dropEvent(event)
+        else:
+            super().dropEvent(event)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         """在前景中绘制内容，如ROI、锚点、统计信息和临时形状。"""

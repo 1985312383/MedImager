@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QCheckBox, QSpinBox,
     QProgressBar, QTabWidget, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint
-from PySide6.QtGui import QAction, QPixmap, QIcon, QFont, QColor, QPalette
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QMimeData
+from PySide6.QtGui import QAction, QPixmap, QIcon, QFont, QColor, QPalette, QDrag, QPainter, QBrush, QPen, QFontMetrics
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo, ViewPosition
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy, SortOrder
@@ -21,6 +21,84 @@ from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class DraggableTreeWidget(QTreeWidget):
+    """支持拖拽的树形控件"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTreeWidget.DragOnly)
+    
+    def startDrag(self, supportedActions):
+        """开始拖拽操作"""
+        item = self.currentItem()
+        if not item:
+            return
+        
+        # 检查是否是序列项目（不是分组项目）
+        series_id = item.data(0, Qt.UserRole)
+        if not series_id:
+            return
+        
+        # 创建拖拽数据
+        mimeData = QMimeData()
+        mimeData.setText(f"series:{series_id}")
+        mimeData.setData("application/x-medimager-series", series_id.encode())
+        
+        # 创建拖拽对象
+        drag = QDrag(self)
+        drag.setMimeData(mimeData)
+        
+        # 创建更好的拖拽图标
+        series_text = item.text(0)
+        pixmap = self._create_drag_pixmap(series_text)
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(pixmap.rect().center())
+        
+        # 执行拖拽
+        drag.exec_(Qt.CopyAction)
+    
+    def _create_drag_pixmap(self, text: str) -> QPixmap:
+        """创建拖拽图标"""
+        # 计算文本大小
+        font = QFont()
+        font.setPointSize(10)
+        metrics = QFontMetrics(font)
+        text_width = metrics.horizontalAdvance(text)
+        text_height = metrics.height()
+        
+        # 创建图标
+        padding = 8
+        width = min(text_width + padding * 2, 200)  # 限制最大宽度
+        height = text_height + padding * 2
+        
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 绘制背景
+        rect = pixmap.rect().adjusted(1, 1, -1, -1)
+        painter.setBrush(QBrush(QColor(70, 130, 180, 200)))  # 半透明蓝色
+        painter.setPen(QPen(QColor(70, 130, 180), 2))
+        painter.drawRoundedRect(rect, 4, 4)
+        
+        # 绘制文本
+        painter.setPen(QPen(Qt.white))
+        painter.setFont(font)
+        text_rect = rect.adjusted(padding, 0, -padding, 0)
+        
+        # 如果文本太长，截断并添加省略号
+        if text_width > text_rect.width():
+            text = metrics.elidedText(text, Qt.ElideRight, text_rect.width())
+        
+        painter.drawText(text_rect, Qt.AlignCenter, text)
+        painter.end()
+        
+        return pixmap
 
 
 class SeriesListWidget(QWidget):
@@ -81,14 +159,14 @@ class SeriesListWidget(QWidget):
             self.tr("按模态分组"),
             self.tr("不分组")
         ])
-        self._group_combo.setCurrentIndex(3) # 设置默认选项为“不分组”
+        self._group_combo.setCurrentIndex(3) # 设置默认选项为"不分组"
         self._group_combo.currentTextChanged.connect(self._on_group_changed)
         header_layout.addWidget(self._group_combo)
         
         layout.addLayout(header_layout)
         
         # 序列树形列表
-        self._tree_widget = QTreeWidget()
+        self._tree_widget = DraggableTreeWidget()
         self._tree_widget.setHeaderLabels([
             self.tr("序列"),
             self.tr("状态"),

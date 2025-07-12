@@ -98,16 +98,29 @@ class MainWindow(QMainWindow):
         # 连接信号和槽
         self._connect_signals()
         
+        # 确保初始布局正确设置
+        self._ensure_initial_layout()
+        
         # 应用当前主题
         self.theme_manager.apply_current_theme()
         
-        # 根据初始状态更新UI
+        # 更新UI状态
         self._update_ui_state()
         
         # 序列加载状态
         self._loading_threads: Dict[str, SeriesLoadingThread] = {}
         
         logger.info("[MainWindow.__init__] 主窗口初始化完成")
+    
+    def _ensure_initial_layout(self) -> None:
+        """确保初始布局正确设置"""
+        logger.debug("[MainWindow._ensure_initial_layout] 确保初始布局设置")
+        
+        # 显式设置1x1布局，确保序列管理器和多视图网格同步
+        self.series_manager.set_layout(1, 1)
+        self.multi_viewer_grid.set_layout(1, 1)
+        
+        logger.debug("[MainWindow._ensure_initial_layout] 初始布局设置完成")
     
     def _init_core_components(self) -> None:
         """初始化核心组件"""
@@ -204,6 +217,7 @@ class MainWindow(QMainWindow):
         # 多视图网格信号
         self.multi_viewer_grid.view_activated.connect(self._on_view_activated)
         self.multi_viewer_grid.layout_changed.connect(self._on_grid_layout_changed)
+        self.multi_viewer_grid.binding_requested.connect(self._on_binding_requested)
         
         # 连接已加载序列的切片变化信号（合并到现有方法中）
         

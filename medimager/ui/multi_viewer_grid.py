@@ -5,11 +5,12 @@
 每个视图可以独立显示不同的DICOM序列。
 """
 
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple, Set, Union
 from PySide6.QtWidgets import (QWidget, QGridLayout, QFrame, QVBoxLayout, 
-                              QHBoxLayout, QLabel, QPushButton, QSplitter)
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush
+                              QHBoxLayout, QLabel, QPushButton, QSplitter,
+                              QSizePolicy, QProgressBar)
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QTimer, QSize
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPixmap
 
 from medimager.ui.image_viewer import ImageViewer
 from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition, ViewBinding
@@ -27,10 +28,12 @@ class ViewFrame(QFrame):
     Signals:
         view_activated (str): 视图被激活时发出，参数为视图ID
         view_clicked (str): 视图被点击时发出，参数为视图ID
+        drop_requested (str, str): 请求拖拽绑定时发出，参数为(view_id, series_id)
     """
     
     view_activated = Signal(str)
     view_clicked = Signal(str)
+    drop_requested = Signal(str, str)
     
     def __init__(self, view_id: str, position: ViewPosition, parent: Optional[QWidget] = None) -> None:
         """初始化视图框架
@@ -41,18 +44,21 @@ class ViewFrame(QFrame):
             parent: 父组件
         """
         super().__init__(parent)
-        logger.debug(f"[ViewFrame.__init__] 创建视图框架: view_id={view_id}, position={position}")
+        logger.debug(f"[ViewFrame.__init__] 初始化视图框架: {view_id}")
         
         self._view_id = view_id
         self._position = position
         self._is_active = False
         self._series_id: Optional[str] = None
-        self._series_info: Optional[str] = None
+        self._image_model: Optional[ImageDataModel] = None
+        
+        # 启用拖拽接收
+        self.setAcceptDrops(True)
         
         self._setup_ui()
         self._setup_style()
         
-        logger.debug(f"[ViewFrame.__init__] 视图框架创建完成: {view_id}")
+        logger.debug(f"[ViewFrame.__init__] 视图框架初始化完成: {view_id}")
     
     def _setup_ui(self) -> None:
         """设置UI"""
@@ -169,15 +175,75 @@ class ViewFrame(QFrame):
             """)
     
     def mousePressEvent(self, event) -> None:
-        """鼠标按下事件"""
-        logger.debug(f"[ViewFrame.mousePressEvent] 视图被点击: {self._view_id}")
-        
+        """处理鼠标按下事件"""
         if event.button() == Qt.LeftButton:
+            logger.debug(f"[ViewFrame.mousePressEvent] 视图框架被点击: {self._view_id}")
             self.view_clicked.emit(self._view_id)
+            
+            # 如果不是活动视图，则激活
             if not self._is_active:
                 self.view_activated.emit(self._view_id)
         
         super().mousePressEvent(event)
+    
+    def dragEnterEvent(self, event):
+        """处理拖拽进入事件"""
+        if event.mimeData().hasFormat("application/x-medimager-series"):
+            logger.debug(f"[ViewFrame.dragEnterEvent] 拖拽进入视图框架: {self._view_id}")
+            event.acceptProposedAction()
+            # 设置拖拽接受状态的视觉反馈
+            self._set_drag_accept_style(True)
+        else:
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """处理拖拽移动事件"""
+        if event.mimeData().hasFormat("application/x-medimager-series"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dragLeaveEvent(self, event):
+        """处理拖拽离开事件"""
+        logger.debug(f"[ViewFrame.dragLeaveEvent] 拖拽离开视图框架: {self._view_id}")
+        # 恢复原始样式
+        self._set_drag_accept_style(False)
+    
+    def dropEvent(self, event):
+        """处理拖拽放下事件"""
+        if event.mimeData().hasFormat("application/x-medimager-series"):
+            series_data = event.mimeData().data("application/x-medimager-series")
+            series_id = series_data.data().decode()
+            
+            logger.debug(f"[ViewFrame.dropEvent] 序列拖拽到视图框架: view_id={self._view_id}, series_id={series_id}")
+            
+            # 恢复原始样式
+            self._set_drag_accept_style(False)
+            
+            # 发出拖拽请求信号
+            self.drop_requested.emit(self._view_id, series_id)
+            
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def _set_drag_accept_style(self, accepting: bool) -> None:
+        """设置拖拽接受状态的样式"""
+        if accepting:
+            # 拖拽接受状态：蓝色虚线边框 + 半透明蓝色背景
+            self.setStyleSheet(f"""
+                ViewFrame {{
+                    border: 3px dashed #0078d4;
+                    background-color: rgba(0, 120, 212, 0.1);
+                }}
+                QLabel {{
+                    color: #0078d4;
+                    font-weight: bold;
+                }}
+            """)
+        else:
+            # 恢复原始样式
+            self._update_border_style()
     
     def set_active(self, active: bool) -> None:
         """设置激活状态
@@ -208,7 +274,7 @@ class ViewFrame(QFrame):
         
         try:
             self._series_id = series_id
-            self._series_info = series_info
+            self._image_model = image_model # 存储图像模型
             
             # 更新UI显示
             self._series_label.setText(series_info)
@@ -245,7 +311,7 @@ class ViewFrame(QFrame):
                 
                 # 清除数据
                 self._series_id = None
-                self._series_info = None
+                self._image_model = None # 清除图像模型
                 
                 # 清除图像数据
                 self._image_viewer.display_qimage(None)
@@ -265,8 +331,8 @@ class ViewFrame(QFrame):
     def _update_status_info(self) -> None:
         """更新状态信息"""
         try:
-            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
-                model = self._image_viewer.model
+            if self._image_model:
+                model = self._image_model
                 ww = model.window_width
                 wl = model.window_level
                 self._wl_label.setText(f"W:{ww} L:{wl}")
@@ -276,8 +342,8 @@ class ViewFrame(QFrame):
     def _update_slice_info(self) -> None:
         """更新切片信息"""
         try:
-            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
-                model = self._image_viewer.model
+            if self._image_model:
+                model = self._image_model
                 current = model.current_slice_index + 1
                 total = model.slice_count
                 self._slice_label.setText(f"{current}/{total}")
@@ -287,8 +353,8 @@ class ViewFrame(QFrame):
     def _update_image_display(self) -> None:
         """更新图像显示"""
         try:
-            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
-                model = self._image_viewer.model
+            if self._image_model:
+                model = self._image_model
                 
                 # 获取当前切片数据
                 original_slice = model.get_current_slice_data()
@@ -386,8 +452,7 @@ class MultiViewerGrid(QWidget):
         self._setup_ui()
         self._connect_signals()
         
-        # 初始化默认布局
-        self.set_layout(1, 1)
+        # 注意：初始布局将由主窗口在所有组件初始化完成后设置
         
         logger.info("[MultiViewerGrid.__init__] 多视图网格初始化完成")
     
@@ -484,35 +549,46 @@ class MultiViewerGrid(QWidget):
             for col in range(cols):
                 position = ViewPosition((row, col))
                 
-                # 从序列管理器获取视图ID和绑定信息
+                # 从序列管理器获取视图ID
                 view_ids = self._series_manager.get_all_view_ids()
                 if view_count < len(view_ids):
                     view_id = view_ids[view_count]
-                    binding = self._series_manager.get_view_binding(view_id)
+                else:
+                    # 如果视图ID不够，创建一个临时ID
+                    view_id = f"view_{row}_{col}"
+                
+                # 创建视图框架
+                view_frame = ViewFrame(view_id, position, self)
+                
+                # 连接信号
+                view_frame.view_activated.connect(self._on_view_frame_activated)
+                view_frame.view_clicked.connect(self._on_view_frame_clicked)
+                view_frame.drop_requested.connect(self._on_view_frame_drop_requested) # 连接拖拽信号
+                
+                # 添加到网格
+                self._grid_layout.addWidget(view_frame, row, col)
+                self._view_frames[view_id] = view_frame
+                
+                # 获取绑定信息并设置状态
+                binding = self._series_manager.get_view_binding(view_id)
+                if binding:
+                    # 设置活动状态
+                    view_frame.set_active(binding.is_active)
                     
-                    if binding and binding.position == position:
-                        # 创建视图框架
-                        view_frame = ViewFrame(view_id, position, self)
-                        
-                        # 连接信号
-                        view_frame.view_activated.connect(self._on_view_frame_activated)
-                        view_frame.view_clicked.connect(self._on_view_frame_clicked)
-                        
-                        # 添加到网格
-                        self._grid_layout.addWidget(view_frame, row, col)
-                        self._view_frames[view_id] = view_frame
-                        
-                        # 设置活动状态
-                        view_frame.set_active(binding.is_active)
-                        
-                        # 如果有绑定的序列，加载数据
-                        if binding.series_id:
-                            self._bind_series_to_view_frame(view_frame, binding.series_id)
-                        
-                        view_count += 1
-                        
-                        logger.debug(f"[MultiViewerGrid._create_view_frames] "
-                                   f"创建视图框架: {view_id} at ({row}, {col})")
+                    # 如果有绑定的序列，加载数据
+                    if binding.series_id:
+                        self._bind_series_to_view_frame(view_frame, binding.series_id)
+                else:
+                    # 如果是第一个视图，设置为活动状态
+                    if view_count == 0:
+                        view_frame.set_active(True)
+                        # 通知序列管理器设置活动视图
+                        self._series_manager.set_active_view(view_id)
+                
+                view_count += 1
+                
+                logger.debug(f"[MultiViewerGrid._create_view_frames] "
+                           f"创建视图框架: {view_id} at ({row}, {col})")
         
         logger.debug(f"[MultiViewerGrid._create_view_frames] "
                     f"视图框架创建完成: {len(self._view_frames)}个")
@@ -607,6 +683,11 @@ class MultiViewerGrid(QWidget):
         
         # 可以在这里添加右键菜单等交互逻辑
         pass
+
+    def _on_view_frame_drop_requested(self, view_id: str, series_id: str) -> None:
+        """处理视图框架的拖拽请求"""
+        logger.debug(f"[MultiViewerGrid._on_view_frame_drop_requested] 视图框架拖拽请求: view_id={view_id}, series_id={series_id}")
+        self.binding_requested.emit(view_id, series_id)
     
     # 查询方法
     

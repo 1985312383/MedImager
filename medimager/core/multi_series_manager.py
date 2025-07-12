@@ -1,14 +1,13 @@
 """
 多序列管理器模块
 
-该模块提供了管理多个DICOM序列及其与视图绑定关系的核心功能。
+负责管理多个DICOM序列的数据、绑定关系和布局状态。
 """
 
 from typing import Dict, List, Optional, Set, Tuple
-from PySide6.QtCore import QObject, Signal
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from PySide6.QtCore import QObject, Signal
 
 from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
@@ -122,8 +121,8 @@ class MultiSeriesManager(QObject):
         """初始化默认视图配置"""
         logger.debug("[MultiSeriesManager._initialize_default_views] 开始初始化默认视图")
         
-        # 创建默认的1x1布局视图
-        default_view_id = str(uuid.uuid4())
+        # 创建默认的1x1布局视图，使用可预测的ID
+        default_view_id = "view_0_0"
         default_binding = ViewBinding(
             view_id=default_view_id,
             position=ViewPosition.TOP_LEFT,
@@ -371,7 +370,8 @@ class MultiSeriesManager(QObject):
         new_active_view = None
         
         for i, position in enumerate(positions):
-            view_id = str(uuid.uuid4())
+            # 使用可预测的视图ID
+            view_id = f"view_{position.value[0]}_{position.value[1]}"
             
             # 尝试恢复原有绑定
             series_id = existing_bindings.get(position)
