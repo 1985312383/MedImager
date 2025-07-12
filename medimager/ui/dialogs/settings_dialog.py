@@ -37,16 +37,30 @@ class ColorButton(QPushButton):
         return self._color
     
     def setColor(self, color: QColor):
-        if color.isValid() and self._color != color:
+        if color.isValid():
             self._color = color
             self._update_color_icon()
+            # 同时在按钮文本中显示颜色值
+            self.setText(f"{self.tr('选择...')} ({color.name()})")
             self.colorChanged.emit(color)
     
     def _update_color_icon(self):
         """更新按钮上的颜色图标"""
-        pixmap = QPixmap(16, 16)
+        pixmap = QPixmap(24, 24)
         pixmap.fill(self._color)
-        self.setIcon(QIcon(pixmap))
+        
+        # 添加黑色边框以增强可见性
+        from PySide6.QtGui import QPainter, QPen
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor(0, 0, 0), 1))
+        painter.drawRect(0, 0, 23, 23)
+        painter.end()
+        
+        # 创建一个在禁用状态下也能正常显示的图标
+        icon = QIcon()
+        icon.addPixmap(pixmap, QIcon.Normal)
+        icon.addPixmap(pixmap, QIcon.Disabled)  # 禁用状态下也使用相同的图标
+        self.setIcon(icon)
     
     def _choose_color(self):
         """打开颜色选择对话框"""
@@ -360,9 +374,25 @@ class SettingsDialog(QDialog):
         def on_roi_theme_changed(index):
             theme_name = roi_theme_combo.itemData(index)
             is_custom = theme_name == 'custom'
+            
+            # 如果不是自定义主题，则先加载所选主题的颜色进行预览
+            if not is_custom:
+                theme_data = self.themes.get('roi', {}).get(theme_name, {})
+                for key, value in theme_data.items():
+                    if key == "name":
+                        continue
+                    widget_key = f"roi.custom.{key}"
+                    if widget_key in self.setting_widgets:
+                        widget = self.setting_widgets[widget_key]
+                        if isinstance(widget, ColorButton):
+                            widget.setColor(QColor(value))
+                        elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                            widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
+                        elif isinstance(widget, QCheckBox):
+                            widget.setChecked(bool(value))
+            
+            # 然后再根据是否是自定义主题，来启用/禁用控件
             self._enable_roi_custom_controls(is_custom)
-            # 加载对应主题的设置到自定义控件中
-            self._load_roi_theme(theme_name)
 
         roi_theme_combo.currentIndexChanged.connect(on_roi_theme_changed)
         
@@ -448,9 +478,26 @@ class SettingsDialog(QDialog):
         def on_measurement_theme_changed(index):
             theme_name = measurement_theme_combo.itemData(index)
             is_custom = theme_name == 'custom'
+
+            # 先根据是否是自定义主题，来启用/禁用控件
             self._enable_measurement_custom_controls(is_custom)
-            # 加载对应主题的设置到自定义控件中
-            self._load_measurement_theme(theme_name)
+            
+            # 如果不是自定义主题，则加载所选主题的颜色进行预览
+            if not is_custom:
+                theme_data = self.themes.get('measurement', {}).get(theme_name, {})
+                for key, value in theme_data.items():
+                    if key == "name":
+                        continue
+                    widget_key = f"measurement.custom.{key}"
+                    if widget_key in self.setting_widgets:
+                        widget = self.setting_widgets[widget_key]
+                        if isinstance(widget, ColorButton):
+                            color = QColor(value)
+                            widget.setColor(color)
+                        elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                            widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
+                        elif isinstance(widget, QCheckBox):
+                            widget.setChecked(bool(value))
         
         measurement_theme_combo.currentIndexChanged.connect(on_measurement_theme_changed)
         
@@ -487,7 +534,7 @@ class SettingsDialog(QDialog):
                         theme_name = theme_file.stem
                         self.themes[category][theme_name] = theme_data
                     except Exception as e:
-                        print(f"Error loading theme {theme_file}: {e}")
+                        pass  # 静默处理主题加载失败
         
         self._populate_theme_combos()
 
@@ -728,7 +775,6 @@ class SettingsDialog(QDialog):
             self.settings_manager.set_setting('thread_count', thread_count_spin.value())
         
         self.settings_manager.save_settings()
-        print("设置已保存。")
     
     def _save_theme_to_file(self, category: str, theme_name: str):
         """保存主题设置到TOML文件"""
@@ -760,13 +806,13 @@ class SettingsDialog(QDialog):
             with open(theme_file, 'w', encoding='utf-8') as f:
                 toml.dump(theme_data, f)
             
-            print(f"自定义{category}主题已保存到: {theme_file}")
+
             
             # 重新加载主题数据
             self.themes[category][theme_name] = theme_data
             
         except Exception as e:
-            print(f"保存主题文件失败: {e}")
+            pass  # 静默处理保存失败
 
     def _ensure_custom_theme_exists(self, category: str):
         """确保自定义主题文件存在"""
@@ -786,14 +832,14 @@ class SettingsDialog(QDialog):
                         custom_theme_data.update(default_data)
                         custom_theme_data['name'] = '自定义'  # 确保名称是"自定义"
                     except Exception as e:
-                        print(f"读取默认主题失败: {e}")
+                        pass  # 静默处理读取失败
                 
                 # 创建自定义主题文件
                 custom_theme_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(custom_theme_file, 'w', encoding='utf-8') as f:
                     toml.dump(custom_theme_data, f)
                 
-                print(f"创建自定义{category}主题文件: {custom_theme_file}")
+
                 
                 # 将新创建的主题添加到内存中的主题数据
                 if category not in self.themes:
@@ -801,41 +847,8 @@ class SettingsDialog(QDialog):
                 self.themes[category]['custom'] = custom_theme_data
                 
         except Exception as e:
-            print(f"创建自定义主题文件失败: {e}")
+            pass  # 静默处理创建失败
 
-    def _connect_signals(self):
-        """连接信号和槽"""
-        # 语言切换信号
-        language_combo = self.setting_widgets['language']
-        language_combo.currentTextChanged.connect(self._on_language_changed)
-        
-        # 主题切换信号
-        roi_theme_combo = self.setting_widgets['roi_theme']
-        roi_theme_combo.currentTextChanged.connect(self._on_roi_theme_changed)
-        
-        measurement_theme_combo = self.setting_widgets['measurement_theme']
-        measurement_theme_combo.currentTextChanged.connect(self._on_measurement_theme_changed)
-    
-    def _on_roi_theme_changed(self, theme_name: str):
-        """ROI主题切换处理"""
-        if theme_name == self.tr("自定义"):
-            # 启用自定义控件
-            self._enable_roi_custom_controls(True)
-        else:
-            # 禁用自定义控件并加载主题
-            self._enable_roi_custom_controls(False)
-            self._load_roi_theme(theme_name)
-    
-    def _on_measurement_theme_changed(self, theme_name: str):
-        """测量工具主题切换处理"""
-        if theme_name == self.tr("自定义"):
-            # 启用自定义控件
-            self._enable_measurement_custom_controls(True)
-        else:
-            # 禁用自定义控件并加载主题
-            self._enable_measurement_custom_controls(False)
-            self._load_measurement_theme(theme_name)
-    
     def _enable_roi_custom_controls(self, enabled: bool):
         """启用/禁用ROI自定义控件"""
         roi_controls = [
@@ -849,11 +862,6 @@ class SettingsDialog(QDialog):
             if control_name in self.setting_widgets:
                 widget = self.setting_widgets[control_name]
                 widget.setEnabled(enabled)
-                # 设置样式，让禁用的控件不要太暗
-                if not enabled:
-                    widget.setStyleSheet("QWidget:disabled { opacity: 0.9; color: inherit; }")
-                else:
-                    widget.setStyleSheet("")
     
     def _enable_measurement_custom_controls(self, enabled: bool):
         """启用/禁用测量工具自定义控件"""
@@ -867,33 +875,16 @@ class SettingsDialog(QDialog):
             if control_name in self.setting_widgets:
                 widget = self.setting_widgets[control_name]
                 widget.setEnabled(enabled)
-                # 设置样式，让禁用的控件不要太暗
-                if not enabled:
-                    widget.setStyleSheet("QWidget:disabled { opacity: 0.9; color: inherit; }")
-                else:
-                    widget.setStyleSheet("")
     
     def _load_roi_theme(self, theme_name: str):
         """加载ROI主题"""
-        # 从显示名称获取实际的主题名称（数据值）
-        roi_combo = self.setting_widgets.get('roi_theme')
-        if roi_combo:
-            current_index = roi_combo.currentIndex()
-            if current_index >= 0:
-                actual_theme_name = roi_combo.itemData(current_index)
-                if actual_theme_name:
-                    self._apply_theme('roi', actual_theme_name)
+        if theme_name:
+            self._apply_theme('roi', theme_name)
     
     def _load_measurement_theme(self, theme_name: str):
         """加载测量工具主题"""
-        # 从显示名称获取实际的主题名称（数据值）
-        measurement_combo = self.setting_widgets.get('measurement_theme')
-        if measurement_combo:
-            current_index = measurement_combo.currentIndex()
-            if current_index >= 0:
-                actual_theme_name = measurement_combo.itemData(current_index)
-                if actual_theme_name:
-                    self._apply_theme('measurement', actual_theme_name)
+        if theme_name:
+            self._apply_theme('measurement', theme_name)
 
     def _update_button_text(self):
         """更新按钮文本"""
