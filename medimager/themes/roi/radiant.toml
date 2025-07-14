@@ -1,0 +1,17 @@
+name = "radiant"
+border_color = "#FF0F20"      # Yellow
+fill_color = "#FFF180"     # Semi-transparent yellow
+selected_color = "#FF0000"   # Red
+anchor_color = "#FF0000"     # Red
+border_width = 2
+anchor_size = 8 
+
+# 信息板设置
+info_bg_color = "#00000080"    # Semi-transparent black
+info_text_color = "#FFFFFF"   # White
+info_border_color = "#FFFFFF" # White
+info_font_size = 8
+info_radius = 5
+info_padding = 8
+info_precision = 1
+info_auto_hide = true 

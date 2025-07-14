@@ -135,6 +135,29 @@ class EllipseROITool(BaseTool):
         """不处理滚轮事件，让上一级处理（例如切片）"""
         return False
 
+    def key_press_event(self, event):
+        """处理键盘按键事件"""
+        from PySide6.QtCore import Qt
+        
+        if event.key() == Qt.Key_Delete:
+            model = self.viewer.model
+            if model and model.selected_indices:
+                # 删除选中的ROI
+                deleted_roi_ids = model.delete_selected_rois()
+                
+                # 从视图中移除对应的信息板
+                for roi_id in deleted_roi_ids:
+                    if roi_id in self.viewer.stats_box_positions:
+                        del self.viewer.stats_box_positions[roi_id]
+                
+                # 更新视图
+                self.viewer.scene.update()
+                event.accept()
+                return
+        
+        # 调用基类处理其他按键
+        super().key_press_event(event)
+
 
 class RectangleROITool(BaseTool):
     """
@@ -248,6 +271,29 @@ class RectangleROITool(BaseTool):
     def wheelEvent(self, event: QWheelEvent) -> bool:
         """不处理滚轮事件，让上一级处理（例如切片）"""
         return False
+
+    def key_press_event(self, event):
+        """处理键盘按键事件"""
+        from PySide6.QtCore import Qt
+        
+        if event.key() == Qt.Key_Delete:
+            model = self.viewer.model
+            if model and model.selected_indices:
+                # 删除选中的ROI
+                deleted_roi_ids = model.delete_selected_rois()
+                
+                # 从视图中移除对应的信息板
+                for roi_id in deleted_roi_ids:
+                    if roi_id in self.viewer.stats_box_positions:
+                        del self.viewer.stats_box_positions[roi_id]
+                
+                # 更新视图
+                self.viewer.scene.update()
+                event.accept()
+                return
+        
+        # 调用基类处理其他按键
+        super().key_press_event(event)
 
 
 class CircleROITool(BaseTool):
@@ -367,3 +413,26 @@ class CircleROITool(BaseTool):
     def wheelEvent(self, event: QWheelEvent) -> bool:
         """不处理滚轮事件，让上一级处理（例如切片）"""
         return False
+
+    def key_press_event(self, event):
+        """处理键盘按键事件"""
+        from PySide6.QtCore import Qt
+        
+        if event.key() == Qt.Key_Delete:
+            model = self.viewer.model
+            if model and model.selected_indices:
+                # 删除选中的ROI
+                deleted_roi_ids = model.delete_selected_rois()
+                
+                # 从视图中移除对应的信息板
+                for roi_id in deleted_roi_ids:
+                    if roi_id in self.viewer.stats_box_positions:
+                        del self.viewer.stats_box_positions[roi_id]
+                
+                # 更新视图
+                self.viewer.scene.update()
+                event.accept()
+                return
+        
+        # 调用基类处理其他按键
+        super().key_press_event(event)

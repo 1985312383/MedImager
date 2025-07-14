@@ -8,7 +8,7 @@
 from typing import Dict, List, Optional, Tuple, Set, Union
 from PySide6.QtWidgets import (QWidget, QGridLayout, QFrame, QVBoxLayout, 
                               QHBoxLayout, QLabel, QPushButton, QSplitter,
-                              QSizePolicy, QProgressBar)
+                              QSizePolicy, QProgressBar, QApplication)
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QTimer, QSize
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPixmap
 
@@ -55,8 +55,14 @@ class ViewFrame(QFrame):
         # 启用拖拽接收
         self.setAcceptDrops(True)
         
+        # 主题管理器相关 - 必须在_setup_style之前初始化
+        self._theme_manager = None
+        
         self._setup_ui()
         self._setup_style()
+        
+        # 注册到主题管理器
+        self._register_to_theme_manager()
         
         logger.debug(f"[ViewFrame.__init__] 视图框架初始化完成: {view_id}")
     
@@ -159,20 +165,13 @@ class ViewFrame(QFrame):
     
     def _update_border_style(self) -> None:
         """更新边框样式"""
-        if self._is_active:
-            self.setStyleSheet("""
-                ViewFrame[objectName="viewFrame"] {
-                    border: 2px solid #0078d4;
-                    background-color: rgba(0, 120, 212, 10);
-                }
-            """)
+        # 使用主题感知的边框样式更新
+        if self._theme_manager:
+            current_theme = self._theme_manager.get_current_theme()
+            self._update_border_style_for_theme(current_theme)
         else:
-            self.setStyleSheet("""
-                ViewFrame[objectName="viewFrame"] {
-                    border: 1px solid #cccccc;
-                    background-color: transparent;
-                }
-            """)
+            # 回退到默认样式（浅色主题）
+            self._update_border_style_for_theme('light')
     
     def mousePressEvent(self, event) -> None:
         """处理鼠标按下事件"""
@@ -472,6 +471,140 @@ class ViewFrame(QFrame):
     @property
     def image_viewer(self) -> ImageViewer:
         return self._image_viewer
+    
+    def _register_to_theme_manager(self) -> None:
+        """注册到主题管理器"""
+        try:
+            # 尝试从父窗口获取主题管理器
+            main_window = self.window()
+            if hasattr(main_window, 'theme_manager'):
+                self._theme_manager = main_window.theme_manager
+                self._theme_manager.register_component(self)
+                logger.debug(f"[ViewFrame._register_to_theme_manager] 成功注册到主题管理器: {self._view_id}")
+                
+                # 立即应用当前主题
+                current_theme = self._theme_manager.get_current_theme()
+                self.update_theme(current_theme)
+            else:
+                logger.debug(f"[ViewFrame._register_to_theme_manager] 未找到主题管理器: {self._view_id}")
+        except Exception as e:
+            logger.error(f"[ViewFrame._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
+    
+    def update_theme(self, theme_name: str) -> None:
+        """主题更新接口 - 由ThemeManager调用"""
+        logger.info(f"[ViewFrame.update_theme] 开始更新主题: {theme_name}, view_id: {self._view_id} (ID: {id(self)})")
+        try:
+            # 更新边框样式（根据主题调整颜色）
+            logger.info(f"[ViewFrame.update_theme] 更新边框样式, 当前激活状态: {self._is_active}")
+            self._update_border_style_for_theme(theme_name)
+            
+            # 更新标题栏和状态栏的样式
+            logger.info(f"[ViewFrame.update_theme] 更新标题栏主题")
+            self._update_title_bar_theme(theme_name)
+            
+            logger.info(f"[ViewFrame.update_theme] 更新状态栏主题")
+            self._update_status_bar_theme(theme_name)
+            
+            # 更新内部ImageViewer的主题
+            if hasattr(self, '_image_viewer') and self._image_viewer:
+                logger.info(f"[ViewFrame.update_theme] 更新内部ImageViewer主题")
+                if hasattr(self._image_viewer, 'update_theme'):
+                    self._image_viewer.update_theme(theme_name)
+                else:
+                    logger.warning(f"[ViewFrame.update_theme] ImageViewer没有update_theme方法")
+            else:
+                logger.info(f"[ViewFrame.update_theme] 没有ImageViewer需要更新")
+            
+            logger.info(f"[ViewFrame.update_theme] 主题更新完成: {theme_name}, view_id: {self._view_id}")
+        except Exception as e:
+            logger.error(f"[ViewFrame.update_theme] 主题更新失败: {e}", exc_info=True)
+    
+    def _update_border_style_for_theme(self, theme_name: str) -> None:
+        """根据主题更新边框样式"""
+        if self._is_active:
+            if theme_name == 'light':
+                self.setStyleSheet("""
+                    ViewFrame[objectName="viewFrame"] {
+                        border: 2px solid #0078d4;
+                        background-color: rgba(0, 120, 212, 10);
+                    }
+                """)
+            else:  # dark theme
+                self.setStyleSheet("""
+                    ViewFrame[objectName="viewFrame"] {
+                        border: 2px solid #4cc2ff;
+                        background-color: rgba(76, 194, 255, 10);
+                    }
+                """)
+        else:
+            if theme_name == 'light':
+                self.setStyleSheet("""
+                    ViewFrame[objectName="viewFrame"] {
+                        border: 1px solid #cccccc;
+                        background-color: transparent;
+                    }
+                """)
+            else:  # dark theme
+                self.setStyleSheet("""
+                    ViewFrame[objectName="viewFrame"] {
+                        border: 1px solid #555555;
+                        background-color: transparent;
+                    }
+                """)
+    
+    def _update_title_bar_theme(self, theme_name: str) -> None:
+        """更新标题栏主题"""
+        if theme_name == 'light':
+            title_style = """
+                QWidget[objectName="viewTitleBar"] {
+                    background-color: #f8f9fa;
+                    color: #333333;
+                }
+                QLabel {
+                    color: #333333;
+                }
+            """
+        else:  # dark theme
+            title_style = """
+                QWidget[objectName="viewTitleBar"] {
+                    background-color: #3c3c3c;
+                    color: #ffffff;
+                }
+                QLabel {
+                    color: #ffffff;
+                }
+            """
+        
+        if hasattr(self, '_title_bar'):
+            self._title_bar.setStyleSheet(title_style)
+    
+    def _update_status_bar_theme(self, theme_name: str) -> None:
+        """更新状态栏主题"""
+        if theme_name == 'light':
+            status_style = """
+                QWidget[objectName="viewStatusBar"] {
+                    background-color: #f8f9fa;
+                    color: #666666;
+                }
+                QLabel {
+                    color: #666666;
+                    font-size: 11px;
+                }
+            """
+        else:  # dark theme
+            status_style = """
+                QWidget[objectName="viewStatusBar"] {
+                    background-color: #3c3c3c;
+                    color: #cccccc;
+                }
+                QLabel {
+                    color: #cccccc;
+                    font-size: 11px;
+                }
+            """
+        
+        if hasattr(self, '_status_bar'):
+            self._status_bar.setStyleSheet(status_style)
 
 
 class MultiViewerGrid(QWidget):
@@ -500,15 +633,74 @@ class MultiViewerGrid(QWidget):
         logger.debug("[MultiViewerGrid.__init__] 开始初始化多视图网格")
         
         self._series_manager = series_manager
+        self._sync_manager = None  # 将由主窗口设置
         self._current_layout = (1, 1)
         self._view_frames: Dict[str, ViewFrame] = {}
         
         self._setup_ui()
         self._connect_signals()
         
+        # 主题管理器注册
+        self._theme_manager = None
+        self._register_to_theme_manager()
+        
         # 注意：初始布局将由主窗口在所有组件初始化完成后设置
         
         logger.info("[MultiViewerGrid.__init__] 多视图网格初始化完成")
+    
+    def set_sync_manager(self, sync_manager) -> None:
+        """设置同步管理器
+        
+        Args:
+            sync_manager: 同步管理器实例
+        """
+        logger.debug("[MultiViewerGrid.set_sync_manager] 设置同步管理器")
+        
+        self._sync_manager = sync_manager
+        
+        # 连接同步信号
+        self._connect_sync_signals()
+        
+        # 为所有已存在的视图框架设置同步管理器
+        for view_frame in self._view_frames.values():
+            if hasattr(view_frame, 'set_sync_manager'):
+                view_frame.set_sync_manager(sync_manager)
+        
+        logger.debug("[MultiViewerGrid.set_sync_manager] 同步管理器设置完成")
+
+    def _connect_sync_signals(self) -> None:
+        """连接同步管理器信号"""
+        if not hasattr(self, '_sync_manager') or not self._sync_manager:
+            return
+            
+        logger.debug("[MultiViewerGrid._connect_sync_signals] 连接同步管理器信号")
+        
+        # 连接同步管理器的信号到视图处理
+        if hasattr(self._sync_manager, 'cross_reference_updated'):
+            self._sync_manager.cross_reference_updated.connect(self._on_cross_reference_updated)
+        if hasattr(self._sync_manager, 'view_synced'):
+            self._sync_manager.view_synced.connect(self._on_view_synced)
+        
+        logger.debug("[MultiViewerGrid._connect_sync_signals] 同步管理器信号连接完成")
+
+    def _on_cross_reference_updated(self, view_id: str, position) -> None:
+        """处理交叉参考线更新"""
+        logger.debug(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线: view_id={view_id}")
+        
+        # 更新所有其他视图的交叉参考线
+        for frame_view_id, view_frame in self._view_frames.items():
+            if frame_view_id != view_id and view_frame.image_viewer:
+                try:
+                    # 如果ImageViewer有交叉参考线方法，显示参考线
+                    if hasattr(view_frame.image_viewer, 'show_cross_reference'):
+                        view_frame.image_viewer.show_cross_reference(position)
+                except Exception as e:
+                    logger.warning(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线失败: {e}")
+
+    def _on_view_synced(self, source_view_id: str, target_view_id: str) -> None:
+        """处理视图同步事件"""
+        logger.debug(f"[MultiViewerGrid._on_view_synced] 视图同步: {source_view_id} -> {target_view_id}")
+        # 这里可以添加视图同步后的UI更新逻辑
     
     def _setup_ui(self) -> None:
         """设置UI"""
@@ -575,6 +767,280 @@ class MultiViewerGrid(QWidget):
         except Exception as e:
             logger.error(f"[MultiViewerGrid.set_layout] 设置网格布局失败: {e}", exc_info=True)
             return False
+    
+    def set_special_layout(self, layout_config: dict) -> bool:
+        """设置特殊布局
+        
+        Args:
+            layout_config: 特殊布局配置字典
+            
+        Returns:
+            是否成功设置
+        """
+        logger.debug(f"[MultiViewerGrid.set_special_layout] 设置特殊布局: {layout_config}")
+        
+        try:
+            layout_type = layout_config.get('type', '')
+            
+            # 根据布局类型确定等效网格大小
+            equivalent_layout = self._get_equivalent_layout(layout_config)
+            
+            # 先创建等效的网格布局
+            rows, cols = equivalent_layout
+            if not self.set_layout(rows, cols):
+                return False
+            
+            # 等待视图创建完成
+            QApplication.processEvents()
+            
+            # 然后重新排列为特殊布局
+            success = self._arrange_special_layout(layout_config)
+            
+            if success:
+                self._current_layout = layout_config  # 保存特殊布局配置
+                logger.info(f"[MultiViewerGrid.set_special_layout] 特殊布局设置成功: {layout_type}")
+                self.layout_changed.emit(layout_config)
+                return True
+            else:
+                logger.error(f"[MultiViewerGrid.set_special_layout] 特殊布局排列失败: {layout_type}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid.set_special_layout] 设置特殊布局失败: {e}", exc_info=True)
+            return False
+    
+    def _get_equivalent_layout(self, layout_config: dict) -> Tuple[int, int]:
+        """获取特殊布局的等效网格大小"""
+        layout_type = layout_config.get('type', '')
+        
+        if layout_type == 'vertical_split':
+            if layout_config.get('bottom_split', False):
+                return (2, 2)  # 上+下左+下右
+            else:
+                return (2, 1)  # 上+下
+        elif layout_type == 'horizontal_split':
+            if layout_config.get('right_split', False):
+                return (2, 2)  # 左+右上+右下
+            else:
+                return (1, 2)  # 左+右
+        elif layout_type == 'triple_column_right_split':
+            return (2, 2)  # 左+中+右上+右下
+        elif layout_type == 'triple_column_middle_right_split':
+            return (2, 3)  # 左+中上+中下+右上+右下
+        else:
+            return (2, 2)  # 默认
+    
+    def _arrange_special_layout(self, layout_config: dict) -> bool:
+        """排列特殊布局"""
+        layout_type = layout_config.get('type', '')
+        
+        try:
+            if layout_type == 'vertical_split':
+                return self._arrange_vertical_split_layout(layout_config)
+            elif layout_type == 'horizontal_split':
+                return self._arrange_horizontal_split_layout(layout_config)
+            elif layout_type in ['triple_column_right_split', 'triple_column_middle_right_split']:
+                return self._arrange_triple_column_layout(layout_config)
+            else:
+                logger.warning(f"[MultiViewerGrid._arrange_special_layout] 未知的特殊布局类型: {layout_type}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._arrange_special_layout] 排列特殊布局失败: {e}", exc_info=True)
+            return False
+    
+    def _arrange_vertical_split_layout(self, layout_config: dict) -> bool:
+        """排列上下分割布局"""
+        logger.debug("[MultiViewerGrid._arrange_vertical_split_layout] 排列上下分割布局")
+        
+        try:
+            view_frames = list(self._view_frames.values())
+            
+            if len(view_frames) < 2:
+                logger.warning("[MultiViewerGrid._arrange_vertical_split_layout] 视图框架数量不足")
+                return False
+            
+            # 移除现有布局
+            self._clear_grid_layout()
+            
+            # 创建垂直分割器
+            main_splitter = QSplitter(Qt.Vertical, self._grid_container)
+            
+            # 设置分割比例
+            top_ratio = layout_config.get('top_ratio', 0.6)
+            
+            # 添加上半部分
+            main_splitter.addWidget(view_frames[0])
+            
+            if layout_config.get('bottom_split', False) and len(view_frames) >= 3:
+                # 下半部分需要左右分割
+                bottom_splitter = QSplitter(Qt.Horizontal)
+                bottom_splitter.addWidget(view_frames[1])
+                bottom_splitter.addWidget(view_frames[2])
+                bottom_splitter.setSizes([50, 50])  # 下半部分左右等分
+                
+                main_splitter.addWidget(bottom_splitter)
+            elif len(view_frames) >= 2:
+                # 下半部分整体
+                main_splitter.addWidget(view_frames[1])
+            
+            # 设置分割比例
+            total_height = 1000
+            top_height = int(total_height * top_ratio)
+            bottom_height = total_height - top_height
+            main_splitter.setSizes([top_height, bottom_height])
+            
+            # 创建新的布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+            new_layout.addWidget(main_splitter)
+            
+            logger.info("[MultiViewerGrid._arrange_vertical_split_layout] 上下分割布局排列完成")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._arrange_vertical_split_layout] 排列上下分割布局失败: {e}", exc_info=True)
+            return False
+    
+    def _arrange_horizontal_split_layout(self, layout_config: dict) -> bool:
+        """排列左右分割布局"""
+        logger.debug("[MultiViewerGrid._arrange_horizontal_split_layout] 排列左右分割布局")
+        
+        try:
+            view_frames = list(self._view_frames.values())
+            
+            if len(view_frames) < 2:
+                logger.warning("[MultiViewerGrid._arrange_horizontal_split_layout] 视图框架数量不足")
+                return False
+            
+            # 移除现有布局
+            self._clear_grid_layout()
+            
+            # 创建水平分割器
+            main_splitter = QSplitter(Qt.Horizontal, self._grid_container)
+            
+            # 设置分割比例
+            left_ratio = layout_config.get('left_ratio', 0.6)
+            
+            # 添加左半部分
+            main_splitter.addWidget(view_frames[0])
+            
+            if layout_config.get('right_split', False) and len(view_frames) >= 3:
+                # 右半部分需要上下分割
+                right_splitter = QSplitter(Qt.Vertical)
+                right_splitter.addWidget(view_frames[1])
+                right_splitter.addWidget(view_frames[2])
+                right_splitter.setSizes([50, 50])  # 右半部分上下等分
+                
+                main_splitter.addWidget(right_splitter)
+            elif len(view_frames) >= 2:
+                # 右半部分整体
+                main_splitter.addWidget(view_frames[1])
+            
+            # 设置分割比例
+            total_width = 1000
+            left_width = int(total_width * left_ratio)
+            right_width = total_width - left_width
+            main_splitter.setSizes([left_width, right_width])
+            
+            # 创建新的布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+            new_layout.addWidget(main_splitter)
+            
+            logger.info("[MultiViewerGrid._arrange_horizontal_split_layout] 左右分割布局排列完成")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._arrange_horizontal_split_layout] 排列左右分割布局失败: {e}", exc_info=True)
+            return False
+    
+    def _arrange_triple_column_layout(self, layout_config: dict) -> bool:
+        """排列三列布局"""
+        logger.debug("[MultiViewerGrid._arrange_triple_column_layout] 排列三列布局")
+        
+        try:
+            view_frames = list(self._view_frames.values())
+            
+            if len(view_frames) < 4:
+                logger.warning("[MultiViewerGrid._arrange_triple_column_layout] 视图框架数量不足")
+                return False
+            
+            # 移除现有布局
+            self._clear_grid_layout()
+            
+            # 创建主水平分割器
+            main_splitter = QSplitter(Qt.Horizontal, self._grid_container)
+            
+            # 设置分割比例
+            left_ratio = layout_config.get('left_ratio', 0.33)
+            middle_ratio = layout_config.get('middle_ratio', 0.34)
+            right_ratio = 1.0 - left_ratio - middle_ratio
+            
+            # 添加左列
+            main_splitter.addWidget(view_frames[0])
+            
+            layout_type = layout_config.get('type', '')
+            
+            if layout_type == 'triple_column_middle_right_split' and len(view_frames) >= 5:
+                # 中间和右边都分割
+                # 中列分割
+                middle_splitter = QSplitter(Qt.Vertical)
+                middle_splitter.addWidget(view_frames[1])
+                middle_splitter.addWidget(view_frames[2])
+                middle_splitter.setSizes([50, 50])
+                main_splitter.addWidget(middle_splitter)
+                
+                # 右列分割
+                right_splitter = QSplitter(Qt.Vertical)
+                right_splitter.addWidget(view_frames[3])
+                right_splitter.addWidget(view_frames[4])
+                right_splitter.setSizes([50, 50])
+                main_splitter.addWidget(right_splitter)
+            else:
+                # 只有右边分割
+                # 中列整体
+                main_splitter.addWidget(view_frames[1])
+                
+                # 右列分割
+                if len(view_frames) >= 4:
+                    right_splitter = QSplitter(Qt.Vertical)
+                    right_splitter.addWidget(view_frames[2])
+                    right_splitter.addWidget(view_frames[3])
+                    right_splitter.setSizes([50, 50])
+                    main_splitter.addWidget(right_splitter)
+            
+            # 设置分割比例
+            total_width = 1000
+            left_width = int(total_width * left_ratio)
+            middle_width = int(total_width * middle_ratio)
+            right_width = total_width - left_width - middle_width
+            main_splitter.setSizes([left_width, middle_width, right_width])
+            
+            # 创建新的布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+            new_layout.addWidget(main_splitter)
+            
+            logger.info("[MultiViewerGrid._arrange_triple_column_layout] 三列布局排列完成")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._arrange_triple_column_layout] 排列三列布局失败: {e}", exc_info=True)
+            return False
+    
+    def _clear_grid_layout(self) -> None:
+        """清除网格布局但保留视图框架"""
+        old_layout = self._grid_container.layout()
+        if old_layout:
+            # 移除所有视图框架但不删除
+            view_frames = list(self._view_frames.values())
+            for view_frame in view_frames:
+                old_layout.removeWidget(view_frame)
+                view_frame.setParent(None)
+            
+            # 删除旧布局
+            QWidget().setLayout(old_layout)
     
     def _clear_grid(self) -> None:
         """清空网格"""
@@ -781,4 +1247,58 @@ class MultiViewerGrid(QWidget):
                     logger.debug(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应完成: {view_frame.view_id}")
                     
         except Exception as e:
-            logger.error(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应失败: {e}", exc_info=True) 
+            logger.error(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应失败: {e}", exc_info=True)
+    
+    def _register_to_theme_manager(self) -> None:
+        """注册到主题管理器"""
+        try:
+            # 尝试从父窗口获取主题管理器
+            main_window = self.window()
+            if hasattr(main_window, 'theme_manager'):
+                self._theme_manager = main_window.theme_manager
+                self._theme_manager.register_component(self)
+                logger.debug(f"[MultiViewerGrid._register_to_theme_manager] 成功注册到主题管理器")
+                
+                # 立即应用当前主题
+                current_theme = self._theme_manager.get_current_theme()
+                self.update_theme(current_theme)
+            else:
+                logger.debug(f"[MultiViewerGrid._register_to_theme_manager] 未找到主题管理器")
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
+    
+    def update_theme(self, theme_name: str) -> None:
+        """主题更新接口 - 由ThemeManager调用"""
+        logger.info(f"[MultiViewerGrid.update_theme] 开始更新主题: {theme_name} (ID: {id(self)})")
+        try:
+            # 更新网格容器背景色
+            if theme_name == 'light':
+                bg_color = "#f0f0f0"
+                stylesheet = """
+                    QWidget {
+                        background-color: #f0f0f0;
+                    }
+                """
+            else:  # dark theme
+                bg_color = "#2b2b2b"
+                stylesheet = """
+                    QWidget {
+                        background-color: #2b2b2b;
+                    }
+                """
+            
+            logger.info(f"[MultiViewerGrid.update_theme] 设置背景色: {bg_color}")
+            self.setStyleSheet(stylesheet)
+            
+            # 更新所有视图框架的主题
+            logger.info(f"[MultiViewerGrid.update_theme] 更新 {len(self._view_frames)} 个视图框架的主题")
+            for i, (view_id, view_frame) in enumerate(self._view_frames.items()):
+                logger.info(f"[MultiViewerGrid.update_theme] 更新视图框架 {i+1}/{len(self._view_frames)}: {view_id}")
+                if hasattr(view_frame, 'update_theme'):
+                    view_frame.update_theme(theme_name)
+                else:
+                    logger.warning(f"[MultiViewerGrid.update_theme] 视图框架 {view_id} 没有update_theme方法")
+            
+            logger.info(f"[MultiViewerGrid.update_theme] 主题更新完成: {theme_name}")
+        except Exception as e:
+            logger.error(f"[MultiViewerGrid.update_theme] 主题更新失败: {e}", exc_info=True)

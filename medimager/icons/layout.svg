@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 网格布局图标 -->
+  <rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="12" y="2" width="10" height="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="2" y="12" width="8" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/>
+  <rect x="12" y="12" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/>
+</svg>

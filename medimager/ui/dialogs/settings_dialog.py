@@ -182,6 +182,17 @@ class SettingsDialog(QDialog):
         ui_theme_layout.addRow(self.tr("主题:"), ui_theme_combo)
         layout.addWidget(ui_theme_group)
         
+        # 连接UI主题变化处理逻辑
+        def on_ui_theme_changed(index):
+            theme_name = ui_theme_combo.itemData(index)
+            if theme_name:
+                # 立即应用主题变化
+                main_window = self.parent()
+                if hasattr(main_window, 'theme_manager'):
+                    main_window.theme_manager.set_theme(theme_name)
+        
+        ui_theme_combo.currentIndexChanged.connect(on_ui_theme_changed)
+        
         layout.addStretch()
         return page
 
@@ -848,7 +859,7 @@ class SettingsDialog(QDialog):
                 
         except Exception as e:
             pass  # 静默处理创建失败
-
+    
     def _enable_roi_custom_controls(self, enabled: bool):
         """启用/禁用ROI自定义控件"""
         roi_controls = [
@@ -890,4 +901,4 @@ class SettingsDialog(QDialog):
         """更新按钮文本"""
         self.button_box.button(QDialogButtonBox.Ok).setText(self.tr("确定"))
         self.button_box.button(QDialogButtonBox.Cancel).setText(self.tr("取消"))
-        self.button_box.button(QDialogButtonBox.RestoreDefaults).setText(self.tr("恢复默认")) 
+        self.button_box.button(QDialogButtonBox.RestoreDefaults).setText(self.tr("恢复默认"))

@@ -9,15 +9,16 @@ import os
 import uuid
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Set
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
     QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
-    QButtonGroup, QPushButton, QComboBox, QProgressBar
+    QButtonGroup, QPushButton, QComboBox, QProgressBar, QToolButton
 )
 from PySide6.QtCore import Qt, QDir, QThread, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QActionGroup
+from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
@@ -35,7 +36,6 @@ from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
 from medimager.ui.tools.measurement_tool import MeasurementTool
 from medimager.ui.main_toolbar import create_main_toolbar
-from medimager.ui.widgets.layout_grid_selector import LayoutSelectorButton
 
 logger = get_logger(__name__)
 
@@ -96,17 +96,22 @@ class MainWindow(QMainWindow):
         # 初始化UI
         self._init_ui()
         
-        # 连接信号和槽
+        # 连接信号和槽（在UI创建之后）
         self._connect_signals()
         
         # 确保初始布局正确设置
         self._ensure_initial_layout()
         
-        # 应用当前主题
+        # 应用当前主题（在信号连接之后）
         self.theme_manager.apply_current_theme()
         
         # 更新UI状态
         self._update_ui_state()
+        
+        # 初始工具传播 - 确保所有视图都使用正确的工具
+        logger.info("[MainWindow.__init__] 准备进行初始工具传播")
+        self._propagate_tool_to_viewers()
+        logger.info("[MainWindow.__init__] 初始工具传播完成")
         
         # 序列加载状态
         self._loading_threads: Dict[str, SeriesLoadingThread] = {}
@@ -129,6 +134,13 @@ class MainWindow(QMainWindow):
         
         # 多序列管理器
         self.series_manager = MultiSeriesManager(self)
+        
+        # 同步管理器
+        from medimager.core.sync_manager import SyncManager, SyncMode
+        self.sync_manager = SyncManager(self.series_manager, self)
+        
+        # 默认启用基本同步模式（窗宽窗位和切片同步）
+        self.sync_manager.set_sync_mode(SyncMode.BASIC)
         
         # 序列视图绑定管理器
         self.binding_manager = SeriesViewBindingManager(self.series_manager, self)
@@ -193,6 +205,9 @@ class MainWindow(QMainWindow):
         self._init_toolbars()
         self._init_statusbar()
         
+        # 设置同步管理器到多视图网格
+        self.multi_viewer_grid.set_sync_manager(self.sync_manager)
+        
         logger.debug("[MainWindow._init_ui] 主窗口UI初始化完成")
     
     def _connect_signals(self) -> None:
@@ -220,9 +235,58 @@ class MainWindow(QMainWindow):
         self.multi_viewer_grid.layout_changed.connect(self._on_grid_layout_changed)
         self.multi_viewer_grid.binding_requested.connect(self._on_binding_requested)
         
+        # 同步管理器信号
+        self.sync_manager.sync_mode_changed.connect(self._on_sync_mode_changed)
+        self.sync_manager.sync_group_changed.connect(self._on_sync_group_changed)
+        
+        # 主题管理器信号
+        self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        
         # 连接已加载序列的切片变化信号（合并到现有方法中）
         
         logger.debug("[MainWindow._connect_signals] 主窗口信号槽连接完成")
+    
+    def _on_theme_changed(self, theme_name: str) -> None:
+        """主题变化时刷新工具栏图标"""
+        logger.info(f"[MainWindow._on_theme_changed] 收到主题变化信号: {theme_name}")
+        
+        try:
+            # 刷新工具栏图标
+            toolbar_count = 0
+            button_count = 0
+            action_count = 0
+            
+            for toolbar in self.findChildren(QToolBar):
+                toolbar_count += 1
+                logger.debug(f"[MainWindow._on_theme_changed] 处理工具栏: {toolbar.objectName()}")
+                
+                # 刷新工具栏中的QToolButton（如ROI按钮）
+                for widget in toolbar.findChildren(QToolButton):
+                    button_count += 1
+                    if hasattr(widget, 'refresh_icon'):
+                        widget.refresh_icon()
+                        logger.debug(f"[MainWindow._on_theme_changed] 刷新了QToolButton: {widget.objectName()}")
+                    else:
+                        logger.debug(f"[MainWindow._on_theme_changed] QToolButton没有refresh_icon方法: {widget.objectName()}")
+                
+                # 刷新工具栏中的QAction
+                for action in toolbar.actions():
+                    if action.icon() and not action.icon().isNull():
+                        action_count += 1
+                        # 重新创建主题化图标
+                        icon_path = getattr(action, '_icon_path', None)
+                        if icon_path:
+                            new_icon = self.theme_manager.create_themed_icon(icon_path)
+                            action.setIcon(new_icon)
+                            logger.debug(f"[MainWindow._on_theme_changed] 刷新了QAction图标: {icon_path}")
+                        else:
+                            logger.debug(f"[MainWindow._on_theme_changed] QAction没有_icon_path: {action.text()}")
+            
+            logger.info(f"[MainWindow._on_theme_changed] 工具栏图标已更新: {theme_name} "
+                       f"(工具栏:{toolbar_count}, 按钮:{button_count}, 动作:{action_count})")
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._on_theme_changed] 刷新工具栏失败: {e}", exc_info=True)
     
     def _init_menus(self) -> None:
         """初始化菜单栏"""
@@ -354,6 +418,8 @@ class MainWindow(QMainWindow):
         custom_wl_action.triggered.connect(self._open_custom_wl_dialog)
         wl_menu.addAction(custom_wl_action)
         
+
+        
         # 工具菜单
         tools_menu = menubar.addMenu(self.tr("工具(&T)"))
         
@@ -377,78 +443,49 @@ class MainWindow(QMainWindow):
         """初始化工具栏"""
         logger.debug("[MainWindow._init_toolbars] 初始化主窗口工具栏")
         
-        # 主工具栏
+        # 使用统一的主工具栏创建函数（包含所有工具和按钮）
+        from medimager.ui.main_toolbar import create_main_toolbar
         main_toolbar = create_main_toolbar(self)
         self.addToolBar(main_toolbar)
         
-        # 多视图工具栏
-        multiview_toolbar = QToolBar(self.tr("多视图"), self)
-        multiview_toolbar.setObjectName("MultiViewToolBar")
-        
-        # 布局选择器按钮
-        self._layout_selector_button = LayoutSelectorButton(self)
-        self._layout_selector_button.layout_selected.connect(self._set_layout)
-        multiview_toolbar.addWidget(self._layout_selector_button)
-        
-        multiview_toolbar.addSeparator()
-        
-        # 自动分配按钮
-        auto_assign_btn = QPushButton(self.tr("自动分配"))
-        auto_assign_btn.setToolTip(self.tr("自动将序列分配到可用视图"))
-        auto_assign_btn.clicked.connect(self._auto_assign_all_series)
-        multiview_toolbar.addWidget(auto_assign_btn)
-        
-        # 清除绑定按钮
-        clear_bindings_btn = QPushButton(self.tr("清除绑定"))
-        clear_bindings_btn.setToolTip(self.tr("清除所有序列绑定"))
-        clear_bindings_btn.clicked.connect(self._clear_all_bindings)
-        multiview_toolbar.addWidget(clear_bindings_btn)
-        
-        self.addToolBar(multiview_toolbar)
+        # 获取同步按钮的引用（工具栏创建时已添加）
+        for widget in main_toolbar.children():
+            if hasattr(widget, 'set_sync_states'):
+                self._sync_button = widget
+                break
         
         logger.debug("[MainWindow._init_toolbars] 主窗口工具栏初始化完成")
     
     def _init_default_tool(self) -> None:
         """初始化默认工具"""
         logger.debug("[MainWindow._init_default_tool] 初始化默认工具")
+        self._current_tool = 'default'
         self.current_tool = DefaultTool(None)  # 稍后会传播到各个视图
         logger.debug("[MainWindow._init_default_tool] 默认工具初始化完成")
     
     def _on_tool_selected(self, tool_name: str) -> None:
-        """处理工具选择"""
+        """处理工具选择事件"""
         logger.debug(f"[MainWindow._on_tool_selected] 工具选择: {tool_name}")
         
-        try:
-            # 创建新工具
-            if tool_name == "default":
-                self.current_tool = DefaultTool(None)
-            elif tool_name == "ellipse_roi":
-                self.current_tool = EllipseROITool(None)
-            elif tool_name == "rectangle_roi":
-                self.current_tool = RectangleROITool(None)
-            elif tool_name == "circle_roi":
-                self.current_tool = CircleROITool(None)
-            elif tool_name == "measurement":
-                self.current_tool = MeasurementTool(None)
-            else:
-                logger.warning(f"[MainWindow._on_tool_selected] 未知工具: {tool_name}")
-                return
-            
-            # 将工具传播到所有活动的ImageViewer
-            self._propagate_tool_to_viewers()
-            
-            logger.info(f"[MainWindow._on_tool_selected] 工具切换完成: {tool_name}")
-            
-        except Exception as e:
-            logger.error(f"[MainWindow._on_tool_selected] 工具切换失败: {e}", exc_info=True)
+        # 保存当前工具状态
+        self._current_tool = tool_name
+        
+        # 创建对应的工具实例
+        self.current_tool = self._create_tool_instance(tool_name)
+        
+        # 传播工具到所有视图
+        self._propagate_tool_to_viewers()
+        
+        logger.info(f"[MainWindow._on_tool_selected] 工具切换完成: {tool_name}")
     
     def _propagate_tool_to_viewers(self) -> None:
         """将当前工具传播到所有ImageViewer"""
-        logger.debug("[MainWindow._propagate_tool_to_viewers] 传播工具到视图")
+        logger.info("[MainWindow._propagate_tool_to_viewers] 传播工具到视图")
         
         try:
             # 获取所有视图框架
             view_frames = self.multi_viewer_grid.get_all_view_frames()
+            logger.info(f"[MainWindow._propagate_tool_to_viewers] 发现视图框架数量: {len(view_frames)}")
             
             for view_id, view_frame in view_frames.items():
                 if view_frame and view_frame.image_viewer:
@@ -456,12 +493,33 @@ class MainWindow(QMainWindow):
                     tool_copy = self._create_tool_copy(view_frame.image_viewer)
                     if tool_copy:
                         view_frame.image_viewer.set_tool(tool_copy)
-                        logger.debug(f"[MainWindow._propagate_tool_to_viewers] 工具已传播到视图: {view_id}")
+                        logger.info(f"[MainWindow._propagate_tool_to_viewers] 工具已传播到视图: {view_id}, 工具类型: {type(tool_copy).__name__}")
+                    else:
+                        logger.warning(f"[MainWindow._propagate_tool_to_viewers] 工具副本创建失败: {view_id}")
+                else:
+                    logger.warning(f"[MainWindow._propagate_tool_to_viewers] 视图框架或ImageViewer为空: {view_id}")
             
-            logger.debug(f"[MainWindow._propagate_tool_to_viewers] 工具传播完成: 影响了{len(view_frames)}个视图")
+            logger.info(f"[MainWindow._propagate_tool_to_viewers] 工具传播完成: 影响了{len(view_frames)}个视图")
             
         except Exception as e:
             logger.error(f"[MainWindow._propagate_tool_to_viewers] 工具传播失败: {e}", exc_info=True)
+    
+    def _create_tool_instance(self, tool_name: str):
+        """根据工具名称创建工具实例"""
+        from medimager.ui.tools.default_tool import DefaultTool
+        from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
+        from medimager.ui.tools.measurement_tool import MeasurementTool
+        
+        tool_map = {
+            'default': DefaultTool,
+            'ellipse_roi': EllipseROITool,
+            'rectangle_roi': RectangleROITool,
+            'circle_roi': CircleROITool,
+            'measurement': MeasurementTool
+        }
+        
+        tool_class = tool_map.get(tool_name, DefaultTool)
+        return tool_class(None)  # 临时创建，稍后会为每个viewer创建副本
     
     def _create_tool_copy(self, image_viewer) -> Optional:
         """为指定的ImageViewer创建工具副本"""
@@ -541,18 +599,54 @@ class MainWindow(QMainWindow):
         logger.debug(f"[MainWindow._toggle_info_panel] 切换信息面板: {checked}")
         self.dicom_tag_panel.setVisible(checked)
     
-    def _set_layout(self, rows: int, cols: int) -> None:
+    def _set_layout(self, layout_config: tuple) -> None:
         """设置视图布局"""
-        logger.debug(f"[MainWindow._set_layout] 设置布局: {rows}×{cols}")
+        logger.debug(f"[MainWindow._set_layout] 设置布局: {layout_config}")
         
-        success = self.series_manager.set_layout(rows, cols)
-        if success:
-            logger.info(f"[MainWindow._set_layout] 布局设置成功: {rows}×{cols}")
+        try:
+            # 检查是否为规则网格布局
+            if isinstance(layout_config, tuple) and len(layout_config) == 2:
+                rows, cols = layout_config
+                
+                # 设置序列管理器布局
+                success = self.series_manager.set_layout(rows, cols)
+                if success:
+                    # 同时设置多视图网格布局
+                    grid_success = self.multi_viewer_grid.set_layout(rows, cols)
+                    if grid_success:
+                        logger.info(f"[MainWindow._set_layout] 规则网格布局设置成功: {rows}×{cols}")
+                    else:
+                        logger.error(f"[MainWindow._set_layout] 多视图网格布局设置失败: {rows}×{cols}")
+                        return
+                else:
+                    logger.error(f"[MainWindow._set_layout] 序列管理器布局设置失败: {rows}×{cols}")
+                    return
+            elif isinstance(layout_config, dict):
+                # 特殊布局：使用多视图网格的特殊布局功能
+                layout_type = layout_config.get('type', '')
+                
+                # 使用多视图网格的特殊布局功能
+                grid_success = self.multi_viewer_grid.set_special_layout(layout_config)
+                if grid_success:
+                    logger.info(f"[MainWindow._set_layout] 特殊布局设置成功: {layout_type}")
+                else:
+                    logger.error(f"[MainWindow._set_layout] 特殊布局设置失败: {layout_type}")
+                    # 回退到默认布局
+                    rows, cols = 2, 2
+                    self.series_manager.set_layout(rows, cols)
+                    self.multi_viewer_grid.set_layout(rows, cols)
+                    logger.info(f"[MainWindow._set_layout] 回退到默认2×2网格布局")
+            else:
+                # 无效的布局配置
+                logger.error(f"[MainWindow._set_layout] 无效的布局配置: {layout_config}")
+                return
             
             # 更新布局选择器按钮显示
-            self._layout_selector_button.set_current_layout(rows, cols)
-        else:
-            logger.error(f"[MainWindow._set_layout] 布局设置失败: {rows}×{cols}")
+            if hasattr(self, '_layout_selector_button') and self._layout_selector_button:
+                self._layout_selector_button.set_current_layout(layout_config)
+            
+        except Exception as e:
+            logger.error(f"[MainWindow._set_layout] 设置布局失败: {e}", exc_info=True)
     
     def _set_binding_strategy(self, strategy: BindingStrategy) -> None:
         """设置绑定策略"""
@@ -582,6 +676,122 @@ class MainWindow(QMainWindow):
         
         self.status_bar.showMessage(self.tr(f"清除绑定完成：清除了 {cleared_count} 个绑定"), 3000)
         logger.info(f"[MainWindow._clear_all_bindings] 清除绑定完成: {cleared_count}个绑定")
+    
+    def _set_sync_mode(self, mode) -> None:
+        """设置同步模式"""
+        logger.debug(f"[MainWindow._set_sync_mode] 设置同步模式: {mode}")
+        self.sync_manager.set_sync_mode(mode)
+        self.status_bar.showMessage(self.tr(f"同步模式已设置: {mode.name}"), 2000)
+        logger.info(f"[MainWindow._set_sync_mode] 同步模式设置完成: {mode}")
+    
+    def _set_sync_group(self, group) -> None:
+        """设置同步分组"""
+        logger.debug(f"[MainWindow._set_sync_group] 设置同步分组: {group}")
+        self.sync_manager.set_sync_group(group)
+        self.statusBar().showMessage(
+            self.tr(f"已设置同步分组"), 2000
+        )
+
+    def _on_sync_position_changed(self, mode: str) -> None:
+        """位置同步模式变化处理"""
+        logger.debug(f"[MainWindow._on_sync_position_changed] 位置同步模式变化: {mode}")
+        
+        current_mode = self.sync_manager.get_sync_mode()
+        from medimager.core.sync_manager import SyncMode
+        
+        # 根据位置同步模式更新同步设置
+        if mode == "auto":
+            new_mode = current_mode | SyncMode.SLICE
+            new_mode = new_mode & ~SyncMode.CROSS_REFERENCE
+            status_msg = self.tr("已开启自动位置同步")
+        elif mode == "manual":
+            new_mode = current_mode | SyncMode.CROSS_REFERENCE
+            new_mode = new_mode & ~SyncMode.SLICE
+            status_msg = self.tr("已开启手动位置同步")
+        else:  # "none"
+            new_mode = current_mode & ~(SyncMode.SLICE | SyncMode.CROSS_REFERENCE)
+            status_msg = self.tr("已关闭位置同步")
+        
+        self.sync_manager.set_sync_mode(new_mode)
+        self.statusBar().showMessage(status_msg, 2000)
+        logger.debug(f"[MainWindow._on_sync_position_changed] 同步模式更新: {new_mode}")
+
+    def _on_sync_pan_changed(self, checked: bool) -> None:
+        """平移同步状态变化处理"""
+        logger.debug(f"[MainWindow._on_sync_pan_changed] 平移同步状态变化: {checked}")
+        
+        current_mode = self.sync_manager.get_sync_mode()
+        from medimager.core.sync_manager import SyncMode
+        
+        if checked:
+            new_mode = current_mode | SyncMode.ZOOM_PAN
+        else:
+            new_mode = current_mode & ~SyncMode.ZOOM_PAN
+        
+        self.sync_manager.set_sync_mode(new_mode)
+        status_msg = self.tr("已开启平移同步") if checked else self.tr("已关闭平移同步")
+        self.statusBar().showMessage(status_msg, 2000)
+        logger.debug(f"[MainWindow._on_sync_pan_changed] 同步模式更新: {new_mode}")
+
+    def _on_sync_zoom_changed(self, checked: bool) -> None:
+        """缩放同步状态变化处理"""
+        logger.debug(f"[MainWindow._on_sync_zoom_changed] 缩放同步状态变化: {checked}")
+        
+        current_mode = self.sync_manager.get_sync_mode()
+        from medimager.core.sync_manager import SyncMode
+        
+        if checked:
+            new_mode = current_mode | SyncMode.ZOOM_PAN
+        else:
+            new_mode = current_mode & ~SyncMode.ZOOM_PAN
+        
+        self.sync_manager.set_sync_mode(new_mode)
+        status_msg = self.tr("已开启缩放同步") if checked else self.tr("已关闭缩放同步")
+        self.statusBar().showMessage(status_msg, 2000)
+        logger.debug(f"[MainWindow._on_sync_zoom_changed] 同步模式更新: {new_mode}")
+
+    def _on_sync_window_level_changed(self, checked: bool) -> None:
+        """窗宽窗位同步状态变化处理"""
+        logger.debug(f"[MainWindow._on_sync_window_level_changed] 窗宽窗位同步状态变化: {checked}")
+        
+        current_mode = self.sync_manager.get_sync_mode()
+        from medimager.core.sync_manager import SyncMode
+        
+        if checked:
+            new_mode = current_mode | SyncMode.WINDOW_LEVEL
+        else:
+            new_mode = current_mode & ~SyncMode.WINDOW_LEVEL
+        
+        self.sync_manager.set_sync_mode(new_mode)
+        status_msg = self.tr("已开启窗宽窗位同步") if checked else self.tr("已关闭窗宽窗位同步")
+        self.statusBar().showMessage(status_msg, 2000)
+        logger.debug(f"[MainWindow._on_sync_window_level_changed] 同步模式更新: {new_mode}")
+
+    def _update_sync_button_states(self) -> None:
+        """更新同步按钮状态"""
+        logger.debug("[MainWindow._update_sync_button_states] 更新同步按钮状态")
+        
+        current_mode = self.sync_manager.get_sync_mode()
+        from medimager.core.sync_manager import SyncMode
+        
+        # 更新同步按钮状态
+        if hasattr(self, '_sync_button'):
+            # 确定位置同步模式
+            position_mode = "none"
+            if SyncMode.SLICE in current_mode:
+                position_mode = "auto"
+            elif SyncMode.CROSS_REFERENCE in current_mode:
+                position_mode = "manual"
+            
+            # 设置同步状态
+            self._sync_button.set_sync_states(
+                position_mode=position_mode,
+                pan=SyncMode.ZOOM_PAN in current_mode,
+                zoom=SyncMode.ZOOM_PAN in current_mode,
+                window_level=SyncMode.WINDOW_LEVEL in current_mode
+            )
+        
+        logger.debug("[MainWindow._update_sync_button_states] 同步按钮状态更新完成")
     
     def _open_multiple_dicom_folders(self) -> None:
         """打开多个DICOM文件夹"""
@@ -860,8 +1070,9 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self.settings_manager, self)
         
         if dialog.exec_() == QDialog.Accepted:
-            # 应用新设置
-            self.theme_manager.apply_current_theme()
+            # 应用新设置 - 使用set_theme确保发出信号
+            current_theme = self.theme_manager.get_current_theme()
+            self.theme_manager.set_theme(current_theme)
             logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
     
     def _show_about(self) -> None:
@@ -1026,6 +1237,29 @@ class MainWindow(QMainWindow):
         # 这个信号来自MultiViewerGrid，通常不需要额外处理
         pass
     
+    def _on_sync_mode_changed(self, mode) -> None:
+        """处理同步模式变更事件"""
+        logger.debug(f"[MainWindow._on_sync_mode_changed] 同步模式变更: {mode}")
+        
+        # 更新工具栏按钮状态
+        self._update_sync_button_states()
+        logger.info(f"[MainWindow._on_sync_mode_changed] 同步模式已更新: {mode}")
+    
+    def _on_sync_group_changed(self, group) -> None:
+        """处理同步分组变更事件"""
+        logger.debug(f"[MainWindow._on_sync_group_changed] 同步分组变更: {group}")
+        
+        # 更新下拉框选择状态
+        from medimager.core.sync_manager import SyncGroup
+        for i in range(self._sync_group_combo.count()):
+            if self._sync_group_combo.itemData(i) == group:
+                self._sync_group_combo.blockSignals(True)
+                self._sync_group_combo.setCurrentIndex(i)
+                self._sync_group_combo.blockSignals(False)
+                break
+        
+        logger.info(f"[MainWindow._on_sync_group_changed] 同步分组已更新: {group}")
+    
 
     
     def _on_slice_changed(self, slice_index: int) -> None:
@@ -1052,9 +1286,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"[MainWindow._on_slice_changed] 处理切片变化失败: {e}", exc_info=True)
     
-
-    
-
+    def contextMenuEvent(self, event) -> None:
+        """禁用主窗口的右键菜单，特别是工具栏右键菜单"""
+        # 完全忽略右键菜单事件，防止显示工具栏的上下文菜单
+        event.ignore()
     
     def closeEvent(self, event) -> None:
         """处理窗口关闭事件"""
@@ -1075,4 +1310,4 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"[MainWindow.closeEvent] 关闭时发生错误: {e}", exc_info=True)
-            event.accept()  # 即使出错也允许关闭 
+            event.accept()  # 即使出错也允许关闭

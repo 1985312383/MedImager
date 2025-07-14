@@ -1,10 +1,12 @@
 from medimager.ui.tools.base_tool import BaseTool
+from medimager.utils.logger import get_logger
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor
+from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor, QKeyEvent
 from PySide6.QtCore import Qt, QPointF, QPoint
 from medimager.core.roi import BaseROI
 from enum import Enum, auto
 import math
+from typing import Optional
 
 
 class DragMode(Enum):
@@ -33,6 +35,7 @@ class DefaultTool(BaseTool):
 
     def __init__(self, viewer: QGraphicsView):
         super().__init__(viewer)
+        self.logger = get_logger(__name__)
         self._drag_mode = DragMode.NONE
         self._last_mouse_pos = QPoint()
         self._target_roi_id: str | None = None
@@ -47,14 +50,12 @@ class DefaultTool(BaseTool):
         self.viewer.setCursor(Qt.ArrowCursor)
 
     def mouse_press_event(self, event: QMouseEvent):
-        """处理鼠标按下事件，根据点击位置和按键确定拖动模式。"""
-        super().mouse_press_event(event) # 调用基类方法
-        if self._press_is_outside: # 检查标志
-            return
+        """处理鼠标按下事件，根据按键和修饰键设置拖动模式。"""
+        super().mouse_press_event(event)
         self._last_mouse_pos = event.pos()
         model = self.viewer.model
         
-        # 左键：ROI交互或浏览图像
+        # 左键处理
         if event.button() == Qt.LeftButton:
             if event.modifiers() == Qt.ShiftModifier:
                 # Shift+左键：平移
@@ -63,7 +64,14 @@ class DefaultTool(BaseTool):
                 event.accept()
                 return
             elif model and model.has_image():
-                # 检查ROI交互：锚点、信息板、ROI主体
+                # 先检查测量选中 - 如果处理了测量交互，就不进入其他模式
+                if self._check_measurement_interactions(self.viewer.last_mouse_scene_pos, event.modifiers()):
+                    # 重要：确保不进入其他拖拽模式
+                    self._drag_mode = DragMode.NONE
+                    event.accept()
+                    return
+                
+                # 再检查ROI交互：锚点、信息板、ROI主体
                 if self._check_roi_interactions(self.viewer.last_mouse_scene_pos, event.modifiers()):
                     event.accept()
                     return
@@ -84,6 +92,35 @@ class DefaultTool(BaseTool):
             self._drag_mode = DragMode.ZOOM
             event.accept()
             return
+            
+    def _check_measurement_interactions(self, scene_pos: QPointF, modifiers) -> bool:
+        """检查测量交互 - DefaultTool只处理选中，不处理拖拽"""
+        model = self.viewer.model
+        if not model:
+            return False
+        
+        # 检查是否击中测量线 - 只处理选中，不触发拖拽
+        clicked_measurement_index = self._check_measurement_hit(scene_pos)
+        
+        if clicked_measurement_index is not None:
+            # DefaultTool只处理选中/取消选中，不处理拖拽
+            if not (modifiers & Qt.ControlModifier):
+                model.clear_measurement_selection()
+                model.clear_selection()  # 同时清除ROI选择
+            
+            if clicked_measurement_index in model.selected_measurement_indices:
+                model.deselect_measurement(clicked_measurement_index)
+            else:
+                model.select_measurement(clicked_measurement_index)
+            
+            # 强制更新视图以立即显示选中状态
+            self.viewer.viewport().update()
+            
+            # 重要：设置拖拽模式为NONE，防止意外拖拽
+            self._drag_mode = DragMode.NONE
+            return True
+        
+        return False
             
     def _check_roi_interactions(self, scene_pos: QPointF, modifiers) -> bool:
         """检查ROI交互：ROI锚点 > 信息板 > ROI主体"""
@@ -130,12 +167,84 @@ class DefaultTool(BaseTool):
         # 4. 如果什么都没点中，则清除选择（除非按住Ctrl）
         if not (modifiers & Qt.ControlModifier):
             model.clear_selection()
+            model.clear_measurement_selection()
         
         return False
+
+    def _check_measurement_hit(self, pos: QPointF) -> Optional[int]:
+        """检查点击位置是否命中某个测量线"""
+        model = self.viewer.model
+        if not model:
+            return None
+            
+        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
+        
+        # 获取变换信息
+        transform = self.viewer.transform()
+        scale_factor = transform.m11()
+        screen_detection_radius = 10  # 屏幕像素
+        scene_detection_radius = screen_detection_radius / scale_factor
+        
+        for i, measurement in enumerate(current_slice_measurements):
+            # 检查测量线的基本信息
+            line_length = self._calculate_line_length(measurement.start_point, measurement.end_point)
+            
+            # 特殊检查：线段长度为0的情况
+            if line_length < 0.1:
+                self.logger.warning(f"测量线{i}长度过短({line_length:.2f})，可能无法正确选中")
+                continue
+            
+            # 计算点到线段的距离
+            line_distance = self._point_to_line_distance(pos, measurement.start_point, measurement.end_point)
+            
+            if line_distance <= scene_detection_radius:
+                # 找到对应的全局索引
+                for global_idx, global_measurement in enumerate(model.measurements):
+                    if global_measurement.id == measurement.id:
+                        return global_idx
+                
+                self.logger.warning(f"找到命中的测量但无法找到全局索引，ID: {measurement.id}")
+        
+        return None
+    
+    def _calculate_line_length(self, start: QPointF, end: QPointF) -> float:
+        """计算线段长度"""
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        return math.sqrt(dx * dx + dy * dy)
+
+    def _point_to_line_distance(self, point: QPointF, line_start: QPointF, line_end: QPointF) -> float:
+        """计算点到线段的最短距离"""
+        # 向量计算
+        line_vec = line_end - line_start
+        point_vec = point - line_start
+        
+        line_len_sq = line_vec.x() ** 2 + line_vec.y() ** 2
+        if line_len_sq == 0:
+            # 线段长度为0，返回点到起点的距离
+            dx = point.x() - line_start.x()
+            dy = point.y() - line_start.y()
+            return math.sqrt(dx * dx + dy * dy)
+        
+        # 计算投影参数
+        t = max(0, min(1, (point_vec.x() * line_vec.x() + point_vec.y() * line_vec.y()) / line_len_sq))
+        
+        # 计算线段上最近的点
+        projection = line_start + t * line_vec
+        
+        # 返回距离
+        dx = point.x() - projection.x()
+        dy = point.y() - projection.y()
+        return math.sqrt(dx * dx + dy * dy)
 
     def mouse_move_event(self, event: QMouseEvent):
         """根据当前的拖动模式执行相应的操作。"""
         super().mouse_move_event(event)
+        
+        # 如果拖拽模式为NONE，不执行任何拖拽操作
+        if self._drag_mode == DragMode.NONE:
+            event.accept()
+            return
         
         delta = event.pos() - self._last_mouse_pos
         scene_delta = self.viewer.last_mouse_scene_pos - self.viewer.mapToScene(self._last_mouse_pos)
@@ -222,3 +331,78 @@ class DefaultTool(BaseTool):
                 direction = -1 if angle > 0 else 1
                 self.viewer.model.set_current_slice(self.viewer.model.current_slice_index + direction)
                 event.accept() 
+
+    def key_press_event(self, event: QKeyEvent):
+        """处理键盘按键事件"""
+        super().key_press_event(event)
+        
+        if event.key() == Qt.Key_F12:
+            # 调试测量线信息
+            self._debug_all_measurements()
+            event.accept()
+            return
+        
+        if event.key() == Qt.Key_Delete:
+            model = self.viewer.model
+            if model:
+                deleted_something = False
+                
+                # 删除选中的测量 - 优先处理测量删除
+                if model.selected_measurement_indices:
+                    deleted_measurement_ids = model.delete_selected_measurements()
+                    self.logger.info(f"删除了 {len(deleted_measurement_ids)} 个测量")
+                    deleted_something = True
+                
+                # 删除选中的ROI
+                if model.selected_indices:
+                    deleted_roi_ids = model.delete_selected_rois()
+                    
+                    # 清除相关的统计框
+                    for roi_id in deleted_roi_ids:
+                        if hasattr(self.viewer, 'stats_box_positions') and roi_id in self.viewer.stats_box_positions:
+                            del self.viewer.stats_box_positions[roi_id]
+                    
+                    deleted_something = True
+                
+                if deleted_something:
+                    self.viewer.viewport().update()
+                    event.accept()
+                else:
+                    self.logger.debug("[DefaultTool.key_press_event] Del键按下，但没有选中的ROI或测量")
+            else:
+                self.logger.debug("[DefaultTool.key_press_event] Del键按下，但模型为空") 
+    
+    def _debug_all_measurements(self):
+        """调试输出所有测量线信息"""
+        model = self.viewer.model
+        if not model:
+            self.logger.info("模型为空")
+            return
+        
+        self.logger.info("=" * 40)
+        self.logger.info("测量线调试信息")
+        self.logger.info("=" * 40)
+        
+        self.logger.info(f"总数量: {len(model.measurements)}")
+        self.logger.info(f"当前切片: {model.current_slice_index}")
+        self.logger.info(f"选中索引: {list(model.selected_measurement_indices)}")
+        
+        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
+        self.logger.info(f"当前切片数量: {len(current_slice_measurements)}")
+        
+        for i, measurement in enumerate(model.measurements):
+            # 计算线段长度
+            dx = measurement.end_point.x() - measurement.start_point.x()
+            dy = measurement.end_point.y() - measurement.start_point.y()
+            length = math.sqrt(dx * dx + dy * dy)
+            
+            selected = "是" if i in model.selected_measurement_indices else "否"
+            on_current_slice = "是" if measurement.slice_index == model.current_slice_index else "否"
+            
+            self.logger.info(f"测量{i}: 距离={measurement.distance:.1f}{measurement.unit}, "
+                           f"长度={length:.1f}, 选中={selected}, 当前切片={on_current_slice}")
+            
+            if length < 0.1:
+                self.logger.warning(f"  警告：测量{i}长度过短")
+        
+        self.logger.info("=" * 40) 

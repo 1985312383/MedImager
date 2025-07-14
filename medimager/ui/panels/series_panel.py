@@ -865,6 +865,10 @@ class SeriesPanel(QWidget):
         self._setup_ui()
         self._connect_signals()
         
+        # 主题管理器注册
+        self._theme_manager = None
+        self._register_to_theme_manager()
+        
         logger.info("[SeriesPanel.__init__] 序列面板初始化完成")
     
     def _setup_ui(self) -> None:
@@ -1112,4 +1116,77 @@ class SeriesPanel(QWidget):
         """获取当前选中的序列ID"""
         # 这里需要从序列列表组件获取选中项
         # 实现省略，返回None
-        return None 
+        return None
+    
+    def _register_to_theme_manager(self) -> None:
+        """注册到主题管理器"""
+        try:
+            # 尝试从父窗口获取主题管理器
+            main_window = self.window()
+            if hasattr(main_window, 'theme_manager'):
+                self._theme_manager = main_window.theme_manager
+                self._theme_manager.register_component(self)
+                logger.debug(f"[SeriesPanel._register_to_theme_manager] 成功注册到主题管理器")
+                
+                # 立即应用当前主题
+                current_theme = self._theme_manager.get_current_theme()
+                self.update_theme(current_theme)
+            else:
+                logger.debug(f"[SeriesPanel._register_to_theme_manager] 未找到主题管理器")
+        except Exception as e:
+            logger.error(f"[SeriesPanel._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
+    
+    def update_theme(self, theme_name: str) -> None:
+        """主题更新接口 - 由ThemeManager调用"""
+        logger.info(f"[SeriesPanel.update_theme] 开始更新主题: {theme_name} (ID: {id(self)})")
+        try:
+            # 更新面板背景色和文本颜色
+            if theme_name == 'light':
+                stylesheet = """
+                    QWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                    }
+                    QTreeWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                        border: 1px solid #cccccc;
+                    }
+                    QTableWidget {
+                        background-color: #ffffff;
+                        color: #000000;
+                        border: 1px solid #cccccc;
+                    }
+                    QLabel {
+                        color: #000000;
+                    }
+                """
+                logger.info(f"[SeriesPanel.update_theme] 应用浅色主题样式")
+            else:  # dark theme
+                stylesheet = """
+                    QWidget {
+                        background-color: #2b2b2b;
+                        color: #ffffff;
+                    }
+                    QTreeWidget {
+                        background-color: #3c3c3c;
+                        color: #ffffff;
+                        border: 1px solid #555555;
+                    }
+                    QTableWidget {
+                        background-color: #3c3c3c;
+                        color: #ffffff;
+                        border: 1px solid #555555;
+                    }
+                    QLabel {
+                        color: #ffffff;
+                    }
+                """
+                logger.info(f"[SeriesPanel.update_theme] 应用深色主题样式")
+            
+            self.setStyleSheet(stylesheet)
+            logger.info(f"[SeriesPanel.update_theme] 样式表已应用")
+            
+            logger.info(f"[SeriesPanel.update_theme] 主题更新完成: {theme_name}")
+        except Exception as e:
+            logger.error(f"[SeriesPanel.update_theme] 主题更新失败: {e}", exc_info=True)

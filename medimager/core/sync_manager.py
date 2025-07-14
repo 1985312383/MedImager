@@ -25,11 +25,13 @@ class SyncMode(Flag):
     SLICE = 2               # 切片同步
     ZOOM_PAN = 4            # 缩放平移同步
     CROSS_REFERENCE = 8     # 交叉参考线同步
+    ROI = 16                # ROI同步
+    MEASUREMENT = 32        # 测量工具同步
     
     # 组合模式
     BASIC = WINDOW_LEVEL | SLICE
     ADVANCED = BASIC | ZOOM_PAN
-    FULL = ADVANCED | CROSS_REFERENCE
+    FULL = ADVANCED | CROSS_REFERENCE | ROI | MEASUREMENT
 
 
 class SyncGroup(Enum):
@@ -62,6 +64,17 @@ class ViewSyncState:
     
     # 交叉参考线状态
     cursor_position: QPointF = None
+    
+    # ROI同步状态
+    rois_synced: bool = False
+    last_roi_update: Optional[str] = None  # 最后更新的ROI ID
+    
+    # 测量工具同步状态
+    measurement_synced: bool = False
+    measurement_start: Optional[QPointF] = None
+    measurement_end: Optional[QPointF] = None
+    measurement_distance: Optional[float] = None
+    measurement_unit: str = "mm"
     
     def __post_init__(self):
         """初始化后处理"""
@@ -105,6 +118,8 @@ class SyncManager(QObject):
     sync_group_changed = Signal(SyncGroup)
     view_synced = Signal(str, str)  # source_view_id, target_view_id
     cross_reference_updated = Signal(str, QPointF)  # view_id, position
+    roi_synced = Signal(str, str, str)  # source_view_id, target_view_id, roi_id
+    measurement_synced = Signal(str, str, QPointF, QPointF, float)  # source_view_id, target_view_id, start, end, distance
     
     def __init__(self, series_manager: MultiSeriesManager, parent: Optional[QObject] = None) -> None:
         """初始化同步管理器
@@ -363,6 +378,100 @@ class SyncManager(QObject):
         except Exception as e:
             logger.error(f"[SyncManager.update_cross_reference] 更新交叉参考线失败: {e}", exc_info=True)
     
+    def sync_roi(self, source_view_id: str, roi_data: Dict) -> None:
+        """同步ROI
+        
+        Args:
+            source_view_id: 源视图ID
+            roi_data: ROI数据字典，包含ROI的所有信息
+        """
+        logger.debug(f"[SyncManager.sync_roi] 同步ROI: "
+                    f"source={source_view_id}, roi_type={roi_data.get('type', 'unknown')}")
+        
+        if self._sync_lock or SyncMode.ROI not in self._sync_mode:
+            return
+        
+        try:
+            self._sync_lock = True
+            
+            # 获取目标视图
+            target_views = self._get_sync_targets(source_view_id)
+            
+            for target_view_id in target_views:
+                # 更新视图状态
+                if target_view_id not in self._view_states:
+                    self._view_states[target_view_id] = ViewSyncState(target_view_id)
+                
+                self._view_states[target_view_id].rois_synced = True
+                self._view_states[target_view_id].last_roi_update = roi_data.get('id')
+                
+                # 应用到目标视图
+                self._apply_roi_to_view(target_view_id, roi_data)
+                
+                logger.debug(f"[SyncManager.sync_roi] ROI同步完成: "
+                           f"{source_view_id} -> {target_view_id}")
+                self.roi_synced.emit(source_view_id, target_view_id, roi_data.get('id', ''))
+            
+        except Exception as e:
+            logger.error(f"[SyncManager.sync_roi] ROI同步失败: {e}", exc_info=True)
+        finally:
+            self._sync_lock = False
+    
+    def sync_measurement(self, source_view_id: str, start_point: QPointF, 
+                        end_point: QPointF, distance: float, unit: str = "mm") -> None:
+        """同步测量工具
+        
+        Args:
+            source_view_id: 源视图ID
+            start_point: 测量起点
+            end_point: 测量终点
+            distance: 测量距离
+            unit: 距离单位
+        """
+        logger.debug(f"[SyncManager.sync_measurement] 同步测量: "
+                    f"source={source_view_id}, distance={distance:.2f}{unit}")
+        
+        if self._sync_lock or SyncMode.MEASUREMENT not in self._sync_mode:
+            return
+        
+        try:
+            self._sync_lock = True
+            
+            # 获取目标视图
+            target_views = self._get_sync_targets(source_view_id)
+            
+            for target_view_id in target_views:
+                # 更新视图状态
+                if target_view_id not in self._view_states:
+                    self._view_states[target_view_id] = ViewSyncState(target_view_id)
+                
+                # 转换坐标到目标视图
+                target_start = self._convert_position_between_views(
+                    source_view_id, target_view_id, start_point
+                )
+                target_end = self._convert_position_between_views(
+                    source_view_id, target_view_id, end_point
+                )
+                
+                self._view_states[target_view_id].measurement_synced = True
+                self._view_states[target_view_id].measurement_start = target_start
+                self._view_states[target_view_id].measurement_end = target_end
+                self._view_states[target_view_id].measurement_distance = distance
+                self._view_states[target_view_id].measurement_unit = unit
+                
+                # 应用到目标视图
+                self._apply_measurement_to_view(target_view_id, target_start, target_end, distance, unit)
+                
+                logger.debug(f"[SyncManager.sync_measurement] 测量同步完成: "
+                           f"{source_view_id} -> {target_view_id}")
+                self.measurement_synced.emit(source_view_id, target_view_id, 
+                                           target_start, target_end, distance)
+            
+        except Exception as e:
+            logger.error(f"[SyncManager.sync_measurement] 测量同步失败: {e}", exc_info=True)
+        finally:
+            self._sync_lock = False
+    
     def _get_sync_targets(self, source_view_id: str) -> Set[str]:
         """获取同步目标视图
         
@@ -497,6 +606,71 @@ class SyncManager(QObject):
                        f"缩放平移状态已记录: {view_id}")
         except Exception as e:
             logger.error(f"[SyncManager._apply_zoom_pan_to_view] 应用缩放平移失败: {e}")
+    
+    def _apply_roi_to_view(self, view_id: str, roi_data: Dict) -> None:
+        """应用ROI到视图"""
+        try:
+            binding = self._series_manager.get_view_binding(view_id)
+            if binding and binding.series_id:
+                image_model = self._series_manager.get_series_model(binding.series_id)
+                if image_model:
+                    # 创建ROI对象并添加到模型
+                    roi = self._create_roi_from_data(roi_data)
+                    if roi:
+                        # 检查是否已存在相同ID的ROI，如果存在则跳过
+                        existing_roi = image_model.get_roi_by_id(roi.id)
+                        if not existing_roi:
+                            image_model.add_roi(roi)
+                            logger.debug(f"[SyncManager._apply_roi_to_view] "
+                                       f"ROI应用成功: {view_id}, roi_id={roi.id}")
+        except Exception as e:
+            logger.error(f"[SyncManager._apply_roi_to_view] 应用ROI失败: {e}")
+    
+    def _apply_measurement_to_view(self, view_id: str, start_point: QPointF, 
+                                  end_point: QPointF, distance: float, unit: str) -> None:
+        """应用测量工具到视图"""
+        try:
+            # 这里需要与ViewFrame或ImageViewer协作
+            # 通过信号通知视图设置测量线
+            logger.debug(f"[SyncManager._apply_measurement_to_view] "
+                       f"测量工具状态已记录: {view_id}, distance={distance:.2f}{unit}")
+        except Exception as e:
+            logger.error(f"[SyncManager._apply_measurement_to_view] 应用测量工具失败: {e}")
+    
+    def _create_roi_from_data(self, roi_data: Dict):
+        """从数据字典创建ROI对象"""
+        try:
+            from medimager.core.roi import EllipseROI, CircleROI, RectangleROI, ROIShape
+            
+            roi_type = roi_data.get('type')
+            slice_index = roi_data.get('slice_index', 0)
+            
+            if roi_type == ROIShape.CIRCLE.value:
+                return CircleROI(
+                    center=tuple(roi_data.get('center', (0, 0))),
+                    radius=roi_data.get('radius', 10),
+                    slice_index=slice_index
+                )
+            elif roi_type == ROIShape.ELLIPSE.value:
+                return EllipseROI(
+                    center=tuple(roi_data.get('center', (0, 0))),
+                    radius_x=roi_data.get('radius_x', 10),
+                    radius_y=roi_data.get('radius_y', 10),
+                    slice_index=slice_index
+                )
+            elif roi_type == ROIShape.RECTANGLE.value:
+                return RectangleROI(
+                    top_left=tuple(roi_data.get('top_left', (0, 0))),
+                    bottom_right=tuple(roi_data.get('bottom_right', (10, 10))),
+                    slice_index=slice_index
+                )
+            else:
+                logger.warning(f"[SyncManager._create_roi_from_data] 未知ROI类型: {roi_type}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"[SyncManager._create_roi_from_data] 创建ROI失败: {e}")
+            return None
     
     def _convert_position_between_views(self, source_view_id: str, target_view_id: str, 
                                       source_pos: QPointF) -> QPointF:

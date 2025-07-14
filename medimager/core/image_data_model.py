@@ -14,12 +14,27 @@ import numpy as np
 import pydicom
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
-from PySide6.QtCore import QObject, Signal, QRect
+from PySide6.QtCore import QObject, Signal, QRect, QPointF
 
 from medimager.utils.logger import get_logger
 from medimager.core.dicom_parser import DicomParser
 from medimager.core.roi import BaseROI
+from dataclasses import dataclass
 
+
+@dataclass
+class MeasurementData:
+    """测量数据类"""
+    id: str
+    slice_index: int
+    start_point: QPointF
+    end_point: QPointF
+    distance: float
+    unit: str = "mm"
+    
+    def __post_init__(self):
+        """初始化后处理"""
+        pass
 
 class ImageDataModel(QObject):
     """
@@ -36,6 +51,7 @@ class ImageDataModel(QObject):
     slice_changed = Signal(int)
     window_level_changed = Signal(int, int)
     roi_added = Signal(BaseROI)
+    measurement_added = Signal(object)  # MeasurementData
     
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -58,6 +74,10 @@ class ImageDataModel(QObject):
         self.rois: List[BaseROI] = []
         self.selected_indices: set[int] = set()  # 新增：多选ROI索引集合
         
+        # Measurement data
+        self.measurements: List[MeasurementData] = []
+        self.selected_measurement_indices: set[int] = set()  # 选中的测量索引集合
+        
     def clear_all_data(self) -> None:
         """Clears all data and resets the model to its initial state."""
         self.logger.info("Clearing all image data.")
@@ -69,6 +89,8 @@ class ImageDataModel(QObject):
         self.window_level = 40
         self.rois.clear()
         self.selected_indices.clear()  # 确保清除ROI选择状态
+        self.measurements.clear()  # 清除测量数据
+        self.selected_measurement_indices.clear()  # 清除测量选择状态
         
         self.data_changed.emit()
         
@@ -166,15 +188,16 @@ class ImageDataModel(QObject):
         self.logger.info("Using hardcoded default W/L: W=400, L=40")
 
     def set_window(self, width: int, level: int) -> None:
-        """Sets the window width and level."""
-        if width <= 0:
-            self.logger.warning(f"Window width must be > 0, got {width}")
-            return
+        """Set the window width and level for display."""
+        if width != self.window_width or level != self.window_level:
+            self.window_width = width
+            self.window_level = level
             
-        self.window_width = width
-        self.window_level = level
-        self.window_level_changed.emit(width, level)
-        self.data_changed.emit()
+            # 发射窗宽窗位变化信号
+            self.window_level_changed.emit(width, level)
+            self.data_changed.emit()
+            
+            self.logger.debug(f"Window/Level set to: {width}/{level}")
         
     def set_current_slice(self, slice_index: int) -> bool:
         """Sets the currently active slice index."""
@@ -498,4 +521,84 @@ class ImageDataModel(QObject):
         if 'WindowWidth' not in self.dicom_header:
             self.dicom_header['WindowWidth'] = self.window_width
         if 'WindowCenter' not in self.dicom_header:
-            self.dicom_header['WindowCenter'] = self.window_level 
+            self.dicom_header['WindowCenter'] = self.window_level
+
+    # 测量数据管理方法
+    def add_measurement(self, measurement: MeasurementData) -> None:
+        """添加测量数据到模型"""
+        self.measurements.append(measurement)
+        self.measurement_added.emit(measurement)
+        self.data_changed.emit()
+
+    def remove_measurement(self, measurement_id: str) -> bool:
+        """根据ID移除测量数据"""
+        for i, measurement in enumerate(self.measurements):
+            if measurement.id == measurement_id:
+                self.measurements.pop(i)
+                # 更新选中索引
+                if i in self.selected_measurement_indices:
+                    self.selected_measurement_indices.remove(i)
+                # 调整其他选中索引
+                new_selected = set()
+                for idx in self.selected_measurement_indices:
+                    if idx > i:
+                        new_selected.add(idx - 1)
+                    elif idx < i:
+                        new_selected.add(idx)
+                self.selected_measurement_indices = new_selected
+                self.data_changed.emit()
+                return True
+        return False
+
+    def get_measurement_by_id(self, measurement_id: str) -> Optional[MeasurementData]:
+        """根据ID获取测量数据"""
+        for measurement in self.measurements:
+            if measurement.id == measurement_id:
+                return measurement
+        return None
+
+    def select_measurement(self, index: int) -> bool:
+        """选中指定索引的测量"""
+        if 0 <= index < len(self.measurements):
+            self.selected_measurement_indices.add(index)
+            self.data_changed.emit()
+            return True
+        return False
+
+    def deselect_measurement(self, index: int) -> bool:
+        """取消选中指定索引的测量"""
+        if index in self.selected_measurement_indices:
+            self.selected_measurement_indices.remove(index)
+            self.data_changed.emit()
+            return True
+        return False
+
+    def clear_measurement_selection(self) -> None:
+        """清除所有测量选择状态"""
+        if self.selected_measurement_indices:
+            self.selected_measurement_indices.clear()
+            self.data_changed.emit()
+
+    def delete_selected_measurements(self) -> List[str]:
+        """删除所有选中的测量数据"""
+        deleted_measurement_ids = []
+        # 按索引逆序删除，避免索引偏移问题
+        indices_to_delete = sorted(list(self.selected_measurement_indices), reverse=True)
+        
+        for idx in indices_to_delete:
+            if 0 <= idx < len(self.measurements):
+                deleted_measurement = self.measurements.pop(idx)
+                deleted_measurement_ids.append(deleted_measurement.id)
+        
+        self.clear_measurement_selection()  # 这也会发出data_changed信号
+        return deleted_measurement_ids
+
+    def get_measurements_for_slice(self, slice_index: int) -> List[MeasurementData]:
+        """获取指定切片的所有测量数据"""
+        return [m for m in self.measurements if m.slice_index == slice_index]
+
+    def clear_all_measurements(self) -> None:
+        """清除所有测量数据"""
+        self.measurements.clear()
+        self.selected_measurement_indices.clear()
+        self.data_changed.emit() 

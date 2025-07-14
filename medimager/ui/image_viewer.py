@@ -88,8 +88,17 @@ class ImageViewer(QGraphicsView):
         self._measurement_drag_start_pos = QPointF()
         self._measurement_drag_offset = QPointF()
         
+        # 交叉参考线状态
+        self._cross_reference_enabled = False
+        self._cross_reference_pos = QPointF(-1, -1)  # 无效位置表示不显示
+        self._cross_reference_color = QColor(255, 255, 0, 180)  # 半透明黄色
+        
         # 初始化设置管理器
         self._init_settings()
+        
+        # 主题管理器注册
+        self._theme_manager = None
+        self._register_to_theme_manager()
 
     def _init_settings(self):
         """初始化设置管理器"""
@@ -98,6 +107,58 @@ class ImageViewer(QGraphicsView):
         except Exception as e:
             self.logger.warning(f"初始化设置管理器失败: {e}")
             self.settings_manager = None
+    
+    def _register_to_theme_manager(self) -> None:
+        """注册到主题管理器"""
+        try:
+            # 尝试从父窗口获取主题管理器
+            main_window = self.window()
+            if hasattr(main_window, 'theme_manager'):
+                self._theme_manager = main_window.theme_manager
+                self._theme_manager.register_component(self)
+                self.logger.debug(f"[ImageViewer._register_to_theme_manager] 成功注册到主题管理器")
+                
+                # 立即应用当前主题
+                current_theme = self._theme_manager.get_current_theme()
+                self.update_theme(current_theme)
+            else:
+                self.logger.debug(f"[ImageViewer._register_to_theme_manager] 未找到主题管理器")
+        except Exception as e:
+            self.logger.error(f"[ImageViewer._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
+    
+    def update_theme(self, theme_name: str) -> None:
+        """主题更新接口 - 由ThemeManager调用"""
+        self.logger.info(f"[ImageViewer.update_theme] 开始更新主题: {theme_name} (ID: {id(self)})")
+        try:
+            # 根据主题更新背景色
+            if theme_name == 'light':
+                bg_color = "#f0f0f0"
+                self.setStyleSheet("background-color: #f0f0f0;")
+            else:  # dark theme
+                bg_color = "#2b2b2b"
+                self.setStyleSheet("background-color: #2b2b2b;")
+            
+            self.logger.info(f"[ImageViewer.update_theme] 设置背景色: {bg_color}")
+            
+            # 更新交叉参考线颜色
+            if theme_name == 'light':
+                self._cross_reference_color = QColor(255, 165, 0, 180)  # 橙色
+                ref_color = "橙色"
+            else:
+                self._cross_reference_color = QColor(255, 255, 0, 180)  # 黄色
+                ref_color = "黄色"
+            
+            self.logger.info(f"[ImageViewer.update_theme] 设置交叉参考线颜色: {ref_color}")
+            
+            # 更新放大镜主题
+            if hasattr(self, 'magnifier') and self.magnifier:
+                self.logger.info(f"[ImageViewer.update_theme] 更新放大镜主题")
+                if hasattr(self.magnifier, 'update_theme'):
+                    self.magnifier.update_theme(theme_name)
+            
+            self.logger.info(f"[ImageViewer.update_theme] 主题更新完成: {theme_name}")
+        except Exception as e:
+            self.logger.error(f"[ImageViewer.update_theme] 主题更新失败: {e}", exc_info=True)
 
     def _setup_view(self) -> None:
         """设置视图属性"""
@@ -148,8 +209,11 @@ class ImageViewer(QGraphicsView):
 
     def set_tool(self, tool: Optional[BaseTool]):
         """设置并激活当前工具"""
+        self.logger.info(f"[ImageViewer.set_tool] 设置工具: {type(tool).__name__ if tool else 'None'}")
+        
         if self.current_tool:
             self.current_tool.deactivate()
+            self.logger.info(f"[ImageViewer.set_tool] 停用旧工具: {type(self.current_tool).__name__}")
 
         # 切换工具时，清除任何现有的ROI选择，以避免旧的锚点残留
         if self.model:
@@ -159,6 +223,9 @@ class ImageViewer(QGraphicsView):
         
         if self.current_tool:
             self.current_tool.activate()
+            self.logger.info(f"[ImageViewer.set_tool] 激活新工具: {type(self.current_tool).__name__}")
+        
+        self.logger.info(f"[ImageViewer.set_tool] 工具设置完成: {type(tool).__name__ if tool else 'None'}")
 
     def set_model(self, model: ImageDataModel) -> None:
         """设置数据模型并更新视图"""
@@ -363,6 +430,9 @@ class ImageViewer(QGraphicsView):
         # Draw measurement tool if it is active and has points
         if self.current_tool and hasattr(self.current_tool, 'draw_temporary_shape'):
             self.current_tool.draw_temporary_shape(painter)
+        
+        # --- 始终绘制所有测量线（独立于当前工具）---
+        self._draw_all_measurements(painter)
             
         # --- 绘制测量线 (独立于当前工具) ---
         if self.measurement_start_point and self.measurement_end_point:
@@ -370,6 +440,10 @@ class ImageViewer(QGraphicsView):
         elif self.current_tool and hasattr(self.current_tool, 'draw_measurement_line'):
             # 如果当前工具是测量工具，使用工具的绘制方法
             self.current_tool.draw_measurement_line(painter)
+        
+        # --- 绘制交叉参考线 ---
+        if self._cross_reference_enabled and self._cross_reference_pos.x() >= 0 and self._cross_reference_pos.y() >= 0:
+            self._draw_cross_reference_lines(painter)
             
     def _update_pixel_info(self, scene_pos: QPointF) -> None:
         """更新状态栏的像素信息和放大镜"""
@@ -485,7 +559,33 @@ class ImageViewer(QGraphicsView):
         self.measurement_end_point = None
         self.measurement_distance = None
         self.measurement_unit = "mm"
-        self.viewport().update()
+        self.update()
+
+    def show_cross_reference(self, pos: QPointF) -> None:
+        """显示交叉参考线
+        
+        Args:
+            pos: 参考线交叉点位置（场景坐标）
+        """
+        self._cross_reference_enabled = True
+        self._cross_reference_pos = QPointF(pos)
+        self.update()
+    
+    def hide_cross_reference(self) -> None:
+        """隐藏交叉参考线"""
+        self._cross_reference_enabled = False
+        self._cross_reference_pos = QPointF(-1, -1)
+        self.update()
+    
+    def set_cross_reference_enabled(self, enabled: bool) -> None:
+        """设置交叉参考线是否启用
+        
+        Args:
+            enabled: 是否启用交叉参考线
+        """
+        self._cross_reference_enabled = enabled
+        if not enabled:
+            self.hide_cross_reference()
 
     def _draw_measurement_line(self, painter):
         """绘制测量线（独立于工具）"""
@@ -639,3 +739,135 @@ class ImageViewer(QGraphicsView):
         self.setCursor(Qt.ArrowCursor)
         if hasattr(self, '_measurement_drag_offset'):
             self._measurement_drag_offset = QPointF(0, 0)
+
+    def _draw_all_measurements(self, painter):
+        """绘制所有测量线，包括选中状态"""
+        if not self.model:
+            return
+            
+        from PySide6.QtGui import QPen, QColor, QFont, QBrush
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        
+        # 获取样式设置
+        try:
+            from medimager.utils.theme_manager import get_theme_settings
+            theme_data = get_theme_settings('measurement')
+            line_color = theme_data.get('line_color', "#00FF00")
+            anchor_color = theme_data.get('anchor_color', "#00FF00")
+            text_color = theme_data.get('text_color', "#FFFFFF")
+            bg_color = theme_data.get('background_color', "#00000080")
+            line_width = theme_data.get('line_width', 2)
+            anchor_size = theme_data.get('anchor_size', 8)
+            font_size = theme_data.get('font_size', 14)
+        except Exception:
+            # 默认设置
+            line_color = "#00FF00"
+            anchor_color = "#00FF00"
+            text_color = "#FFFFFF"
+            bg_color = "#00000080"
+            line_width = 2
+            anchor_size = 8
+            font_size = 14
+        
+        painter.save()
+        
+        # 绘制当前切片的所有测量线
+        current_slice_measurements = self.model.get_measurements_for_slice(self.model.current_slice_index)
+        
+        for i, measurement in enumerate(current_slice_measurements):
+            # 找到对应的全局索引
+            global_idx = None
+            for idx, global_measurement in enumerate(self.model.measurements):
+                if global_measurement.id == measurement.id:
+                    global_idx = idx
+                    break
+            
+            # 确定是否选中 - 选中状态优先于编辑状态
+            is_selected = global_idx is not None and global_idx in self.model.selected_measurement_indices
+            
+            # 检查是否正在被编辑（拖拽）- 只有当前工具是MeasurementTool时才考虑编辑状态
+            is_being_edited = False
+            is_measurement_tool = (self.current_tool and 
+                                 self.current_tool.__class__.__name__ == 'MeasurementTool')
+            if (is_measurement_tool and 
+                hasattr(self.current_tool, 'editing_measurement_id') and 
+                self.current_tool.editing_measurement_id):
+                is_being_edited = (measurement.id == self.current_tool.editing_measurement_id)
+            
+            # 颜色优先级：选中状态(红色) > 编辑状态(黄色) > 默认状态(绿色)
+            if is_selected:
+                current_line_color = "#FF0000"  # 红色 - 选中状态
+                current_anchor_color = "#FF0000"
+            elif is_being_edited:
+                current_line_color = "#FFFF00"  # 黄色 - 编辑状态
+                current_anchor_color = "#FFFF00"
+            else:
+                current_line_color = line_color  # 默认绿色
+                current_anchor_color = anchor_color
+            
+            # 绘制线
+            pen = QPen(QColor(current_line_color), line_width)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawLine(measurement.start_point, measurement.end_point)
+            
+            # 绘制锚点
+            painter.setBrush(QColor(current_anchor_color))
+            painter.setPen(Qt.NoPen)
+            pixel_size = 1.0 / self.transform().m11()
+            scaled_anchor_size = anchor_size * pixel_size
+            
+            painter.drawEllipse(measurement.start_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
+            painter.drawEllipse(measurement.end_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
+            
+            # 绘制距离文本
+            font = QFont()
+            font.setPixelSize(font_size)
+            painter.setFont(font)
+
+            text = f"{measurement.distance:.2f} {measurement.unit}"
+            metrics = painter.fontMetrics()
+            text_rect = metrics.boundingRect(text).adjusted(-4, -2, 4, 2)
+            
+            mid_point = (measurement.start_point + measurement.end_point) / 2
+            text_rect.moveCenter(mid_point.toPoint())
+            
+            painter.setBrush(QColor(bg_color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(text_rect, 5, 5)
+
+            painter.setPen(QColor(text_color))
+            painter.drawText(text_rect, Qt.AlignCenter, text)
+        
+        painter.restore()
+
+    def _draw_cross_reference_lines(self, painter):
+        """绘制交叉参考线"""
+        if not self._cross_reference_enabled or self._cross_reference_pos.x() < 0 or self._cross_reference_pos.y() < 0:
+            return
+
+        painter.save()
+
+        # 设置画笔样式
+        pen = QPen(self._cross_reference_color, 2)
+        pen.setCosmetic(True)  # 不受视图变换影响
+        pen.setStyle(Qt.DashLine)  # 虚线样式
+        painter.setPen(pen)
+
+        # 获取视图区域
+        view_rect = self.viewport().rect()
+        scene_rect = self.mapToScene(view_rect).boundingRect()
+
+        # 绘制水平参考线（横穿整个视图）
+        painter.drawLine(
+            scene_rect.left(), self._cross_reference_pos.y(),
+            scene_rect.right(), self._cross_reference_pos.y()
+        )
+
+        # 绘制垂直参考线（横穿整个视图）
+        painter.drawLine(
+            self._cross_reference_pos.x(), scene_rect.top(),
+            self._cross_reference_pos.x(), scene_rect.bottom()
+        )
+
+        painter.restore()

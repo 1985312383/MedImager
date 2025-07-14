@@ -33,25 +33,31 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
 
 ## 2. Core Features (Roadmap)
 
-### V1.0 - Core Features
+### ✅ V1.0 - Core Features (COMPLETED)
 - [x] **File Handling:**
     - [x] Open and parse DICOM series from folders.
     - [x] Open single image files (PNG, JPG, BMP).
     - [x] DICOM tag viewer.
 - [x] **Image Display:**
     - [x] Smooth pan and zoom 2D viewer.
-    - [x] Multi-viewport for image comparison.
+    - [x] Multi-viewport for image comparison with flexible layouts.
     - [x] Display patient info and image overlays (scale, orientation marker).
 - [x] **Image Interaction Tools:**
     - [x] **Windowing:** Interactive adjustment of HU window width/level (WW/WL).
     - [x] **Measurement Tools:**
         - [x] Ruler tool for distance measurement.
-        - [x] Ellipse/rectangle ROI tools.
+        - [x] Ellipse/rectangle/circle ROI tools.
     - [x] **ROI Analysis:** Calculate statistics within ROI (mean, std, area, max/min HU).
+- [x] **Advanced Features:**
+    - [x] **Multi-Series Management:** Load and manage multiple DICOM series simultaneously.
+    - [x] **Series-View Binding:** Flexible binding system with auto-assignment and manual control.
+    - [x] **Synchronization:** Cross-viewport sync for position, pan, zoom, and window/level.
+    - [x] **Layout System:** Grid layouts (1×1 to 3×4) and special layouts (vertical/horizontal split, triple column).
 - [x] **User Interface:**
     - [x] Modern multilingual interface (Chinese/English).
-    - [x] Customizable theme system (light/dark themes).
+    - [x] Customizable theme system (light/dark themes) with real-time switching.
     - [x] Complete settings system with tool appearance customization.
+    - [x] Unified toolbar with theme-adaptive icons.
     - [x] Dockable panel layout.
 
 ### V2.0 - Advanced Features
@@ -80,42 +86,64 @@ The project follows an MVC-like pattern to separate data logic, UI, and user int
 ```
 medimager/
 ├── main.py                 # Application entry point
-├── icons/                  # UI icons
+├── icons/                  # UI icons and SVG resources
 ├── translations/           # Translation files (.ts, .qm)
+├── themes/                 # Theme configuration files
+│   ├── ui/                 # UI themes (dark.toml, light.toml)
+│   ├── roi/                # ROI appearance themes
+│   └── measurement/        # Measurement tool themes
 │
-├── core/                   # Core logic, UI-independent
+├── core/                   # Core logic, UI-independent (MVC Model)
 │   ├── __init__.py
 │   ├── dicom_parser.py     # DICOM loading/parsing via pydicom
 │   ├── image_data_model.py # Data model for single image or DICOM series
+│   ├── multi_series_manager.py # Multi-series management and layout control
+│   ├── series_view_binding.py  # Series-view binding management
+│   ├── sync_manager.py     # Cross-viewport synchronization
 │   ├── roi.py              # ROI shapes and logic
 │   └── analysis.py         # Statistical calculations (HU stats, etc.)
 │
-├── ui/                     # All UI components (PySide6)
+├── ui/                     # All UI components (MVC View & Controller)
 │   ├── __init__.py
-│   ├── main_window.py      # Main window, layout, menus, toolbar
+│   ├── main_window.py      # Main window with multi-series support
+│   ├── main_toolbar.py     # Unified toolbar management (tools, layout, sync)
 │   ├── image_viewer.py     # Core 2D image viewer (QGraphicsView)
 │   ├── viewport.py         # Standalone viewport with image_viewer
+│   ├── multi_viewer_grid.py# Multi-viewport grid layout manager
 │   ├── panels/             # Dockable panels
 │   │   ├── __init__.py
-│   │   ├── series_panel.py     # Loaded series/thumbnails panel
+│   │   ├── series_panel.py     # Multi-series management panel
 │   │   ├── dicom_tag_panel.py  # DICOM tag panel
 │   │   └── analysis_panel.py   # ROI analysis panel
-│   └── tools/              # Interactive tool UI implementations
+│   ├── tools/              # Interactive tool implementations
+│   │   ├── __init__.py
+│   │   ├── base_tool.py        # Abstract base class for tools
+│   │   ├── default_tool.py     # Default pointer/pan/zoom/window tool
+│   │   ├── roi_tool.py         # ROI tools (ellipse, rectangle, circle)
+│   │   └── measurement_tool.py # Distance measurement tool
+│   ├── dialogs/            # Dialog windows
+│   │   ├── custom_wl_dialog.py # Custom window/level dialog
+│   │   └── settings_dialog.py  # Application settings dialog
+│   └── widgets/            # Custom UI widgets
 │       ├── __init__.py
-│       ├── base_tool.py        # Abstract base class for tools
-│       ├── pan_zoom_tool.py    # Pan/zoom tool
-│       ├── window_level_tool.py# Window/level tool
-│       ├── measurement_tool.py # Measurement tool
+│       ├── magnifier.py        # Magnifier widget
+│       ├── roi_stats_box.py    # ROI statistics display
+│       └── layout_grid_selector.py # Layout selection widget
 │
-├── utils/                  # General utilities
+├── utils/                  # General utilities (MVC Model Support)
 │   ├── __init__.py
-│   ├── logger.py           # Global logging config
-│   └── settings.py         # User settings save/load
+│   ├── logger.py           # Global logging configuration
+│   ├── settings.py         # User settings management
+│   ├── theme_manager.py    # Theme system with icon management
+│   └── i18n.py             # Internationalization utilities
 │
 ├── tests/                  # Unit/integration tests
 │   ├── __init__.py
+│   ├── dcm/                # Test DICOM data
+│   ├── scripts/            # Test data generation scripts
 │   ├── test_dicom_parser.py
-│   └── test_roi.py
+│   ├── test_roi.py
+│   └── test_multi_series_components.py
 │
 ├── pyproject.toml          # Project metadata and dependencies
 └── README_zh.md            # Chinese documentation

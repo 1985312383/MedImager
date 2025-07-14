@@ -32,7 +32,7 @@ if __name__ == "__main__" and __package__ is None:
 from medimager.utils.logger import setup_logger, get_logger
 from medimager.utils.settings import SettingsManager
 from medimager.utils.i18n import TranslationManager
-from medimager.utils.hot_reload import enable_directory_hot_reload
+
 from medimager.ui.main_window import MainWindow
 
 
@@ -45,7 +45,7 @@ class MedImagerApplication:
     def __init__(self, app: QApplication) -> None:
         self.app = app
         self.main_window: Optional[MainWindow] = None
-        self.hot_reloader = None
+
         self.logger = None
         self.settings_manager = None
         self.translation_manager = None
@@ -57,21 +57,20 @@ class MedImagerApplication:
             if not self._setup_logging():
                 return False
 
-            # 2. 初始化热重载
-            self._init_hot_reload()
+
             
-            # 3. 加载应用程序设置
+            # 2. 加载应用程序设置
             if not self._load_settings():
                 return False
 
-            # 4. 设置应用程序图标
+            # 3. 设置应用程序图标
             self._setup_application_icon()
 
-            # 5. 加载国际化翻译文件
+            # 4. 加载国际化翻译文件
             if not self._setup_translations():
                 return False
             
-            # 6. 创建主窗口
+            # 5. 创建主窗口
             if not self._create_main_window():
                 return False
             
@@ -84,72 +83,7 @@ class MedImagerApplication:
             self._show_error(f"应用程序初始化失败: {e}")
             return False
             
-    def _get_ui_modules(self) -> List[str]:
-        """获取所有 medimager.ui 包下的模块列表"""
-        import pkgutil
-        import medimager.ui
-        
-        ui_modules = []
-        package = medimager.ui
-        
-        for importer, modname, ispkg in pkgutil.walk_packages(
-            package.__path__,
-            package.__name__ + '.'
-        ):
-            ui_modules.append(modname)
-            
-        return ui_modules
 
-    def _init_hot_reload(self):
-        """初始化热重载功能，并处理UI模块的特殊重载"""
-        try:
-            self.hot_reloader = enable_directory_hot_reload(
-                package_name="medimager",
-                excluded_modules=["medimager.utils.hot_reload"],
-                ui_modules=self._get_ui_modules(),
-                parent=self.app
-            )
-            if self.hot_reloader:
-                self.hot_reloader.ui_module_reloaded.connect(self._handle_ui_reload)
-                self.logger.info("UI热重载处理程序已连接")
-        except Exception as e:
-            self.logger.error(f"初始化热重载失败: {e}")
-
-    def _handle_ui_reload(self, module_name: str):
-        """处理UI模块的热重载，通过重建主窗口实现"""
-        self.logger.info(f"UI 模块 '{module_name}' 已更新，正在重建主窗口...")
-
-        # 1. 保存旧窗口的状态
-        if self.main_window:
-            old_geometry = self.main_window.saveGeometry()
-            old_state = self.main_window.saveState()
-            old_image_data_model = self.main_window.image_data_model
-            # 关闭并删除旧窗口
-            self.main_window.close()
-        else: # 如果窗口不存在，则为空状态
-            old_geometry = None
-            old_state = None
-            old_image_data_model = None
-
-        # 2. 重新导入主窗口模块并创建新窗口
-        # 必须重新导入，因为它的子模块(如panel)可能也已更新
-        from importlib import reload
-        from medimager.ui import main_window as main_window_module
-        reload(main_window_module)
-        
-        self.main_window = main_window_module.MainWindow()
-        
-        # 3. 恢复状态
-        if old_image_data_model:
-            self.main_window.image_data_model = old_image_data_model
-        if old_geometry:
-            self.main_window.restoreGeometry(old_geometry)
-        if old_state:
-            self.main_window.restoreState(old_state)
-            
-        self.main_window.show()
-        
-        self.logger.info("主窗口热重载完成！")
 
     def _setup_logging(self) -> bool:
         """设置日志系统"""

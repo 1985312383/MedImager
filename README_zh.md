@@ -33,25 +33,31 @@ MedImager 是一款功能强大、用户友好、支持学术研究的开源医�
 
 ## 2. 核心功能 (开发路线图)
 
-### V1.0 - 核心功能
+### ✅ V1.0 - 核心功能 (已完成)
 - [x] **文件处理**:
     - [x] 从文件夹中打开和解析 DICOM 序列。
     - [x] 打开单张图像文件 (PNG, JPG, BMP)。
     - [x] DICOM 标签查看器。
 - [x] **图像显示**:
     - [x] 支持流畅平移和缩放的 2D 查看器。
-    - [x] 支持多视窗进行图像对比。
+    - [x] 支持灵活布局的多视窗图像对比。
     - [x] 显示患者信息和图像叠加层 (比例尺, 方向标记)。
 - [x] **图像交互工具**:
     - [x] **窗宽窗位 (Windowing)**: 交互式调整 HU 值的窗宽/窗位 (WW/WL)。
     - [x] **测量工具**:
         - [x] 标尺工具，用于测量距离。
-        - [x] 椭圆/矩形 ROI 工具。
+        - [x] 椭圆/矩形/圆形 ROI 工具。
     - [x] **ROI 分析**: 计算 ROI 内的统计数据 (平均值, 标准差, 面积, 最大/最小 HU 值)。
+- [x] **高级功能**:
+    - [x] **多序列管理**: 同时加载和管理多个 DICOM 序列。
+    - [x] **序列-视图绑定**: 灵活的绑定系统，支持自动分配和手动控制。
+    - [x] **跨视图同步**: 位置、平移、缩放和窗宽窗位的跨视图同步。
+    - [x] **布局系统**: 网格布局 (1×1 到 3×4) 和特殊布局 (垂直/水平分割, 三列布局)。
 - [x] **用户界面**:
     - [x] 现代化的多语言界面 (中文/英文)。
-    - [x] 可自定义的主题系统 (亮色/暗色主题)。
+    - [x] 可自定义的主题系统 (亮色/暗色主题) 支持实时切换。
     - [x] 完整的设置系统，支持工具外观自定义。
+    - [x] 统一的工具栏，支持主题自适应图标。
     - [x] 可停靠的面板布局。
 
 ### V2.0 - 高级功能
@@ -79,46 +85,68 @@ MedImager 是一款功能强大、用户友好、支持学术研究的开源医�
 
 ```
 medimager/
-├── main.py                 # 应用程序入口点
-├── icons/                    # 存放 UI 图标
-├── translations/             # 存放翻译文件 (.ts, .qm)
+├── main.py                     # 应用程序入口点
+├── icons/                      # 存放 UI 图标
+├── translations/               # 存放翻译文件 (.ts, .qm)
+├── themes/                     # 主题配置文件
+│   ├── ui/                     # UI 主题 (亮色/暗色)
+│   ├── roi/                    # ROI 主题
+│   └── measurement/            # 测量工具主题
 │
-├── core/                     # 核心逻辑，不依赖任何 UI
+├── core/                       # 核心逻辑，不依赖任何 UI
 │   ├── __init__.py
-│   ├── dicom_parser.py       # 使用 pydicom 处理 DICOM 文件的加载和解析
-│   ├── image_data_model.py   # 单张图像或 DICOM 序列的数据模型
-│   ├── roi.py                # 定义 ROI 形状和其计算逻辑
-│   └── analysis.py           # 处理统计计算 (HU 值统计等)
+│   ├── dicom_parser.py         # 使用 pydicom 处理 DICOM 文件的加载和解析
+│   ├── image_data_model.py     # 单张图像或 DICOM 序列的数据模型
+│   ├── multi_series_manager.py # 多序列管理器
+│   ├── series_view_binding.py  # 序列-视图绑定管理
+│   ├── sync_manager.py         # 跨视图同步管理
+│   ├── roi.py                  # 定义 ROI 形状和其计算逻辑
+│   └── analysis.py             # 处理统计计算 (HU 值统计等)
 │
-├── ui/                       # 所有与 UI 相关的组件 (基于 PySide6)
+├── ui/                         # 所有与 UI 相关的组件 (基于 PySide6)
 │   ├── __init__.py
-│   ├── main_window.py        # 主程序窗口、布局、菜单和工具栏
-│   ├── image_viewer.py       # 核心的 2D 图像显示控件 (基于 QGraphicsView)
-│   ├── viewport.py           # 包含一个 image_viewer 的独立视窗
+│   ├── main_window.py          # 主程序窗口、布局、菜单和工具栏
+│   ├── main_toolbar.py         # 统一的主工具栏
+│   ├── image_viewer.py         # 核心的 2D 图像显示控件 (基于 QGraphicsView)
+│   ├── viewport.py             # 包含一个 image_viewer 的独立视窗
+│   ├── multi_viewer_grid.py    # 多视图网格布局管理
 │   ├── panels/                 # 可停靠的面板
 │   │   ├── __init__.py
 │   │   ├── series_panel.py     # 用于显示已加载序列和缩略图的面板
 │   │   ├── dicom_tag_panel.py  # 用于显示 DICOM 标签的面板
 │   │   └── analysis_panel.py   # 用于显示 ROI 分析结果的面板
-│   └── tools/                  # 交互工具的 UI 实现
-│       ├── __init__.py
-│       ├── base_tool.py        # 所有工具的抽象基类
-│       ├── pan_zoom_tool.py    # 平移缩放工具
-│       ├── window_level_tool.py# 窗宽窗位工具
-│       ├── measurement_tool.py # 测量工具
+│   ├── tools/                  # 交互工具的 UI 实现
+│   │   ├── __init__.py
+│   │   ├── base_tool.py        # 所有工具的抽象基类
+│   │   ├── default_tool.py     # 默认平移缩放和窗宽窗位工具
+│   │   ├── measurement_tool.py # 测量工具
+│   │   └── roi_tool.py         # ROI 工具
+│   ├── widgets/                # 可重用的UI组件
+│   │   ├── __init__.py
+│   │   ├── layout_grid_selector.py # 布局选择器组件
+│   │   ├── magnifier.py        # 放大镜组件
+│   │   └── roi_stats_box.py    # ROI 统计显示组件
+│   └── dialogs/                # 对话框
+│       ├── custom_wl_dialog.py # 自定义窗宽窗位对话框
+│       └── settings_dialog.py  # 设置对话框
 │
-├── utils/                    # 通用工具函数和类
+├── utils/                      # 通用工具函数和类
 │   ├── __init__.py
-│   ├── logger.py             # 配置全局日志记录
-│   └── settings.py           # 处理用户偏好设置的保存与加载
+│   ├── logger.py               # 配置全局日志记录
+│   ├── settings.py             # 处理用户偏好设置的保存与加载
+│   ├── theme_manager.py        # 主题管理器
+│   └── i18n.py                 # 国际化支持
 │
-├── tests/                    # 单元测试和集成测试
+├── tests/                      # 单元测试和集成测试
 │   ├── __init__.py
 │   ├── test_dicom_parser.py
-│   └── test_roi.py
+│   ├── test_roi.py
+│   └── dcm/                    # 测试用DICOM文件
+│       ├── water_phantom/
+│       └── gammex_phantom/
 │
-├── pyproject.toml            # 项目元数据和依赖项
-└── README.md                 # 英文版文档
+├── pyproject.toml              # 项目元数据和依赖项
+└── README.md                   # 英文版文档
 ```
 
 ## 5. 使用方法

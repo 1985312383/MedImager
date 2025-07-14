@@ -9,10 +9,14 @@
 import toml
 from pathlib import Path
 from PySide6.QtWidgets import QApplication, QWidget
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QByteArray, Qt
+from PySide6.QtGui import QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer
 from typing import Dict, Any, Optional
 from medimager.utils.settings import SettingsManager
 from medimager.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_theme_settings(category: str, theme_name: str = None) -> Dict[str, Any]:
@@ -59,25 +63,114 @@ class ThemeManager(QObject):
     def __init__(self, settings_manager: SettingsManager, parent=None):
         super().__init__(parent)
         self.settings_manager = settings_manager
-        self.logger = get_logger(__name__)
-        self.themes: Dict[str, Dict[str, Any]] = {}
-        self._load_ui_themes()
+        self.available_themes = self._load_ui_themes()
+        self.current_theme = self.get_current_theme()
+        
+        # 注册的主题组件列表
+        self._registered_components = []
+        
+    def register_component(self, component) -> None:
+        """注册需要主题管理的组件
+        
+        Args:
+            component: 需要主题管理的组件，应该实现以下方法之一：
+                      - update_theme(theme_name: str)
+                      - _on_theme_changed(theme_name: str)
+                      - apply_theme(theme_name: str)
+        """
+        if component not in self._registered_components:
+            self._registered_components.append(component)
+            logger.info(f"[ThemeManager.register_component] 注册主题组件: {component.__class__.__name__} (总数: {len(self._registered_components)})")
+            logger.info(f"[ThemeManager.register_component] 组件对象ID: {id(component)}")
+            
+            # 检查组件是否实现了主题接口
+            has_update_theme = hasattr(component, 'update_theme')
+            has_on_theme_changed = hasattr(component, '_on_theme_changed')
+            has_apply_theme = hasattr(component, 'apply_theme')
+            logger.info(f"[ThemeManager.register_component] 组件 {component.__class__.__name__} 接口检查: "
+                        f"update_theme={has_update_theme}, _on_theme_changed={has_on_theme_changed}, apply_theme={has_apply_theme}")
+            
+            # 立即应用当前主题
+            logger.info(f"[ThemeManager.register_component] 为新注册组件应用当前主题: {self.current_theme}")
+            self._apply_theme_to_component(component, self.current_theme)
+        else:
+            logger.info(f"[ThemeManager.register_component] 组件 {component.__class__.__name__} 已经注册，跳过")
+    
+    def unregister_component(self, component) -> None:
+        """取消注册主题组件"""
+        if component in self._registered_components:
+            self._registered_components.remove(component)
+            logger.info(f"[ThemeManager.unregister_component] 取消注册主题组件: {component.__class__.__name__} (剩余: {len(self._registered_components)})")
+        else:
+            logger.debug(f"[ThemeManager.unregister_component] 组件 {component.__class__.__name__} 未注册，跳过")
+    
+    def _apply_theme_to_component(self, component, theme_name: str) -> None:
+        """为单个组件应用主题"""
+        try:
+            logger.info(f"[ThemeManager._apply_theme_to_component] 开始为组件 {component.__class__.__name__} (ID: {id(component)}) 应用主题: {theme_name}")
+            
+            # 尝试不同的主题应用方法
+            if hasattr(component, 'update_theme'):
+                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}.update_theme({theme_name})")
+                component.update_theme(theme_name)
+                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}.update_theme() 调用完成")
+            elif hasattr(component, '_on_theme_changed'):
+                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}._on_theme_changed({theme_name})")
+                component._on_theme_changed(theme_name)
+                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}._on_theme_changed() 调用完成")
+            elif hasattr(component, 'apply_theme'):
+                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}.apply_theme({theme_name})")
+                component.apply_theme(theme_name)
+                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}.apply_theme() 调用完成")
+            else:
+                logger.warning(f"[ThemeManager._apply_theme_to_component] 组件 {component.__class__.__name__} 没有实现主题更新方法")
+                
+        except Exception as e:
+            logger.error(f"[ThemeManager._apply_theme_to_component] 为组件 {component.__class__.__name__} 应用主题失败: {e}", exc_info=True)
+    
+    def _apply_theme_to_all_components(self, theme_name: str) -> None:
+        """为所有注册的组件应用主题"""
+        logger.info(f"[ThemeManager._apply_theme_to_all_components] 开始为 {len(self._registered_components)} 个组件应用主题: {theme_name}")
+        
+        if not self._registered_components:
+            logger.warning("[ThemeManager._apply_theme_to_all_components] 没有注册的组件")
+            return
+        
+        success_count = 0
+        for i, component in enumerate(self._registered_components[:]):  # 使用副本避免迭代过程中修改列表
+            try:
+                logger.debug(f"[ThemeManager._apply_theme_to_all_components] 处理组件 {i+1}/{len(self._registered_components)}: {component.__class__.__name__}")
+                self._apply_theme_to_component(component, theme_name)
+                success_count += 1
+            except Exception as e:
+                logger.error(f"[ThemeManager._apply_theme_to_all_components] 为组件应用主题失败: {e}")
+                # 移除有问题的组件
+                if component in self._registered_components:
+                    self._registered_components.remove(component)
+                    logger.warning(f"[ThemeManager._apply_theme_to_all_components] 移除有问题的组件: {component.__class__.__name__}")
+        
+        logger.info(f"[ThemeManager._apply_theme_to_all_components] 主题应用完成: 成功 {success_count}/{len(self._registered_components)} 个组件")
     
     def _load_ui_themes(self):
         """加载UI主题文件"""
         themes_dir = Path(__file__).parent.parent / "themes" / "ui"
+        themes = {}
+        
         if not themes_dir.exists():
-            self.logger.warning(f"UI主题目录不存在: {themes_dir}")
-            return
+            logger.warning(f"UI主题目录不存在: {themes_dir}")
+            return themes
         
         for theme_file in themes_dir.glob("*.toml"):
             try:
                 theme_data = toml.load(theme_file)
                 theme_name = theme_file.stem
-                self.themes[theme_name] = theme_data
-                self.logger.info(f"加载UI主题: {theme_name}")
+                themes[theme_name] = theme_data
+                logger.info(f"加载UI主题: {theme_name}")
             except Exception as e:
-                self.logger.error(f"加载主题文件失败 {theme_file}: {e}")
+                logger.error(f"加载主题文件失败 {theme_file}: {e}")
+        
+        self.themes = themes  # 保持向后兼容
+        return themes
     
     def get_current_theme(self) -> str:
         """获取当前主题名称"""
@@ -85,13 +178,28 @@ class ThemeManager(QObject):
     
     def set_theme(self, theme_name: str):
         """设置主题"""
+        logger.info(f"[ThemeManager.set_theme] 开始设置主题: {theme_name}")
+        
         if theme_name not in self.themes:
-            self.logger.warning(f"主题不存在: {theme_name}")
+            logger.warning(f"[ThemeManager.set_theme] 主题不存在: {theme_name}")
             return
         
+        logger.info(f"[ThemeManager.set_theme] 当前注册组件数量: {len(self._registered_components)}")
+        for i, comp in enumerate(self._registered_components):
+            logger.info(f"[ThemeManager.set_theme] 注册组件 {i+1}: {comp.__class__.__name__} (ID: {id(comp)})")
+        
+        self.current_theme = theme_name
         self.settings_manager.set_setting('ui_theme', theme_name)
+        logger.info(f"[ThemeManager.set_theme] 应用全局主题样式")
         self.apply_current_theme()
+        
+        # 为所有注册的组件应用新主题
+        logger.info(f"[ThemeManager.set_theme] 开始为注册组件应用主题")
+        self._apply_theme_to_all_components(theme_name)
+        
+        logger.info(f"[ThemeManager.set_theme] 发送主题变更信号")
         self.theme_changed.emit(theme_name)
+        logger.info(f"[ThemeManager.set_theme] 主题设置完成: {theme_name}")
     
     def apply_current_theme(self):
         """应用当前主题"""
@@ -101,7 +209,7 @@ class ThemeManager(QObject):
     def apply_theme(self, theme_name: str):
         """应用指定主题"""
         if theme_name not in self.themes:
-            self.logger.warning(f"主题不存在: {theme_name}")
+            logger.warning(f"主题不存在: {theme_name}")
             return
         
         theme_data = self.themes[theme_name]
@@ -110,18 +218,33 @@ class ThemeManager(QObject):
         app = QApplication.instance()
         if app:
             app.setStyleSheet(stylesheet)
-            self.logger.info(f"应用主题: {theme_name}")
+            logger.info(f"应用主题: {theme_name}")
+        else:
+            logger.error("无法获取QApplication实例")
     
     def _generate_stylesheet(self, theme_data: Dict[str, Any]) -> str:
-        """根据主题数据生成样式表"""
+        """生成样式表"""
+        logger.debug(f"[ThemeManager._generate_stylesheet] 生成样式表: {theme_data.get('name', 'unknown')}")
+        
+        # 获取基本颜色
         bg_color = theme_data.get('background_color', '#F0F0F0')
         text_color = theme_data.get('text_color', '#000000')
-        highlight_color = theme_data.get('highlight_color', '#3498DB')
+        border_color = theme_data.get('border_color', '#CCCCCC')
+        highlight_color = theme_data.get('highlight_color', '#0078D4')
         
-        # 计算衍生颜色
-        border_color = self._adjust_color_brightness(bg_color, -20)
-        hover_color = self._adjust_color_brightness(highlight_color, 20)
-        pressed_color = self._adjust_color_brightness(highlight_color, -20)
+        # 计算背景色亮度来决定悬浮效果方向
+        bg_brightness = self._get_color_brightness(bg_color)
+        is_dark_bg = bg_brightness < 128  # 亮度小于128认为是深色背景
+        
+        # 根据背景色亮度决定悬浮效果方向
+        hover_brightness_delta = 30 if is_dark_bg else -30
+        pressed_brightness_delta = 50 if is_dark_bg else -50
+        checked_brightness_delta = 40 if is_dark_bg else -40
+        checked_hover_brightness_delta = 60 if is_dark_bg else -60
+        border_hover_delta = 40 if is_dark_bg else -40
+        border_pressed_delta = 60 if is_dark_bg else -60
+        border_checked_delta = 50 if is_dark_bg else -50
+        border_checked_hover_delta = 70 if is_dark_bg else -70
         
         stylesheet = f"""
         /* 全局样式 */
@@ -174,38 +297,65 @@ class ThemeManager(QObject):
             spacing: 2px;
         }}
         
+        /* 工具栏按钮 */
         QToolButton {{
-            background-color: transparent;
-            border: 1px solid transparent;
-            padding: 4px;
+            background-color: {bg_color};
+            color: {text_color};
+            border: 1px solid {border_color};
+            border-radius: 4px;
+            padding: 6px;
             margin: 1px;
+            icon-size: 16px;
         }}
         
         QToolButton:hover {{
-            background-color: {hover_color};
-            border: 1px solid {highlight_color};
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_hover_delta)};
         }}
         
         QToolButton:pressed {{
-            background-color: {pressed_color};
+            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_pressed_delta)};
         }}
         
         QToolButton:checked {{
-            background-color: {highlight_color};
-            color: white;
+            background-color: {self._adjust_color_brightness(bg_color, checked_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_delta)};
+        }}
+        
+        QToolButton:checked:hover {{
+            background-color: {self._adjust_color_brightness(bg_color, checked_hover_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_hover_delta)};
+        }}
+        
+        QToolButton:disabled {{
+            background-color: {self._adjust_color_brightness(bg_color, -10)};
+            color: {self._adjust_color_brightness(text_color, 50)};
+            border: 1px solid {self._adjust_color_brightness(border_color, 20)};
         }}
         
         /* 工具栏按钮菜单 */
         QToolButton::menu-button {{
             border: none;
-            width: 16px;
+            width: 12px;
+            height: 12px;
+            subcontrol-origin: padding;
+            subcontrol-position: bottom right;
         }}
         
         QToolButton::menu-arrow {{
             image: none;
             border: none;
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
+            subcontrol-origin: padding;
+            subcontrol-position: bottom right;
+            right: 2px;
+            bottom: 2px;
         }}
         
         QToolButton::menu-arrow:open {{
@@ -215,16 +365,46 @@ class ThemeManager(QObject):
         
         QToolButton[popupMode="1"] {{
             color: {text_color};
-            padding-right: 16px;
+            padding-right: 12px;
         }}
         
         QToolButton[popupMode="1"]:hover {{
-            color: white;
+            color: {text_color};
         }}
         
         QToolButton[popupMode="1"]:checked {{
-            color: white;
+            background-color: {self._adjust_color_brightness(bg_color, checked_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_delta)};
         }}
+        
+        /* 布局选择器按钮 - 与工具栏按钮样式保持一致 */
+        QPushButton[objectName="LayoutSelectorButton"] {{
+            background-color: {bg_color};
+            color: {text_color};
+            border: 1px solid {border_color};
+            border-radius: 4px;
+            padding: 6px;
+            margin: 1px;
+            min-width: 32px;
+            min-height: 32px;
+            icon-size: 16px;
+            text-align: center;
+        }}
+        
+        QPushButton[objectName="LayoutSelectorButton"]:hover {{
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_hover_delta)};
+        }}
+        
+        QPushButton[objectName="LayoutSelectorButton"]:pressed {{
+            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
+            color: {text_color};
+            border: 1px solid {self._adjust_color_brightness(border_color, border_pressed_delta)};
+        }}
+        
+
         
         /* 状态栏 */
         QStatusBar {{
@@ -270,11 +450,11 @@ class ThemeManager(QObject):
         }}
         
         QPushButton:hover {{
-            background-color: {hover_color};
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
         }}
         
         QPushButton:pressed {{
-            background-color: {pressed_color};
+            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
         }}
         
         QPushButton:disabled {{
@@ -329,7 +509,7 @@ class ThemeManager(QObject):
         }}
         
         QListWidget::item:hover {{
-            background-color: {hover_color};
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
         }}
         
         /* 标签页 */
@@ -350,7 +530,7 @@ class ThemeManager(QObject):
         }}
         
         QTabBar::tab:hover {{
-            background-color: {hover_color};
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
         }}
         
         /* 滚动条 */
@@ -412,26 +592,116 @@ class ThemeManager(QObject):
         return stylesheet
     
     def _adjust_color_brightness(self, color_hex: str, amount: int) -> str:
-        """调整颜色亮度"""
-        try:
-            # 移除 # 符号
-            color_hex = color_hex.lstrip('#')
+        """调整颜色亮度
+        
+        Args:
+            color_hex: 十六进制颜色值 (如 '#FF0000')
+            amount: 亮度调整量 (-255 到 255)
             
-            # 转换为RGB
-            r = int(color_hex[0:2], 16)
-            g = int(color_hex[2:4], 16)
-            b = int(color_hex[4:6], 16)
+        Returns:
+            调整后的十六进制颜色值
+        """
+        # 移除 # 符号
+        color_hex = color_hex.lstrip('#')
+        
+        # 转换为RGB
+        r = int(color_hex[0:2], 16)
+        g = int(color_hex[2:4], 16)
+        b = int(color_hex[4:6], 16)
+        
+        # 调整亮度
+        r = max(0, min(255, r + amount))
+        g = max(0, min(255, g + amount))
+        b = max(0, min(255, b + amount))
+        
+        return f'#{r:02x}{g:02x}{b:02x}'
+    
+    def _get_color_brightness(self, color_hex: str) -> int:
+        """计算颜色亮度
+        
+        Args:
+            color_hex: 十六进制颜色值 (如 '#FF0000')
             
-            # 调整亮度
-            r = max(0, min(255, r + amount))
-            g = max(0, min(255, g + amount))
-            b = max(0, min(255, b + amount))
-            
-            # 转换回十六进制
-            return f"#{r:02x}{g:02x}{b:02x}"
-        except:
-            return color_hex  # 如果出错，返回原色
+        Returns:
+            颜色亮度值 (0-255)
+        """
+        # 移除 # 符号
+        color_hex = color_hex.lstrip('#')
+        
+        # 转换为RGB
+        r = int(color_hex[0:2], 16)
+        g = int(color_hex[2:4], 16)
+        b = int(color_hex[4:6], 16)
+        
+        # 使用感知亮度公式 (ITU-R BT.709)
+        brightness = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return int(brightness)
     
     def get_available_themes(self) -> list:
         """获取可用主题列表"""
-        return list(self.themes.keys()) 
+        return list(self.themes.keys())
+    
+    def get_theme_settings(self, category: str, theme_name: str = None) -> Dict[str, Any]:
+        """获取主题设置
+        
+        Args:
+            category: 主题类别 ('roi', 'measurement', 'ui')
+            theme_name: 主题名称，如果为None则使用当前主题
+            
+        Returns:
+            包含主题设置的字典
+        """
+        if category == 'ui':
+            # 对于UI主题，使用内部的themes字典
+            if theme_name is None:
+                theme_name = self.current_theme
+            return self.themes.get(theme_name, {})
+        else:
+            # 对于其他类别，使用全局函数
+            return get_theme_settings(category, theme_name)
+    
+    def create_themed_icon(self, svg_path: str) -> QIcon:
+        """根据当前主题创建合适颜色的图标
+        
+        Args:
+            svg_path: SVG图标文件路径
+            
+        Returns:
+            主题适配的QIcon对象
+        """
+        try:
+            # 获取当前主题颜色
+            theme_data = get_theme_settings('ui', self.get_current_theme())
+            bg_color = theme_data.get('background_color', '#F0F0F0')
+            
+            # 计算背景色亮度
+            bg_brightness = self._get_color_brightness(bg_color)
+            
+            # 根据背景色亮度选择图标颜色
+            icon_color = "#FFFFFF" if bg_brightness < 128 else "#000000"
+            
+            # 读取SVG内容并替换颜色
+            with open(svg_path, 'r', encoding='utf-8') as f:
+                svg_content = f.read()
+            
+            # 替换currentColor为具体颜色
+            svg_content = svg_content.replace('currentColor', icon_color)
+            
+            # 使用QSvgRenderer创建图标
+            svg_bytes = QByteArray(svg_content.encode('utf-8'))
+            renderer = QSvgRenderer(svg_bytes)
+            
+            # 创建QPixmap
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(Qt.transparent)
+            
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            
+            return QIcon(pixmap)
+            
+        except Exception as e:
+            logger.warning(f"[ThemeManager.create_themed_icon] 创建主题图标失败: {e}")
+            # 回退到原始图标
+            return QIcon(svg_path)
