@@ -6,6 +6,7 @@ from PySide6.QtGui import QAction, QIcon, QActionGroup, QFont
 from PySide6.QtCore import Qt, QPoint, Signal
 
 from medimager.utils.logger import get_logger
+from medimager.utils.resource_path import get_icon_path
 
 logger = get_logger(__name__)
 
@@ -31,7 +32,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     main_window.tool_actions = {}
 
     # 1. 默认工具 (指针)
-    click_icon_path = os.path.abspath("medimager/icons/click.svg")
+    click_icon_path = get_icon_path("click.svg")
     default_icon = main_window.theme_manager.create_themed_icon(click_icon_path)
     
     action = QAction(default_icon, main_window.tr("指针"), main_window)
@@ -52,7 +53,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     roi_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
     
     # 设置默认图标（椭圆）
-    ellipse_icon_path = os.path.abspath("medimager/icons/ellipse.svg")
+    ellipse_icon_path = get_icon_path("ellipse.svg")
     ellipse_icon = main_window.theme_manager.create_themed_icon(ellipse_icon_path)
     roi_button.setIcon(ellipse_icon)
     roi_button.setText(main_window.tr("ROI工具"))
@@ -74,7 +75,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     roi_action_group.addAction(ellipse_action)
     
     # 矩形ROI
-    rect_icon_path = os.path.abspath("medimager/icons/rectangle.svg")
+    rect_icon_path = get_icon_path("rectangle.svg")
     rect_icon = main_window.theme_manager.create_themed_icon(rect_icon_path)
     rect_action = QAction(rect_icon, main_window.tr("矩形"), main_window)
     rect_action.setCheckable(True)
@@ -84,7 +85,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     roi_action_group.addAction(rect_action)
     
     # 圆形ROI
-    circle_icon_path = os.path.abspath("medimager/icons/circle.svg")
+    circle_icon_path = get_icon_path("circle.svg")
     circle_icon = main_window.theme_manager.create_themed_icon(circle_icon_path)
     circle_action = QAction(circle_icon, main_window.tr("圆形"), main_window)
     circle_action.setCheckable(True)
@@ -138,7 +139,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     toolbar.addSeparator()
 
     # 3. 测量工具
-    ruler_icon_path = os.path.abspath("medimager/icons/ruler.svg")
+    ruler_icon_path = get_icon_path("ruler.svg")
     measure_action = QAction(main_window.theme_manager.create_themed_icon(ruler_icon_path), main_window.tr("测量"), main_window)
     measure_action.setStatusTip(main_window.tr("测量两点间的实际距离"))
     measure_action.setCheckable(True)
@@ -187,7 +188,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
     layout_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
     
     # 设置图标
-    layout_icon_path = os.path.abspath("medimager/icons/layout.svg")
+    layout_icon_path = get_icon_path("layout.svg")
     layout_icon = main_window.theme_manager.create_themed_icon(layout_icon_path)
     layout_button.setIcon(layout_icon)
     layout_button.setToolTip(main_window.tr("选择视图布局"))
@@ -241,7 +242,7 @@ def create_sync_button(main_window) -> QToolButton:
     sync_button.setPopupMode(QToolButton.InstantPopup)
     
     # 设置链条图标
-    chain_icon_path = os.path.abspath("medimager/icons/chain.svg")
+    chain_icon_path = get_icon_path("chain.svg")
     try:
         chain_icon = main_window.theme_manager.create_themed_icon(chain_icon_path)
         sync_button.setIcon(chain_icon)

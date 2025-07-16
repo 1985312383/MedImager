@@ -1,0 +1,159 @@
+name: Build and Release MedImager
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # 触发条件：推送版本标签
+  workflow_dispatch:  # 允许手动触发
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      
+    - name: Install dependencies
+      run: uv sync --dev
+      
+    - name: Download UPX
+      run: |
+        $upxVersion = "4.2.1"
+        $upxUrl = "https://github.com/upx/upx/releases/download/v$upxVersion/upx-$upxVersion-win64.zip"
+        Invoke-WebRequest -Uri $upxUrl -OutFile "upx.zip"
+        Expand-Archive -Path "upx.zip" -DestinationPath "."
+        $upxDir = Get-ChildItem -Directory -Name "upx-*"
+        echo "UPX_PATH=$upxDir" >> $env:GITHUB_ENV
+        
+    - name: Build application
+      run: |
+        uv run pyinstaller `
+          --noconfirm `
+          --onefile `
+          --windowed `
+          --name "MedImager" `
+          --icon "medimager/icons/favicon.ico" `
+          --upx-dir "$env:UPX_PATH" `
+          --clean `
+          --add-data "medimager;medimager/" `
+          "medimager/main.py"
+          
+    - name: Get project info
+      id: project_info
+      run: |
+        $content = Get-Content "pyproject.toml" -Raw
+        $version = ($content | Select-String 'version = "([^"]+)"').Matches[0].Groups[1].Value
+        $name = ($content | Select-String 'name = "([^"]+)"').Matches[0].Groups[1].Value
+        echo "version=$version" >> $env:GITHUB_OUTPUT
+        echo "name=$name" >> $env:GITHUB_OUTPUT
+        
+    - name: Create release package
+      run: |
+        $version = "${{ steps.project_info.outputs.version }}"
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $releaseDir = "MedImager_v${version}_preview_${timestamp}"
+        
+        # 创建发布目录
+        New-Item -ItemType Directory -Path $releaseDir
+        
+        # 复制文件
+        Copy-Item "dist/MedImager.exe" "$releaseDir/"
+        Copy-Item "README.md" "$releaseDir/" -ErrorAction SilentlyContinue
+        Copy-Item "README_zh.md" "$releaseDir/" -ErrorAction SilentlyContinue
+        Copy-Item "LICENSE" "$releaseDir/" -ErrorAction SilentlyContinue
+        Copy-Item "BUILD.md" "$releaseDir/" -ErrorAction SilentlyContinue
+        
+        # 创建版本信息
+        $versionInfo = @"
+        MedImager v$version - Preview Release
+        
+        构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        构建环境: GitHub Actions
+        
+        这是一个预览版本，可能包含未完全测试的功能。
+        如有问题请反馈到项目仓库。
+        
+        使用方法:
+        1. 直接运行 MedImager.exe
+        2. 支持拖拽 DICOM 文件或文件夹
+        3. 详细使用说明请参考 README.md
+        "@
+        
+        $versionInfo | Out-File -FilePath "$releaseDir/VERSION.txt" -Encoding UTF8
+        
+        # 创建 ZIP 包
+        $zipName = "MedImager_v${version}_preview_${timestamp}.zip"
+        Compress-Archive -Path "$releaseDir/*" -DestinationPath $zipName
+        
+        echo "RELEASE_DIR=$releaseDir" >> $env:GITHUB_ENV
+        echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+        echo "VERSION=$version" >> $env:GITHUB_ENV
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: MedImager-Windows
+        path: |
+          ${{ env.ZIP_NAME }}
+          ${{ env.RELEASE_DIR }}/
+          
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.event.inputs.version || github.ref_name }}
+        name: MedImager ${{ env.VERSION }} Preview
+        body: |
+          ## MedImager ${{ env.VERSION }} - Preview Release
+          
+          🚀 **自动构建的预览版本**
+          
+          ### 📦 下载
+          - **Windows**: `${{ env.ZIP_NAME }}`
+          
+          ### ✨ 特性
+          - 单文件可执行程序，无需安装
+          - 支持多序列 DICOM 文件查看
+          - 多视图布局和图像分析工具
+          - 现代化用户界面
+          
+          ### 🔧 使用方法
+          1. 下载并解压 ZIP 文件
+          2. 直接运行 `MedImager.exe`
+          3. 拖拽 DICOM 文件或文件夹到程序中
+          
+          ### ⚠️ 注意事项
+          - 这是预览版本，可能包含未完全测试的功能
+          - 如遇到问题请在 Issues 中反馈
+          - 详细使用说明请参考 README.md
+          
+          ---
+          
+          **构建信息**
+          - 构建时间: ${{ steps.project_info.outputs.version }}
+          - 构建环境: GitHub Actions
+          - Python 版本: 3.11
+        files: ${{ env.ZIP_NAME }}
+        prerelease: ${{ github.event.inputs.prerelease || true }}
+        draft: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

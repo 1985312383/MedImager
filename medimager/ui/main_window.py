@@ -1002,9 +1002,11 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._load_test_series] 加载测试序列")
         
         try:
+            from medimager.utils.resource_path import get_test_data_path, verify_resource_exists
+            
             # 检查测试数据是否存在
-            test_data_path = Path("medimager/tests/dcm")
-            if not test_data_path.exists():
+            test_data_path = Path(get_test_data_path("dcm"))
+            if not verify_resource_exists(str(test_data_path)):
                 QMessageBox.information(self, self.tr("信息"), self.tr("测试数据不存在"))
                 return
             

@@ -74,7 +74,7 @@ MedImager 是一款功能强大、用户友好、支持学术研究的开源医�
 * **编程语言**: Python 3.9+
 * **GUI 框架**: PySide6 (LGPL 许可证)
 * **DICOM 解析**: pydicom
-* **数值与图像处理**: NumPy, SciPy, scikit-image
+* **数值与图像处理**: NumPy
 * **2D/3D 可视化**: Qt Graphics View Framework (用于 2D), VTK 9+ (用于 3D)
 * **打包工具**: PyInstaller
 * **多语言支持**: Qt Linguist (`pylupdate6`, `lrelease`)

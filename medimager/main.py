@@ -140,13 +140,15 @@ class MedImagerApplication:
     def _setup_application_icon(self) -> None:
         """设置应用程序图标"""
         try:
-            icon_path = "medimager/icons/logo.png"
-            if Path(icon_path).exists():
+            from medimager.utils.resource_path import get_icon_path, verify_resource_exists
+            
+            icon_path = get_icon_path("logo.png")
+            if verify_resource_exists(icon_path):
                 icon = QIcon(icon_path)
                 self.app.setWindowIcon(icon)
                 self.logger.info(f"应用程序图标设置完成: {icon_path}")
             else:
-                self.logger.warning("未找到应用程序图标文件: medimager/icons/logo.png")
+                self.logger.warning(f"未找到应用程序图标文件: {icon_path}")
                 
         except Exception as e:
             self.logger.warning(f"设置应用程序图标失败: {e}")
@@ -330,8 +332,10 @@ if __name__ == "__main__":
             # 设置macOS应用程序图标
             from PySide6.QtGui import QPixmap
             from PySide6.QtWidgets import QApplication
-            icon_path = Path("medimager/icons/logo.png")
-            if icon_path.exists():
+            from medimager.utils.resource_path import get_icon_path, verify_resource_exists
+            
+            icon_path = get_icon_path("logo.png")
+            if verify_resource_exists(icon_path):
                 # 在应用程序创建之前设置图标
                 QApplication.setOrganizationName("MedImager")
                 QApplication.setOrganizationDomain("medimager.org")
@@ -372,4 +376,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"通用配置失败: {e}")
 
-    sys.exit(main()) 
+    sys.exit(main())

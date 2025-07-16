@@ -4,7 +4,6 @@ from typing import Tuple, TYPE_CHECKING
 import uuid
 
 import numpy as np
-from skimage.draw import disk, ellipse
 import logging
 
 from ..utils.settings import SettingsManager
@@ -15,6 +14,47 @@ if TYPE_CHECKING:
 
 
 settings = SettingsManager()
+
+
+def _create_circle_mask(center_y: int, center_x: int, radius: int, height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    创建圆形掩码的坐标数组，替代skimage.draw.disk
+    
+    Args:
+        center_y: 圆心Y坐标
+        center_x: 圆心X坐标  
+        radius: 半径
+        height: 图像高度
+        width: 图像宽度
+        
+    Returns:
+        (rr, cc): 圆形区域内的行列坐标数组
+    """
+    y, x = np.ogrid[:height, :width]
+    mask = (x - center_x) ** 2 + (y - center_y) ** 2 <= radius ** 2
+    rr, cc = np.where(mask)
+    return rr, cc
+
+
+def _create_ellipse_mask(center_y: int, center_x: int, radius_y: int, radius_x: int, height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    创建椭圆掩码的坐标数组，替代skimage.draw.ellipse
+    
+    Args:
+        center_y: 椭圆中心Y坐标
+        center_x: 椭圆中心X坐标
+        radius_y: Y轴半径
+        radius_x: X轴半径
+        height: 图像高度
+        width: 图像宽度
+        
+    Returns:
+        (rr, cc): 椭圆区域内的行列坐标数组
+    """
+    y, x = np.ogrid[:height, :width]
+    mask = ((x - center_x) / radius_x) ** 2 + ((y - center_y) / radius_y) ** 2 <= 1
+    rr, cc = np.where(mask)
+    return rr, cc
 
 
 class ROIShape(Enum):
@@ -184,8 +224,8 @@ class EllipseROI(BaseROI):
         # 确保所有参数都是整数
         cy, cx = int(self.center[0]), int(self.center[1])
         ry, rx = int(self.radius_y), int(self.radius_x)
-        # skimage.draw.ellipse 的参数是 (y_center, x_center, y_radius, x_radius)
-        rr, cc = ellipse(cy, cx, ry, rx, shape=(height, width))
+        # 使用自定义函数替代skimage.draw.ellipse
+        rr, cc = _create_ellipse_mask(cy, cx, ry, rx, height, width)
         mask[rr, cc] = True
         return mask
 
@@ -314,8 +354,8 @@ class CircleROI(EllipseROI):
         # 确保参数都是整数
         cy, cx = int(self.center[0]), int(self.center[1])
         r = int(self.radius)
-        # 使用skimage.draw.disk来高效地生成圆形掩码
-        rr, cc = disk((cy, cx), r, shape=(height, width))
+        # 使用自定义函数替代skimage.draw.disk
+        rr, cc = _create_circle_mask(cy, cx, r, height, width)
         mask[rr, cc] = True
         return mask 
 
@@ -544,4 +584,4 @@ class RectangleROI(BaseROI):
             del self._resize_anchors
             del self._resize_top_left
             del self._resize_bottom_right
-            del self._resize_anchor_idx 
+            del self._resize_anchor_idx

@@ -74,7 +74,7 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
 * **Language:** Python 3.9+
 * **GUI Framework:** PySide6 (LGPL)
 * **DICOM Parsing:** pydicom
-* **Numerical/Image Processing:** NumPy, SciPy, scikit-image
+* **Numerical/Image Processing:** NumPy
 * **2D/3D Visualization:** Qt Graphics View Framework (2D), VTK 9+ (3D)
 * **Packaging:** PyInstaller
 * **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)

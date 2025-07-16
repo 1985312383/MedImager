@@ -1035,8 +1035,8 @@ class LayoutSelectorButton(QPushButton):
     def _create_layout_icon(self) -> None:
         """创建布局图标"""
         # 使用layout.svg图标
-        import os
-        layout_icon_path = os.path.abspath("medimager/icons/layout.svg")
+        from medimager.utils.resource_path import get_icon_path
+        layout_icon_path = get_icon_path("layout.svg")
         
         # 根据主题创建合适颜色的图标
         icon = self._create_themed_icon(layout_icon_path)
