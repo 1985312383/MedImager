@@ -1,1 +1,0 @@
-# 包含一个 image_viewer 的独立视窗 

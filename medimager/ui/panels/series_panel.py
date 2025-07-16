@@ -297,7 +297,7 @@ class SeriesListWidget(QWidget):
             # 设置绑定视图信息
             bound_views = self._series_manager.get_bound_views_for_series(series_id)
             if bound_views:
-                view_text = f"{len(bound_views)}个视图"
+                view_text = self.tr(f"{len(bound_views)}个视图")
             else:
                 view_text = self.tr("未绑定")
             item.setText(2, view_text)
@@ -350,9 +350,9 @@ class SeriesListWidget(QWidget):
         if series_info.series_description:
             return f"{series_info.series_description}"
         elif series_info.modality:
-            return f"{series_info.modality} - 序列{series_info.series_number}"
+            return f"{series_info.modality} - {self.tr('序列')}{series_info.series_number}"
         else:
-            return f"序列 {series_info.series_number}"
+            return self.tr(f"序列 {series_info.series_number}")
     
     def _on_selection_changed(self) -> None:
         """处理选择变更"""
@@ -449,7 +449,7 @@ class SeriesListWidget(QWidget):
             bound_views = self._series_manager.get_bound_views_for_series(sid)
             item = self._series_items[sid]
             if bound_views:
-                item.setText(2, f"{len(bound_views)}个视图")
+                item.setText(2, self.tr(f"{len(bound_views)}个视图"))
             else:
                 item.setText(2, self.tr("未绑定"))
 
@@ -577,7 +577,7 @@ class ViewBindingWidget(QWidget):
         """格式化序列文本"""
         if series_info.series_description:
             return f"{series_info.series_description}"
-        return f"序列 {series_info.series_number}"
+        return self.tr(f"序列 {series_info.series_number}")
     
     def _on_unbind_clicked(self, view_id: str) -> None:
         """处理解绑点击"""
@@ -738,10 +738,13 @@ class SeriesInfoWidget(QWidget):
     
     def _fill_basic_info(self, series_info: SeriesInfo) -> None:
         """填充基本信息"""
-        # 清除现有布局
-        self._clear_group_layout(self._basic_group)
+        layout = self._basic_group.layout()
+        if layout is None:
+            layout = QVBoxLayout(self._basic_group)
+            self._basic_group.setLayout(layout)
+        else:
+            self._clear_group_layout(self._basic_group)
         
-        layout = QVBoxLayout(self._basic_group)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
         
@@ -755,10 +758,13 @@ class SeriesInfoWidget(QWidget):
     
     def _fill_tech_info(self, series_info: SeriesInfo) -> None:
         """填充技术参数"""
-        # 清除现有布局
-        self._clear_group_layout(self._tech_group)
+        layout = self._tech_group.layout()
+        if layout is None:
+            layout = QVBoxLayout(self._tech_group)
+            self._tech_group.setLayout(layout)
+        else:
+            self._clear_group_layout(self._tech_group)
         
-        layout = QVBoxLayout(self._tech_group)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
         
@@ -779,10 +785,13 @@ class SeriesInfoWidget(QWidget):
     
     def _fill_status_info(self, series_info: SeriesInfo) -> None:
         """填充状态信息"""
-        # 清除现有布局
-        self._clear_group_layout(self._status_group)
+        layout = self._status_group.layout()
+        if layout is None:
+            layout = QVBoxLayout(self._status_group)
+            self._status_group.setLayout(layout)
+        else:
+            self._clear_group_layout(self._status_group)
         
-        layout = QVBoxLayout(self._status_group)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
         
@@ -793,7 +802,7 @@ class SeriesInfoWidget(QWidget):
         # 绑定视图信息
         bound_views = self._series_manager.get_bound_views_for_series(series_info.series_id)
         view_count = len(bound_views)
-        view_info = f"{view_count}个视图" if view_count > 0 else self.tr("未绑定")
+        view_info = self.tr(f"{view_count}个视图") if view_count > 0 else self.tr("未绑定")
         self._add_info_item(layout, self.tr("绑定视图"), view_info)
         
         # 文件路径信息
@@ -821,7 +830,7 @@ class SeriesInfoWidget(QWidget):
         label_widget.setFixedWidth(80)
         label_widget.setAlignment(Qt.AlignRight | Qt.AlignTop)
         
-        value_widget = QLabel(value)
+        value_widget = QLabel(str(value))
         value_widget.setWordWrap(True)
         value_widget.setTextInteractionFlags(Qt.TextSelectableByMouse)
         
@@ -1024,6 +1033,9 @@ class SeriesPanel(QWidget):
             # 连接切片变化信号（如果还没有连接）
             self._connect_slice_change_signal(binding.series_id, image_model)
             
+            # 更新序列信息
+            self._info_widget.show_series_info(binding.series_id)
+
             # 同步当前切片选择
             self.sync_slice_selection(binding.series_id, image_model.current_slice_index)
             

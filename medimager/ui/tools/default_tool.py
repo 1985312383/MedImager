@@ -330,6 +330,12 @@ class DefaultTool(BaseTool):
             if self.viewer.model and self.viewer.model.get_slice_count() > 1:
                 direction = -1 if angle > 0 else 1
                 self.viewer.model.set_current_slice(self.viewer.model.current_slice_index + direction)
+                
+                # 切片切换后，如果鼠标在图像区域内，主动更新像素信息
+                if hasattr(self.viewer, 'last_mouse_scene_pos') and self.viewer.last_mouse_scene_pos:
+                    if hasattr(self.viewer, '_update_pixel_info'):
+                        self.viewer._update_pixel_info(self.viewer.last_mouse_scene_pos)
+                
                 event.accept() 
 
     def key_press_event(self, event: QKeyEvent):
@@ -405,4 +411,4 @@ class DefaultTool(BaseTool):
             if length < 0.1:
                 self.logger.warning(f"  警告：测量{i}长度过短")
         
-        self.logger.info("=" * 40) 
+        self.logger.info("=" * 40)

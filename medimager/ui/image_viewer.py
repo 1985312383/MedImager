@@ -143,10 +143,10 @@ class ImageViewer(QGraphicsView):
             # 更新交叉参考线颜色
             if theme_name == 'light':
                 self._cross_reference_color = QColor(255, 165, 0, 180)  # 橙色
-                ref_color = "橙色"
+                ref_color = self.tr("橙色")
             else:
                 self._cross_reference_color = QColor(255, 255, 0, 180)  # 黄色
-                ref_color = "黄色"
+                ref_color = self.tr("黄色")
             
             self.logger.info(f"[ImageViewer.update_theme] 设置交叉参考线颜色: {ref_color}")
             

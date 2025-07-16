@@ -201,7 +201,7 @@ class MeasurementTool(BaseTool):
             # 优先删除选中的测量
             if model.selected_measurement_indices:
                 deleted_ids = model.delete_selected_measurements()
-                self.logger.info(f"删除了 {len(deleted_ids)} 个测量")
+                self.logger.info(f"{self.tr('删除了')} {len(deleted_ids)} {self.tr('个测量')}")
                 deleted_something = True
             
             # 如果没有选中的测量，检查是否有正在创建的测量线
@@ -533,4 +533,4 @@ class MeasurementTool(BaseTool):
                 painter.setPen(QColor(text_color))
                 painter.drawText(text_rect, Qt.AlignCenter, text)
 
-        painter.restore() 
+        painter.restore()

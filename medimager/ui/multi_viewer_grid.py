@@ -144,10 +144,20 @@ class ViewFrame(QFrame):
         self._coordinate_label.setObjectName("coordinateLabel")
         layout.addWidget(self._coordinate_label)
         
+        # 分割线1
+        separator1 = QLabel("|")
+        separator1.setStyleSheet("color: #888888;")
+        layout.addWidget(separator1)
+        
         # 像素值信息
         self._pixel_value_label = QLabel("")
         self._pixel_value_label.setObjectName("pixelValueLabel")
         layout.addWidget(self._pixel_value_label)
+        
+        # 分割线2
+        separator2 = QLabel("|")
+        separator2.setStyleSheet("color: #888888;")
+        layout.addWidget(separator2)
         
         # 窗宽窗位信息
         self._wl_label = QLabel("")
@@ -340,7 +350,7 @@ class ViewFrame(QFrame):
                 model = self._image_model
                 ww = model.window_width
                 wl = model.window_level
-                self._wl_label.setText(f"W:{ww} L:{wl}")
+                self._wl_label.setText(f"WW/WL: {ww:.0f}/{wl:.0f}")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_status_info] 更新状态信息失败: {e}")
     
@@ -351,7 +361,7 @@ class ViewFrame(QFrame):
                 model = self._image_model
                 current = model.current_slice_index + 1
                 total = model.slice_count
-                self._slice_label.setText(f"{current}/{total}")
+                self._slice_label.setText(f"{self.tr('切片')}: {current}/{total}")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_slice_info] 更新切片信息失败: {e}")
     
@@ -390,8 +400,8 @@ class ViewFrame(QFrame):
     def _update_pixel_info(self, x: int, y: int, value: float) -> None:
         """更新像素信息显示"""
         try:
-            self._coordinate_label.setText(f"({x}, {y})")
-            self._pixel_value_label.setText(f"值: {value:.0f}")
+            self._coordinate_label.setText(f"X:{x} Y:{y}")
+            self._pixel_value_label.setText(f"{self.tr('CT值')}: {value:.0f}HU")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_pixel_info] 更新像素信息失败: {e}")
     
@@ -1158,7 +1168,7 @@ class MultiViewerGrid(QWidget):
         elif series_info.patient_name:
             return f"{series_info.patient_name} - {series_info.modality}"
         else:
-            return f"序列 {series_info.series_number}"
+            return f"{self.tr('序列')} {series_info.series_number}"
     
     def _on_layout_changed(self, layout: Tuple[int, int]) -> None:
         """处理布局变更事件"""

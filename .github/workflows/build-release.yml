@@ -72,7 +72,19 @@ jobs:
       run: |
         $version = "${{ steps.project_info.outputs.version }}"
         $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $releaseDir = "MedImager_v${version}_preview_${timestamp}"
+        $prerelease = "${{ github.event.inputs.prerelease || true }}"
+        
+        if ($prerelease -eq 'true') {
+          $releaseDir = "MedImager_v${version}_preview_${timestamp}"
+          $zipName = "MedImager_v${version}_preview_${timestamp}.zip"
+          $releaseType = "Preview Release"
+          $releaseNotes = "这是一个预览版本，可能包含未完全测试的功能。"
+        } else {
+          $releaseDir = "MedImager_v${version}"
+          $zipName = "MedImager_v${version}.zip"
+          $releaseType = "Stable Release"
+          $releaseNotes = "这是一个稳定的正式版本。"
+        }
         
         # 创建发布目录
         New-Item -ItemType Directory -Path $releaseDir
@@ -82,16 +94,16 @@ jobs:
         Copy-Item "README.md" "$releaseDir/" -ErrorAction SilentlyContinue
         Copy-Item "README_zh.md" "$releaseDir/" -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" "$releaseDir/" -ErrorAction SilentlyContinue
-        Copy-Item "BUILD.md" "$releaseDir/" -ErrorAction SilentlyContinue
+        Copy-Item "release/BUILD.md" "$releaseDir/" -ErrorAction SilentlyContinue
         
         # 创建版本信息
         $versionInfo = @"
-        MedImager v$version - Preview Release
+        MedImager v$version - $releaseType
         
         构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         构建环境: GitHub Actions
         
-        这是一个预览版本，可能包含未完全测试的功能。
+        $releaseNotes
         如有问题请反馈到项目仓库。
         
         使用方法:
@@ -103,7 +115,6 @@ jobs:
         $versionInfo | Out-File -FilePath "$releaseDir/VERSION.txt" -Encoding UTF8
         
         # 创建 ZIP 包
-        $zipName = "MedImager_v${version}_preview_${timestamp}.zip"
         Compress-Archive -Path "$releaseDir/*" -DestinationPath $zipName
         
         echo "RELEASE_DIR=$releaseDir" >> $env:GITHUB_ENV
@@ -123,11 +134,11 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.event.inputs.version || github.ref_name }}
-        name: MedImager ${{ env.VERSION }} Preview
+        name: MedImager ${{ env.VERSION }} ${{ env.RELEASE_TYPE }}
         body: |
-          ## MedImager ${{ env.VERSION }} - Preview Release
+          ## MedImager ${{ env.VERSION }} - ${{ env.RELEASE_TYPE }}
           
-          🚀 **自动构建的预览版本**
+          🚀 **自动构建的版本**
           
           ### 📦 下载
           - **Windows**: `${{ env.ZIP_NAME }}`
@@ -144,7 +155,7 @@ jobs:
           3. 拖拽 DICOM 文件或文件夹到程序中
           
           ### ⚠️ 注意事项
-          - 这是预览版本，可能包含未完全测试的功能
+          - ${{ env.RELEASE_NOTES }}
           - 如遇到问题请在 Issues 中反馈
           - 详细使用说明请参考 README.md
           

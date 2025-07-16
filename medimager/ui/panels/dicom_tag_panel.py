@@ -17,7 +17,7 @@ class DicomTagPanel(QWidget):
         
         self.tree_widget = QTreeWidget()
         # 1. 移除 "Tag" 列，只保留 "Name" 和 "Value"
-        self.tree_widget.setHeaderLabels(["Name", "Value"])
+        self.tree_widget.setHeaderLabels([self.tr("Name"), self.tr("Value")])
         self.tree_widget.setColumnWidth(0, 200)
         # 自动拉伸第二列以填充剩余空间
         self.tree_widget.header().setStretchLastSection(True)
@@ -58,4 +58,4 @@ class DicomTagPanel(QWidget):
         """
         清空树形控件。
         """
-        self.tree_widget.clear() 
+        self.tree_widget.clear()

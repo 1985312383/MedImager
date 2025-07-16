@@ -976,7 +976,7 @@ class MainWindow(QMainWindow):
                 # 创建序列信息
                 series_info = SeriesInfo(
                     series_id=str(uuid.uuid4()),
-                    patient_name="Single Image",
+                    patient_name=self.tr("Single Image"),
                     series_description=path.name,
                     modality="IMG",
                     series_number="1",

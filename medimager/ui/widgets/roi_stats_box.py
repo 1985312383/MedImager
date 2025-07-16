@@ -109,4 +109,4 @@ def draw_stats_box(painter: QPainter, stats: Dict[str, float], box_rect: QRect) 
                                      -settings['padding'], -settings['padding'])
     painter.drawText(text_draw_rect, Qt.AlignLeft | Qt.AlignTop, stats_text)
     
-    painter.restore() 
+    painter.restore()

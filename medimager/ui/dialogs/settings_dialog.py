@@ -707,7 +707,7 @@ class SettingsDialog(QDialog):
         # 恢复语言默认值
         language_combo = self.setting_widgets.get('language')
         if language_combo:
-            index = language_combo.findData('zh_CN')
+            index = language_combo.findData('en_US')
             if index != -1:
                 language_combo.setCurrentIndex(index)
         
@@ -748,9 +748,13 @@ class SettingsDialog(QDialog):
 
     def _save_settings(self):
         """从UI控件收集并保存所有设置"""
+        # 检查语言是否发生变化
+        old_language = self.settings_manager.get_setting('language', 'en_US')
+        new_language = self.setting_widgets['language'].currentData()
+        language_changed = old_language != new_language
+        
         # 保存语言设置
-        language_code = self.setting_widgets['language'].currentData()
-        self.settings_manager.set_setting('language', language_code)
+        self.settings_manager.set_setting('language', new_language)
         
         # 保存UI主题
         ui_combo = self.setting_widgets.get('ui_theme')
@@ -786,6 +790,15 @@ class SettingsDialog(QDialog):
             self.settings_manager.set_setting('thread_count', thread_count_spin.value())
         
         self.settings_manager.save_settings()
+        
+        # 如果语言发生变化，提示用户重启应用
+        if language_changed:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                self.tr("语言设置"),
+                self.tr("语言设置将在下次启动时完全生效。")
+            )
     
     def _save_theme_to_file(self, category: str, theme_name: str):
         """保存主题设置到TOML文件"""
@@ -793,7 +806,7 @@ class SettingsDialog(QDialog):
             return
         
         # 收集当前自定义控件的值
-        theme_data = {'name': '自定义'}
+        theme_data = {'name': self.tr('自定义')}
         
         for key, widget in self.setting_widgets.items():
             if not key.startswith(f'{category}.custom.'):
@@ -841,7 +854,7 @@ class SettingsDialog(QDialog):
                     try:
                         default_data = toml.load(default_theme_file)
                         custom_theme_data.update(default_data)
-                        custom_theme_data['name'] = '自定义'  # 确保名称是"自定义"
+                        custom_theme_data['name'] = self.tr('自定义')  # 确保名称是"自定义"
                     except Exception as e:
                         pass  # 静默处理读取失败
                 
