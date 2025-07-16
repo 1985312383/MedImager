@@ -26,11 +26,10 @@ cd MedImager
 # 使用 uv 安装完整开发环境（包括开发依赖）
 uv sync --dev
 
-# 激活虚拟环境
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
+# 激活虚拟环境（跨平台）
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+# 或者直接使用 uv run 命令无需手动激活
 ```
 
 ### 3. 运行开发版本
@@ -61,6 +60,19 @@ python medimager/main.py
 使用以下命令进行打包：
 
 ```bash
+# Windows 命令
+uv run pyinstaller ^
+  --noconfirm ^
+  --onefile ^   # --onedir
+  --windowed ^   # --console 
+  --name "MedImager" ^
+  --icon "medimager/icons/favicon.ico" ^
+  --upx-dir "{UPX_PATH}" ^
+  --clean ^
+  --add-data "medimager;medimager/" ^
+  "medimager/main.py"
+
+# Linux/macOS 命令
 uv run pyinstaller \
   --noconfirm \
   --onefile \   # --onedir
@@ -69,7 +81,7 @@ uv run pyinstaller \
   --icon "medimager/icons/favicon.ico" \
   --upx-dir "{UPX_PATH}" \
   --clean \
-  --add-data "medimager;medimager/" \
+  --add-data "medimager:medimager/" \
   "medimager/main.py"
 ```
 
@@ -82,13 +94,17 @@ uv run pyinstaller \
 - `--icon`: 指定应用程序图标（相对路径）
 - `--upx-dir`: UPX 压缩工具路径，请替换 `{UPX_PATH}` 为实际路径（可选）
 - `--clean`: 清理临时文件
-- `--add-data`: 添加资源文件到打包结果
+- `--add-data`: 添加资源文件到打包结果（Windows使用分号`;`分隔，Linux/macOS使用冒号`:`分隔）
 
 ### 打包输出
 
 打包完成后，可执行文件位于：
 ```
+# Windows
 dist/MedImager/MedImager.exe
+
+# Linux/macOS
+dist/MedImager/MedImager
 ```
 
 ### 注意事项
@@ -97,6 +113,8 @@ dist/MedImager/MedImager.exe
    - 命令使用相对路径，请在项目根目录下执行
    - 将 `{UPX_PATH}` 替换为实际的 UPX 工具路径，例如：
      - Windows: `C:\tools\upx-4.2.1-win64`
+     - Linux: `/usr/local/bin/upx` 或 `/opt/upx`
+     - macOS: `/usr/local/bin/upx` 或通过 Homebrew 安装的路径
      - 如果没有 UPX，可以移除 `--upx-dir` 参数
 
 2. **可执行文件命名**：
@@ -109,8 +127,11 @@ dist/MedImager/MedImager.exe
 
 5. **测试打包结果**：
    ```bash
-   # 运行打包后的程序
-   ./dist/MedImager/MedImager.exe
+   # Windows
+   .\dist\MedImager\MedImager.exe
+   
+   # Linux/macOS
+   ./dist/MedImager/MedImager
    ```
 
 ## 故障排除
@@ -134,6 +155,13 @@ dist/MedImager/MedImager.exe
 如需调试打包问题，可以添加以下参数：
 
 ```bash
+# Windows
+uv run pyinstaller ^
+  --debug=all ^
+  --log-level=DEBUG ^
+  # ... 其他参数
+
+# Linux/macOS
 uv run pyinstaller \
   --debug=all \
   --log-level=DEBUG \
@@ -190,7 +218,7 @@ build_release.bat
 ### 发布包内容
 
 自动化脚本生成的发布包包含：
-- `MedImager.exe` - 主程序（单文件，无控制台）
+- `MedImager.exe`（Windows）或 `MedImager`（Linux/macOS）- 主程序（单文件，无控制台）
 - `README.md` / `README_zh.md` - 使用说明
 - `LICENSE` - 许可证文件
 - `BUILD.md` - 构建文档
@@ -209,6 +237,19 @@ build_release.bat
 如需手动控制发布过程，可以使用以下命令构建无控制台版本：
 
 ```bash
+# Windows
+uv run pyinstaller ^
+  --noconfirm ^
+  --onefile ^
+  --windowed ^
+  --name "MedImager" ^
+  --icon "medimager/icons/favicon.ico" ^
+  --upx-dir "{UPX_PATH}" ^
+  --clean ^
+  --add-data "medimager;medimager/" ^
+  "medimager/main.py"
+
+# Linux/macOS
 uv run pyinstaller \
   --noconfirm \
   --onefile \
@@ -217,7 +258,7 @@ uv run pyinstaller \
   --icon "medimager/icons/favicon.ico" \
   --upx-dir "{UPX_PATH}" \
   --clean \
-  --add-data "medimager;medimager/" \
+  --add-data "medimager:medimager/" \
   "medimager/main.py"
 ```
 
