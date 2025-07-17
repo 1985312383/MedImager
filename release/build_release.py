@@ -53,29 +53,99 @@ def clean_build_dirs():
 
 
 def find_upx_path():
-    """尝试找到 UPX 工具路径"""
-    common_paths = [
-        'C:\\tools\\upx',
-        'C:\\upx',
-        'D:\\tools\\upx',
-        'E:\\tools\\upx'
-    ]
+    """获取 UPX 工具路径
     
-    # 检查常见路径
-    for base_path in common_paths:
-        if os.path.exists(base_path):
-            # 查找版本目录
-            for item in os.listdir(base_path):
-                full_path = os.path.join(base_path, item)
-                if os.path.isdir(full_path) and 'upx' in item.lower():
-                    return full_path
+    用户可以通过两种方式配置 UPX：
+    1. 在函数中预设路径（推荐用于自动化构建）
+    2. 运行时交互式输入路径
     
-    # 检查当前目录
-    for item in os.listdir('.'):
-        if os.path.isdir(item) and 'upx' in item.lower():
-            return os.path.abspath(item)
+    下载 UPX 工具：https://upx.github.io/
     
-    return None
+    Returns:
+        str or None: UPX 工具目录路径，如果不使用 UPX 则返回 None
+    """
+    # 用户配置区域 - 请在此处填写您的 UPX 路径（可选）
+    # 示例: upx_path = 'C:\\tools\\upx-4.2.1-win64'
+    upx_path = None  # 请替换为您的 UPX 路径，或保持 None 使用交互式输入
+    
+    # 如果预设了路径，验证并返回
+    if upx_path:
+        if os.path.exists(upx_path):
+            print(f"   使用预设 UPX 路径: {upx_path}")
+            return upx_path
+        else:
+            print(f"   警告: 预设 UPX 路径不存在: {upx_path}")
+            print("   将使用交互式输入...")
+    
+    # 交互式获取 UPX 路径
+    return get_upx_path_interactive()
+
+
+def get_upx_path_interactive():
+    """交互式获取 UPX 路径
+    
+    Returns:
+        str or None: 用户输入的 UPX 路径，或 None 跳过压缩
+    """
+    print("\n📦 UPX 压缩配置")
+    print("UPX 可以显著减小可执行文件大小（通常减少 50-70%）")
+    print("下载地址: https://upx.github.io/")
+    
+    while True:
+        choice = input("\n是否使用 UPX 压缩？(y/n/help): ").lower().strip()
+        
+        if choice in ['n', 'no', '否']:
+            print("   跳过 UPX 压缩")
+            return None
+        elif choice in ['help', 'h', '帮助']:
+            print("\n📋 UPX 使用说明:")
+            print("1. 访问 https://upx.github.io/ 下载最新版本")
+            print("2. 解压到任意目录，例如: C:\\tools\\upx-4.2.1-win64")
+            print("3. 输入解压后的完整目录路径")
+            print("4. 示例路径:")
+            print("   - C:\\tools\\upx-4.2.1-win64")
+            print("   - D:\\software\\upx")
+            print("   - ./upx (相对路径)")
+            continue
+        elif choice in ['y', 'yes', '是']:
+            break
+        else:
+            print("   请输入 y(是) 或 n(否)，或输入 help 查看帮助")
+            continue
+    
+    # 获取 UPX 路径
+    while True:
+        upx_path = input("\n请输入 UPX 工具目录路径 (或输入 'skip' 跳过): ").strip()
+        
+        if upx_path.lower() in ['skip', '跳过', 'cancel', '取消']:
+            print("   跳过 UPX 压缩")
+            return None
+        
+        if not upx_path:
+            print("   路径不能为空，请重新输入")
+            continue
+        
+        # 处理引号
+        upx_path = upx_path.strip('"\'')
+        
+        # 验证路径
+        if os.path.exists(upx_path):
+            # 检查是否包含 upx.exe
+            upx_exe = os.path.join(upx_path, 'upx.exe')
+            if os.path.exists(upx_exe):
+                print(f"   ✅ UPX 路径验证成功: {upx_path}")
+                return upx_path
+            else:
+                print(f"   ⚠️  路径存在但未找到 upx.exe: {upx_exe}")
+                retry = input("   是否仍要使用此路径？(y/n): ").lower().strip()
+                if retry in ['y', 'yes', '是']:
+                    return upx_path
+                else:
+                    continue
+        else:
+            print(f"   ❌ 路径不存在: {upx_path}")
+            print("   请检查路径是否正确，或输入 'skip' 跳过 UPX 压缩")
+            continue
 
 
 def build_application(project_info, use_upx=True):

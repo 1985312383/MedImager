@@ -1,8 +1,8 @@
-name = "默认"
-line_color = "#000080"        # Green
-anchor_color = "#000080"     # Green
-text_color = "#000080"       # White
-background_color = "#000080" # Semi-transparent black
+name = "default"
+line_color = "#00ff00"
 line_width = 2
+anchor_color = "#00ff00"
 anchor_size = 8
-font_size = 14 
+text_color = "#ffffff"
+background_color = "#000080"
+font_size = 14

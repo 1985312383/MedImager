@@ -198,22 +198,36 @@ git push origin v1.0.0
 
 ### 本地快速发布
 
-使用自动化脚本一键构建发布版本：
+推荐使用自动化脚本进行发布：
 
 ```bash
 # 运行自动化发布脚本
-uv run python build_release.py
-
-# 或者 Windows 用户直接双击
-build_release.bat
+uv run python release/build_release.py
 ```
 
-此脚本将自动完成：
+### UPX 压缩配置
+
+脚本支持两种 UPX 配置方式：
+
+**方式1: 预设路径（推荐用于自动化构建）**
+- 编辑 `release/build_release.py` 中的 `find_upx_path()` 函数
+- 设置 `upx_path` 变量为您的 UPX 安装路径
+- 例如：`upx_path = 'C:\\tools\\upx-4.2.1-win64'`
+
+**方式2: 交互式输入（推荐用于手动构建）**
+- 保持 `upx_path = None`
+- 运行脚本时会自动提示配置 UPX
+- 支持实时下载指导和路径验证
+
+### 发布流程特性
+
+脚本将自动完成：
 1. 清理旧的构建文件
-2. 使用 PyInstaller 打包单文件应用程序（无控制台）
-3. 自动查找 UPX 工具进行压缩
-4. 创建发布目录和 ZIP 包
-5. 生成版本信息文件
+2. 交互式 UPX 配置（如未预设）
+3. 使用 PyInstaller 打包单文件应用程序（无控制台）
+4. 智能 UPX 压缩（可选）
+5. 创建发布目录和 ZIP 包
+6. 生成版本信息文件
 
 ### 发布包内容
 
