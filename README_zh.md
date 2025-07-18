@@ -15,7 +15,7 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
 
-[English](README.md) | **简体中文**
+[English](README.md) | **简体中文** | [Deutsch](README_de.md) | [Español](README_es.md) | [Français](README_fr.md)
 
 </div>
 
