@@ -85,7 +85,67 @@ def is_ui_text(line):
 
 def has_tr_wrapper(line):
     """检查行是否已经使用了self.tr()包装"""
-    return 'self.tr(' in line or 'tr(' in line
+    # 更精确的tr()调用检测，支持复杂的f字符串
+    
+    # 首先检查基本的tr()调用模式
+    basic_tr_patterns = [
+        r'self\.tr\s*\(',  # self.tr(
+        r'(?<!\w)tr\s*\(',  # tr( (但不是其他单词的一部分)
+    ]
+    
+    for pattern in basic_tr_patterns:
+        if re.search(pattern, line):
+            return True
+    
+    # 对于复杂情况，检查是否整行都在tr()调用内部
+    # 这种方法通过括号匹配来确定tr()调用的范围
+    stripped = line.strip()
+    
+    # 查找所有可能的tr调用起始位置
+    tr_starts = []
+    for match in re.finditer(r'(self\.tr\s*\(|(?<!\w)tr\s*\()', stripped):
+        tr_starts.append(match.end() - 1)  # 括号的位置
+    
+    if not tr_starts:
+        return False
+    
+    # 对每个tr调用起始位置，检查括号是否匹配到行尾
+    for start_pos in tr_starts:
+        paren_count = 0
+        in_string = False
+        string_char = None
+        escape_next = False
+        
+        for i, char in enumerate(stripped[start_pos:], start_pos):
+            if escape_next:
+                escape_next = False
+                continue
+                
+            if char == '\\':
+                escape_next = True
+                continue
+                
+            if not in_string:
+                if char in ['"', "'"]:
+                    in_string = True
+                    string_char = char
+                elif char == '(':
+                    paren_count += 1
+                elif char == ')':
+                    paren_count -= 1
+                    if paren_count == 0:
+                        # 找到了匹配的右括号，检查是否接近行尾
+                        remaining = stripped[i+1:].strip()
+                        # 如果剩余部分只是注释或很少的内容，认为整行都在tr()内
+                        if not remaining or remaining.startswith('#') or len(remaining) < 10:
+                            return True
+                        break
+            else:
+                if char == string_char and not escape_next:
+                    in_string = False
+                    string_char = None
+    
+    return False
 
 def check_file_i18n(file_path):
     """检查单个文件的国际化情况"""
@@ -147,7 +207,7 @@ def main():
         print("[OK] 未发现需要国际化的UI中文字符串")
         return
         
-    print(f"🔍 发现 {len(issues)} 个需要国际化的UI中文字符串:")
+    print(f"发现 {len(issues)} 个需要国际化的UI中文字符串:")
     print()
     
     # 按文件分组显示

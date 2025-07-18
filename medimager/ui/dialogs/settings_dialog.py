@@ -8,6 +8,7 @@
 
 import os
 import toml
+import glob
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QListWidget, QStackedWidget,
@@ -85,9 +86,52 @@ class SettingsDialog(QDialog):
         # 存储所有设置控件
         self.setting_widgets: Dict[str, QWidget] = {}
         
+        # 获取支持的语言
+        self.supported_languages = self._get_supported_languages()
+        
         self._init_ui()
         self._load_themes()
         self._load_current_settings()
+    
+    def _get_supported_languages(self) -> Dict[str, str]:
+        """自动检测支持的语言
+        
+        Returns:
+            Dict[str, str]: 语言代码到显示名称的映射
+        """
+        # 语言代码到显示名称的映射
+        language_names = {
+            'zh_CN': '简体中文',
+            'en_US': 'English',
+            'fr_FR': 'Français',
+            'de_DE': 'Deutsch',
+            'es_ES': 'Español',
+            'it_IT': 'Italiano',
+            'pt_PT': 'Português',
+            'ru_RU': 'Русский',
+            'ja_JP': '日本語',
+            'ko_KR': '한국어'
+        }
+        
+        # 获取translations目录路径
+        current_dir = Path(__file__).parent.parent.parent  # medimager目录
+        translations_dir = current_dir / 'translations'
+        
+        supported = {}
+        
+        # 默认支持中文
+        supported['zh_CN'] = language_names.get('zh_CN', '简体中文')
+        
+        if translations_dir.exists():
+            # 查找所有.qm文件
+            qm_files = list(translations_dir.glob('*.qm'))
+            for qm_file in qm_files:
+                lang_code = qm_file.stem  # 文件名不含扩展名
+                if lang_code != 'zh_CN':  # 中文已经添加
+                    display_name = language_names.get(lang_code, lang_code)
+                    supported[lang_code] = display_name
+        
+        return supported
     
     def _init_ui(self):
         """初始化用户界面"""
@@ -162,8 +206,9 @@ class SettingsDialog(QDialog):
         language_layout = QFormLayout(language_group)
         
         language_combo = QComboBox()
-        language_combo.addItem(self.tr("简体中文"), "zh_CN")
-        language_combo.addItem(self.tr("English"), "en_US")
+        # 自动添加支持的语言
+        for lang_code, display_name in self.supported_languages.items():
+            language_combo.addItem(display_name, lang_code)
         self.setting_widgets['language'] = language_combo
         
         # 移除语言切换的即时刷新信号

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-自动翻译文件生成器 - 完善版
+中文翻译模板生成器
 
 遍历 medimager 目录下所有 Python 文件，提取 self.tr() 中的中文字符串，
-并按照 zh_CN.ts 的 XML 格式自动生成翻译文件。
+并按照 zh_CN.ts 的 XML 格式自动生成中文翻译模板文件。
 确保上下文与 self.tr() 方法匹配。
+配合 translate_ts.py 工具可翻译为其他语言。
 """
 
 import os
@@ -20,6 +21,23 @@ def is_chinese(text: str) -> bool:
     """检查字符串是否包含中文字符"""
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]+')
     return bool(chinese_pattern.search(text))
+
+def extract_f_string_text(joined_str_node):
+    """从 f 字符串 AST 节点中提取文本内容"""
+    parts = []
+    placeholder_count = 1
+    
+    for value in joined_str_node.values:
+        if isinstance(value, ast.Str):
+            parts.append(value.s)
+        elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(value.value)
+        elif isinstance(value, ast.FormattedValue):
+            # 对于格式化值，使用Qt兼容的占位符格式 %1, %2, %3...
+            parts.append(f"%{placeholder_count}")
+            placeholder_count += 1
+    
+    return ''.join(parts)
 
 def extract_class_tr_strings(file_path: str) -> Dict[str, List[str]]:
     """从单个 Python 文件中提取每个类的 self.tr() 中的中文字符串"""
@@ -58,6 +76,11 @@ def extract_class_tr_strings(file_path: str) -> Dict[str, List[str]]:
                                 elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                                     if is_chinese(arg.value):
                                         tr_strings.append(arg.value)
+                                elif isinstance(arg, ast.JoinedStr):
+                                    # 处理 f 字符串
+                                    f_string_text = extract_f_string_text(arg)
+                                    if f_string_text and is_chinese(f_string_text):
+                                        tr_strings.append(f_string_text)
                 
                 if tr_strings:
                     # 去重
@@ -132,7 +155,7 @@ def scan_medimager_directory() -> Dict[str, Dict[str, List[str]]]:
                 extracted = extract_class_tr_strings(file_path)
                 if extracted:
                     results[relative_path] = extracted
-                    print(f"  ✓ 从 {relative_path} 提取到翻译字符串")
+                    print(f"  [OK] 从 {relative_path} 提取到翻译字符串")
                 else:
                     print(f"  - 未找到翻译字符串")
     
@@ -192,27 +215,10 @@ def create_ts_xml(translation_data: Dict[str, Dict[str, List[str]]]) -> str:
     lines = [line for line in pretty_xml.split('\n') if line.strip()]
     return '\n'.join(lines)
 
-def create_english_ts_from_chinese(zh_ts_path: str, en_ts_path: str):
-    """从中文 TS 文件创建英文 TS 文件模板"""
-    try:
-        # 读取中文 TS 文件
-        with open(zh_ts_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 修改语言属性
-        content = content.replace('language="zh_CN"', 'language="en_US"')
-        
-        # 保存英文 TS 文件
-        with open(en_ts_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        print(f"[OK] 创建英文模板: {en_ts_path}")
-        
-    except Exception as e:
-        print(f"创建英文模板失败: {e}")
+
 
 def write_ts_files(xml_content: str):
-    """写入 TS 文件"""
+    """写入中文 TS 文件"""
     base_path = Path(__file__).parent.parent / 'medimager' / 'translations'
     
     # 确保目录存在
@@ -223,25 +229,21 @@ def write_ts_files(xml_content: str):
     try:
         with open(zh_ts_path, 'w', encoding='utf-8') as f:
             f.write(xml_content)
-        print(f"[OK] 生成中文翻译文件: {zh_ts_path}")
+        print(f"[OK] 生成中文翻译模板文件: {zh_ts_path}")
     except Exception as e:
         print(f"写入中文文件失败: {e}")
         return
-    
-    # 创建英文 TS 文件模板
-    en_ts_path = base_path / 'en_US.ts'
-    create_english_ts_from_chinese(str(zh_ts_path), str(en_ts_path))
 
 def main():
     """主函数"""
     print("=" * 70)
-    print("MedImager 自动翻译文件生成器 - 完善版")
+    print("MedImager 中文翻译模板生成器")
     print("=" * 70)
     print("功能：")
     print("1. 使用 AST 解析准确提取 self.tr() 字符串")
     print("2. 按类名正确设置翻译上下文")
-    print("3. 生成格式正确的 TS 文件")
-    print("4. 确保 self.tr() 方法能正确工作")
+    print("3. 生成中文 TS 模板文件")
+    print("4. 配合 translate_ts.py 工具翻译其他语言")
     print("=" * 70)
     
     # 扫描并提取翻译字符串
@@ -258,13 +260,13 @@ def main():
     total_strings = sum(len(strings) for contexts in translation_data.values() 
                        for strings in contexts.values())
     
-    print(f"\n📊 扫描结果:")
+    print(f"\n[SCAN] 扫描结果:")
     print(f"  - 扫描文件数: {total_files}")
     print(f"  - 发现类数: {total_classes}")
     print(f"  - 翻译字符串数: {total_strings}")
     
     # 显示详细信息
-    print(f"\n📋 详细信息:")
+    print(f"\n[DETAIL] 详细信息:")
     for file_path, contexts in translation_data.items():
         print(f"  {file_path}:")
         for class_name, strings in contexts.items():
@@ -275,33 +277,14 @@ def main():
                 print(f"      ... 还有 {len(strings) - 3} 个")
     
     # 生成 XML 内容
-    print(f"\n🔧 正在生成翻译文件...")
+    print(f"\n[GENERATE] 正在生成翻译文件...")
     xml_content = create_ts_xml(translation_data)
     
     # 写入文件
     write_ts_files(xml_content)
     
-    print(f"\n✅ 翻译文件生成完成！")
+    print(f"\n[SUCCESS] 中文翻译模板生成完成！")
     print("=" * 70)
-    print("📝 后续操作:")
-    print("1. 编辑 medimager/translations/en_US.ts 文件")
-    print("2. 将 <translation> 标签中的中文翻译为英文")
-    print("3. 运行 python translation_tools/compile_translations.py")
-    print("4. 在应用程序中测试翻译效果")
-    print("=" * 70)
-    
-    # 测试建议
-    print("🧪 测试建议:")
-    print("创建测试脚本验证翻译是否工作:")
-    print("```python")
-    print("from PySide6.QtWidgets import QApplication")
-    print("from PySide6.QtCore import QTranslator")
-    print("app = QApplication([])  # 创建应用程序")
-    print("translator = QTranslator()")
-    print("translator.load('medimager/translations/en_US.qm')")
-    print("app.installTranslator(translator)")
-    print("# 测试你的类...")
-    print("```")
 
 if __name__ == '__main__':
     main()

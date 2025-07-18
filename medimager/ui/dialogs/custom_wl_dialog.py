@@ -34,8 +34,8 @@ class CustomWLDialog(QDialog):
 
         # 布局
         form_layout = QFormLayout()
-        form_layout.addRow(self.tr("窗宽 (Width):"), self.width_spinbox)
-        form_layout.addRow(self.tr("窗位 (Level):"), self.level_spinbox)
+        form_layout.addRow(self.tr("窗宽:"), self.width_spinbox)
+        form_layout.addRow(self.tr("窗位:"), self.level_spinbox)
 
         main_layout = QVBoxLayout()
         main_layout.addLayout(form_layout)

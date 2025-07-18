@@ -226,7 +226,7 @@ class SeriesListWidget(QWidget):
                 self._add_series_grouped(series_ids, group_mode)
             
             # 更新统计信息
-            self._stats_label.setText(self.tr(f"共 {len(series_ids)} 个序列"))
+            self._stats_label.setText(self.tr("共 %1 个序列").replace("%1", str(len(series_ids))))
             
             # 展开所有分组
             self._tree_widget.expandAll()
@@ -297,7 +297,7 @@ class SeriesListWidget(QWidget):
             # 设置绑定视图信息
             bound_views = self._series_manager.get_bound_views_for_series(series_id)
             if bound_views:
-                view_text = self.tr(f"{len(bound_views)}个视图")
+                view_text = self.tr("%1个视图").replace("%1", str(len(bound_views)))
             else:
                 view_text = self.tr("未绑定")
             item.setText(2, view_text)
@@ -330,7 +330,7 @@ class SeriesListWidget(QWidget):
             # 为每个切片创建子项目
             for slice_index in range(slice_count):
                 slice_item = QTreeWidgetItem(series_item)
-                slice_item.setText(0, self.tr(f"切片 {slice_index + 1}"))
+                slice_item.setText(0, self.tr("切片 %1").replace("%1", str(slice_index + 1)))
                 slice_item.setData(0, Qt.UserRole, f"{series_id}:{slice_index}")  # 存储序列ID和切片索引
                 
                 # 设置切片状态（如果需要）
@@ -352,7 +352,7 @@ class SeriesListWidget(QWidget):
         elif series_info.modality:
             return f"{series_info.modality} - {self.tr('序列')}{series_info.series_number}"
         else:
-            return self.tr(f"序列 {series_info.series_number}")
+            return self.tr("序列 %1").replace("%1", str(series_info.series_number))
     
     def _on_selection_changed(self) -> None:
         """处理选择变更"""
@@ -449,7 +449,7 @@ class SeriesListWidget(QWidget):
             bound_views = self._series_manager.get_bound_views_for_series(sid)
             item = self._series_items[sid]
             if bound_views:
-                item.setText(2, self.tr(f"{len(bound_views)}个视图"))
+                item.setText(2, self.tr("%1个视图").replace("%1", str(len(bound_views))))
             else:
                 item.setText(2, self.tr("未绑定"))
 
@@ -577,7 +577,7 @@ class ViewBindingWidget(QWidget):
         """格式化序列文本"""
         if series_info.series_description:
             return f"{series_info.series_description}"
-        return self.tr(f"序列 {series_info.series_number}")
+        return self.tr("序列 %1").replace("%1", str(series_info.series_number))
     
     def _on_unbind_clicked(self, view_id: str) -> None:
         """处理解绑点击"""
@@ -802,7 +802,7 @@ class SeriesInfoWidget(QWidget):
         # 绑定视图信息
         bound_views = self._series_manager.get_bound_views_for_series(series_info.series_id)
         view_count = len(bound_views)
-        view_info = self.tr(f"{view_count}个视图") if view_count > 0 else self.tr("未绑定")
+        view_info = self.tr("%1个视图").replace("%1", str(view_count)) if view_count > 0 else self.tr("未绑定")
         self._add_info_item(layout, self.tr("绑定视图"), view_info)
         
         # 文件路径信息

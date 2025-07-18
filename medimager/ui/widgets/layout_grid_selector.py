@@ -582,7 +582,7 @@ class DynamicLayoutSelector(QFrame):
         if self.hovered_rows != row or self.hovered_cols != col:
             self.hovered_rows = row
             self.hovered_cols = col
-            self.selection_label.setText(self.tr(f"{row} × {col} 网格"))
+            self.selection_label.setText(self.tr("%1 × %2 网格").replace("%1", str(row)).replace("%2", str(col)))
             self.grid_widget.update()
     
     def _on_mouse_press(self, event: QMouseEvent) -> None:
@@ -1172,7 +1172,7 @@ class LayoutSelectorButton(QPushButton):
         # 更新按钮显示
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            self.setToolTip(self.tr(f"当前布局: {rows}×{cols}"))
+            self.setToolTip(self.tr("当前布局: %1×%2").replace("%1", str(rows)).replace("%2", str(cols)))
         else:
             self.setToolTip(self.tr("当前布局: 特殊布局"))
         
@@ -1193,6 +1193,6 @@ class LayoutSelectorButton(QPushButton):
         logger.debug(f"[LayoutSelectorButton.set_current_layout] 设置当前布局: {layout_config}")
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            self.setToolTip(self.tr(f"当前布局: {rows}×{cols}"))
+            self.setToolTip(self.tr("当前布局: %1×%2").replace("%1", str(rows)).replace("%2", str(cols)))
         else:
             self.setToolTip(self.tr("当前布局: 特殊布局"))

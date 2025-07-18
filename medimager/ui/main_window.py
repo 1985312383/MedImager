@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
         
         for name, (width, level) in presets:
             action = QAction(name, self)
-            action.setStatusTip(self.tr(f"设置为 {name}: W:{width} L:{level}"))
+            action.setStatusTip(self.tr("设置为 %1: W:%2 L:%3").replace("%1", name).replace("%2", str(width)).replace("%3", str(level)))
             action.triggered.connect(
                 lambda checked=False, w=width, l=level: self._set_window_level_preset(w, l)
             )
@@ -582,8 +582,8 @@ class MainWindow(QMainWindow):
         layout = self.series_manager.get_current_layout()
         
         # 更新状态栏
-        self.series_count_label.setText(self.tr(f"序列: {series_count}"))
-        self.view_info_label.setText(self.tr(f"布局: {layout[0]}×{layout[1]}"))
+        self.series_count_label.setText(self.tr("序列: %1").replace("%1", str(series_count)))
+        self.view_info_label.setText(self.tr("布局: %1×%2").replace("%1", str(layout[0])).replace("%2", str(layout[1])))
         
         # 更新菜单和工具栏状态
         has_series = series_count > 0
@@ -660,7 +660,7 @@ class MainWindow(QMainWindow):
         
         assigned_count = self.binding_manager.auto_assign_series_to_views()
         
-        self.status_bar.showMessage(self.tr(f"自动分配完成：分配了 {assigned_count} 个序列"), 3000)
+        self.status_bar.showMessage(self.tr("自动分配完成：分配了 %1 个序列").replace("%1", str(assigned_count)), 3000)
         logger.info(f"[MainWindow._auto_assign_all_series] 自动分配完成: {assigned_count}个序列")
     
     def _clear_all_bindings(self) -> None:
@@ -674,14 +674,14 @@ class MainWindow(QMainWindow):
             if self.series_manager.unbind_series_from_view(view_id):
                 cleared_count += 1
         
-        self.status_bar.showMessage(self.tr(f"清除绑定完成：清除了 {cleared_count} 个绑定"), 3000)
+        self.status_bar.showMessage(self.tr("清除绑定完成：清除了 %1 个绑定").replace("%1", str(cleared_count)), 3000)
         logger.info(f"[MainWindow._clear_all_bindings] 清除绑定完成: {cleared_count}个绑定")
     
     def _set_sync_mode(self, mode) -> None:
         """设置同步模式"""
         logger.debug(f"[MainWindow._set_sync_mode] 设置同步模式: {mode}")
         self.sync_manager.set_sync_mode(mode)
-        self.status_bar.showMessage(self.tr(f"同步模式已设置: {mode.name}"), 2000)
+        self.status_bar.showMessage(self.tr("同步模式已设置: %1").replace("%1", mode.name), 2000)
         logger.info(f"[MainWindow._set_sync_mode] 同步模式设置完成: {mode}")
     
     def _set_sync_group(self, group) -> None:
@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"[MainWindow._load_dicom_folder_as_series] 加载文件夹失败: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr(f"加载DICOM文件夹失败: {str(e)}"))
+            QMessageBox.critical(self, self.tr("错误"), self.tr("加载DICOM文件夹失败: %1").replace("%1", str(e)))
     
     def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
         """在后台线程中加载序列"""
@@ -898,7 +898,7 @@ class MainWindow(QMainWindow):
         
         # 显示加载进度
         self.loading_progress.setVisible(True)
-        self.status_bar.showMessage(self.tr(f"正在加载序列: {series_info.series_description or series_id}"))
+        self.status_bar.showMessage(self.tr("正在加载序列: %1").replace("%1", series_info.series_description or series_id))
         
         # 启动线程
         loading_thread.start()
@@ -995,7 +995,7 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             logger.error(f"[MainWindow._load_single_image_file] 加载图像文件异常: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr(f"加载图像文件失败: {str(e)}"))
+            QMessageBox.critical(self, self.tr("错误"), self.tr("加载图像文件失败: %1").replace("%1", str(e)))
     
     def _load_test_series(self) -> None:
         """加载测试序列"""
@@ -1146,7 +1146,7 @@ class MainWindow(QMainWindow):
     def _on_auto_assignment_completed(self, assigned_count: int) -> None:
         """处理自动分配完成事件"""
         logger.debug(f"[MainWindow._on_auto_assignment_completed] 自动分配完成: {assigned_count}")
-        self.status_bar.showMessage(self.tr(f"自动分配完成：分配了 {assigned_count} 个序列"), 3000)
+        self.status_bar.showMessage(self.tr("自动分配完成：分配了 %1 个序列").replace("%1", str(assigned_count)), 3000)
         
         # 激活第一个有绑定的视图，确保切片信号正确连接
         if assigned_count > 0:
@@ -1197,7 +1197,7 @@ class MainWindow(QMainWindow):
         binding = self.series_manager.get_view_binding(view_id)
         if binding:
             pos_text = f"{binding.position.value[0]+1}-{binding.position.value[1]+1}"
-            self.active_view_label.setText(self.tr(f"活动视图: {pos_text}"))
+            self.active_view_label.setText(self.tr("活动视图: %1").replace("%1", pos_text))
         
         # 断开之前的连接（如果有的话）
         if hasattr(self, '_current_active_model'):

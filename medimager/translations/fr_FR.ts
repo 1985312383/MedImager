@@ -1,16 +1,16 @@
 <?xml version='1.0' encoding='utf-8'?>
-<TS version="2.1" language="en_US">
+<TS version="2.1" language="fr_FR">
     <context>
         <name>ColorButton</name>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>选择...</source>
-            <translation>Select...</translation>
+            <translation>Sélectionner...</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>选择颜色</source>
-            <translation>Select Color</translation>
+            <translation>Choisir une couleur</translation>
         </message>
     </context>
     <context>
@@ -18,17 +18,17 @@
         <message>
             <location filename="medimager/ui/dialogs/custom_wl_dialog.py" />
             <source>窗位:</source>
-            <translation>Window Position:</translation>
+            <translation>Position de la fenêtre :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/custom_wl_dialog.py" />
             <source>窗宽:</source>
-            <translation>Window Width:</translation>
+            <translation>Largeur de la fenêtre :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/custom_wl_dialog.py" />
             <source>自定义窗宽窗位</source>
-            <translation>Custom window width window position</translation>
+            <translation>Largeur de fenêtre personnalisée</translation>
         </message>
     </context>
     <context>
@@ -41,12 +41,12 @@
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>1 × 1 网格</source>
-            <translation>1 × 1 grid</translation>
+            <translation>Grille 1 × 1</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>自定义网格</source>
-            <translation>Custom Grid</translation>
+            <translation>Grille personnalisée</translation>
         </message>
     </context>
     <context>
@@ -67,32 +67,32 @@
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>序列操作</source>
-            <translation>Sequence Operations</translation>
+            <translation>Opération de séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>清除所有序列绑定</source>
-            <translation>Clear all sequence bindings</translation>
+            <translation>Supprimer toutes les liaisons de séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>清除绑定</source>
-            <translation>Clear Bindings</translation>
+            <translation>Supprimer la liaison</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>自动分配</source>
-            <translation>Automatic Assignment</translation>
+            <translation>Attribution automatique</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>自动将序列分配到可用视图</source>
-            <translation>Automatically assign sequences to available views</translation>
+            <translation>Attribuer automatiquement la séquence à la vue disponible</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>预设布局</source>
-            <translation>Preset Layout</translation>
+            <translation>Mise en page prédéfinie</translation>
         </message>
     </context>
     <context>
@@ -105,12 +105,12 @@
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>当前布局: 特殊布局</source>
-            <translation>Current Layout: Special Layout</translation>
+            <translation>Disposition actuelle : disposition spéciale</translation>
         </message>
         <message>
             <location filename="medimager/ui/widgets/layout_grid_selector.py" />
             <source>选择视图布局</source>
-            <translation>Select View Layout</translation>
+            <translation>Sélectionner la disposition de la vue</translation>
         </message>
     </context>
     <context>
@@ -122,17 +122,17 @@
             &lt;p&gt;版本: 2.0.0&lt;/p&gt;
             &lt;p&gt;支持多序列加载、多视图布局和高级图像分析功能。&lt;/p&gt;
             </source>
-            <translation>&lt;h3&gt;MedImager Pro&lt;/h3&gt; &lt;p&gt;Multi-sequence DICOM viewer and image analysis tool&lt;/p&gt; &lt;p&gt;Version: 2.0.0&lt;/p&gt; &lt;p&gt;Supports multi-sequence loading, multi-view layout and advanced image analysis functions.&lt;/p&gt;</translation>
+            <translation>&lt;h3&gt;MedImager Pro&lt;/h3&gt; &lt;p&gt;Visionneuse DICOM multi-séquences et outil d'analyse d'image&lt;/p&gt; &lt;p&gt;Version&amp;nbsp;: 2.0.0&lt;/p&gt; &lt;p&gt;Prend en charge le chargement multi-séquence, la mise en page multi-vues et l'analyse d'image avancée.&lt;/p&gt;</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>MedImager Pro - 多序列DICOM查看器与分析工具</source>
-            <translation>MedImager Pro - Multi-Sequence DICOM Viewer and Analysis Tool</translation>
+            <translation>MedImager Pro - Visionneuse et analyseur DICOM multi-séquences</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>保持现有</source>
-            <translation>Keep Existing</translation>
+            <translation>Conserver l'existant</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -147,97 +147,97 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>关于 MedImager Pro</source>
-            <translation>About MedImager Pro</translation>
+            <translation>À propos de MedImager Pro</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>准备就绪</source>
-            <translation>Ready</translation>
+            <translation>Prêt</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>加载DICOM文件夹失败: %1</source>
-            <translation>Failed to load DICOM folder: %1</translation>
+            <translation>Échec du chargement du dossier DICOM: %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>加载图像文件失败: %1</source>
-            <translation>Failed to load image file: %1</translation>
+            <translation>Échec du chargement du fichier image : %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>加载完成</source>
-            <translation>Loading complete</translation>
+            <translation>Chargement terminé</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>加载测试序列</source>
-            <translation>Load Test Sequence</translation>
+            <translation>Charger la séquence de test</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>同时打开多个包含DICOM序列的文件夹</source>
-            <translation>Open multiple folders containing DICOM sequences at the same time</translation>
+            <translation>Ouvrir plusieurs dossiers contenant des séries DICOM en même temps</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>同步模式已设置: %1</source>
-            <translation>Sync mode set: %1</translation>
+            <translation>Mode de synchronisation défini : %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>工具(&amp;T)</source>
-            <translation>Tools (&amp;T)</translation>
+            <translation>Outil (&amp;T)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已关闭位置同步</source>
-            <translation>Location sync is off</translation>
+            <translation>Synchronisation de position désactivée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已关闭平移同步</source>
-            <translation>Translation sync disabled</translation>
+            <translation>Synchronisation de translation désactivée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已关闭窗宽窗位同步</source>
-            <translation>Window width synchronization is turned off</translation>
+            <translation>La synchronisation de la largeur de la fenêtre a été désactivée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已关闭缩放同步</source>
-            <translation>Zoom sync disabled</translation>
+            <translation>La synchronisation du zoom est désactivée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已开启平移同步</source>
-            <translation>Pan sync enabled</translation>
+            <translation>Synchronisation de translation activée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已开启手动位置同步</source>
-            <translation>Manual position synchronization is enabled</translation>
+            <translation>Synchronisation manuelle de la position activée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已开启窗宽窗位同步</source>
-            <translation>Window width and position synchronization is enabled</translation>
+            <translation>Synchronisation de la largeur et de la position de la fenêtre activée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已开启缩放同步</source>
-            <translation>Zoom sync enabled</translation>
+            <translation>La synchronisation de la mise à l'échelle est activée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已开启自动位置同步</source>
-            <translation>Automatic location synchronization is enabled</translation>
+            <translation>Synchronisation automatique de la position activée</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>已设置同步分组</source>
-            <translation>Synchronization grouping has been set</translation>
+            <translation>Groupes synchronisés définis</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -247,147 +247,147 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>布局: 1×1</source>
-            <translation>Layout: 1×1</translation>
+            <translation>Disposition : 1 × 1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>帮助(&amp;H)</source>
-            <translation>Help (&amp;H)</translation>
+            <translation>Aide (&amp;H)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>序列(&amp;S)</source>
-            <translation>Sequence (&amp;S)</translation>
+            <translation>Séquence (&amp;S)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>序列: %1</source>
-            <translation>Sequence: %1</translation>
+            <translation>Séquence : %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>序列: 0</source>
-            <translation>Sequence: 0</translation>
+            <translation>Séquence : 0</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>所有支持的文件 (*.dcm *.dicom *.png *.jpg *.jpeg *.bmp *.npy);;DICOM文件 (*.dcm *.dicom);;图像文件 (*.png *.jpg *.jpeg *.bmp);;NumPy文件 (*.npy)</source>
-            <translation>All supported files (*.dcm *.dicom *.png *.jpg *.jpeg *.bmp *.npy);;DICOM files (*.dcm *.dicom);;Image files (*.png *.jpg *.jpeg *.bmp);;NumPy files (*.npy)</translation>
+            <translation>Tous les fichiers pris en charge (*.dcm *.dicom *.png *.jpg *.jpeg *.bmp *.npy) ; ; Fichiers DICOM (*.dcm *.dicom) ; ; Fichiers image (*.png *.jpg *.jpeg *.bmp) ; ; Fichiers NumPy (*.npy)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>手动设置窗宽和窗位</source>
-            <translation>Manually set the window width and window position</translation>
+            <translation>Réglage manuel de la largeur et de la position de la fenêtre</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开DICOM文件夹(&amp;D)</source>
-            <translation>Open DICOM Folder (&amp;D)</translation>
+            <translation>Ouvrir le dossier DICOM (&amp;D)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开包含DICOM序列的文件夹</source>
-            <translation>Open the folder containing the DICOM sequence</translation>
+            <translation>Ouvrir le dossier contenant la série DICOM</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开单张图像文件</source>
-            <translation>Open a single image file</translation>
+            <translation>Ouvrir un fichier image unique</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开图像文件</source>
-            <translation>Open Image File</translation>
+            <translation>Ouvrir le fichier image</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开图像文件(&amp;I)</source>
-            <translation>Open Image File (&amp;I)</translation>
+            <translation>Ouvrir le fichier image (&amp;I)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开多个DICOM文件夹(&amp;M)</source>
-            <translation>Open multiple DICOM folders (&amp;M)</translation>
+            <translation>Ouvrir plusieurs dossiers DICOM (&amp;M)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>打开设置对话框</source>
-            <translation>Open the Settings dialog box</translation>
+            <translation>Ouvrir la boîte de dialogue des paramètres</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>文件(&amp;F)</source>
-            <translation>File (&amp;F)</translation>
+            <translation>Fichier (&amp;F)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>文件夹中没有找到DICOM文件</source>
-            <translation>DICOM file not found in folder</translation>
+            <translation>Aucun fichier DICOM trouvé dans le dossier</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>无法加载图像文件</source>
-            <translation>Unable to load image file</translation>
+            <translation>Impossible de charger le fichier image</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>显示/隐藏信息面板</source>
-            <translation>Show/Hide Information Panel</translation>
+            <translation>Afficher/masquer le panneau d'informations</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>显示/隐藏序列面板</source>
-            <translation>Show/Hide Sequence Panel</translation>
+            <translation>Afficher/masquer le panneau de séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>替换最旧</source>
-            <translation>Replace the oldest</translation>
+            <translation>Remplacer le plus ancien</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>查看(&amp;V)</source>
-            <translation>View</translation>
+            <translation>Afficher (&amp;V)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>正在加载序列: %1</source>
-            <translation>Loading sequence: %1</translation>
+            <translation>Chargement de la séquence : %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>活动视图: %1</source>
-            <translation>Event View: %1</translation>
+            <translation>Vue de l'activité : %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>活动视图: --</source>
-            <translation>Event View: --</translation>
+            <translation>Vue de l'activité : --</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>测试数据</source>
-            <translation>Test Data</translation>
+            <translation>Données de test</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>测试数据不存在</source>
-            <translation>Test data does not exist</translation>
+            <translation>Les données de test n'existent pas</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>清除所有绑定</source>
-            <translation>Clear all bindings</translation>
+            <translation>Supprimer toutes les liaisons</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>清除绑定完成：清除了 %1 个绑定</source>
-            <translation>Unbinding completed: %1 bindings removed</translation>
+            <translation>Suppression de l'association terminée : %1 associations supprimées</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>窗位(&amp;W)</source>
-            <translation>Window Position (&amp;W)</translation>
+            <translation>Fenêtre (&amp;W)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -397,7 +397,7 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>绑定策略</source>
-            <translation>Binding Strategy</translation>
+            <translation>Stratégie de liaison</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -422,22 +422,22 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>自动分配</source>
-            <translation>Automatic Assignment</translation>
+            <translation>Attribution automatique</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>自动分配完成：分配了 %1 个序列</source>
-            <translation>Auto-assignment complete: %1 sequences assigned</translation>
+            <translation>Attribution automatique terminée : %1 séquences attribuées</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>自动分配所有序列</source>
-            <translation>Automatically assign all sequences</translation>
+            <translation>Attribuer automatiquement toutes les séquences</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>自定义</source>
-            <translation>Custom</translation>
+            <translation>Personnaliser</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -447,7 +447,7 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>设置(&amp;S)</source>
-            <translation>Settings (&amp;S)</translation>
+            <translation>Paramètres (&amp; S)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -457,22 +457,22 @@
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>询问用户</source>
-            <translation>Ask the user</translation>
+            <translation>Demander à l'utilisateur</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>退出(&amp;X)</source>
-            <translation>Exit (&amp;X)</translation>
+            <translation>Quitter (&amp;X)</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>退出应用程序</source>
-            <translation>Exit the application</translation>
+            <translation>Quitter l'application</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
             <source>选择DICOM文件夹</source>
-            <translation>Select DICOM Folder</translation>
+            <translation>Sélectionnez le dossier DICOM</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_window.py" />
@@ -490,12 +490,12 @@
         <message>
             <location filename="medimager/ui/tools/measurement_tool.py" />
             <source>个测量</source>
-            <translation>measurements</translation>
+            <translation>mesures</translation>
         </message>
         <message>
             <location filename="medimager/ui/tools/measurement_tool.py" />
             <source>删除了</source>
-            <translation>Deleted</translation>
+            <translation>Supprimé</translation>
         </message>
     </context>
     <context>
@@ -516,67 +516,67 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>切片数量</source>
-            <translation>Number of slices</translation>
+            <translation>nombre de tranches</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>加载状态</source>
-            <translation>Loading Status</translation>
+            <translation>État de chargement</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>图像尺寸</source>
-            <translation>Image Size</translation>
+            <translation>Taille de l'image</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>基本信息</source>
-            <translation>Basic Information</translation>
+            <translation>Informations de base</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>已加载</source>
-            <translation>Loaded</translation>
+            <translation>Chargé</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列信息</source>
-            <translation>Sequence Information</translation>
+            <translation>Informations sur la séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列号</source>
-            <translation>Serial No.</translation>
+            <translation>Numéro de série</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列描述</source>
-            <translation>Sequence Description</translation>
+            <translation>Description de la séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>患者ID</source>
-            <translation>Patient ID</translation>
+            <translation>Identifiant du patient</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>患者姓名</source>
-            <translation>Patient Name</translation>
+            <translation>Nom du patient</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>技术参数</source>
-            <translation>Technical Parameters</translation>
+            <translation>Paramètres techniques</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>文件数量</source>
-            <translation>Number of Documents</translation>
+            <translation>Nombre de documents</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未加载</source>
-            <translation>Not loaded</translation>
+            <translation>Non chargé</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -586,22 +586,22 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未绑定</source>
-            <translation>Unbound</translation>
+            <translation>Non lié</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>检查模态</source>
-            <translation>Inspection Mode</translation>
+            <translation>Mode d'inspection</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>状态信息</source>
-            <translation>Status Information</translation>
+            <translation>Informations sur l'état</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>研究描述</source>
-            <translation>Study Description</translation>
+            <translation>Description de l'étude</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -616,22 +616,22 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>绑定视图</source>
-            <translation>Bind View</translation>
+            <translation>Vue de liaison</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>获取日期</source>
-            <translation>Date of Acquisition</translation>
+            <translation>Date d'obtention</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>获取时间</source>
-            <translation>Time of Acquisition</translation>
+            <translation>Heure d'obtention</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>请选择一个序列查看详细信息</source>
-            <translation>Please select a sequence to view details</translation>
+            <translation>Veuillez sélectionner une séquence pour afficher les détails</translation>
         </message>
     </context>
     <context>
@@ -644,17 +644,17 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>不分组</source>
-            <translation>No grouping</translation>
+            <translation>Non groupé</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>共 %1 个序列</source>
-            <translation>Total %1 sequences</translation>
+            <translation>%1 séquences au total</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>共 0 个序列</source>
-            <translation>Total 0 sequences</translation>
+            <translation>0 séquence au total</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -664,12 +664,12 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>切片 %1</source>
-            <translation>Slice %1</translation>
+            <translation>Tranche %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>已加载</source>
-            <translation>Loaded</translation>
+            <translation>Chargé</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -679,52 +679,52 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列 %1</source>
-            <translation>Sequence %1</translation>
+            <translation>Séquence %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列列表</source>
-            <translation>Sequence Listing</translation>
+            <translation>Liste des séquences</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>按患者分组</source>
-            <translation>Group by Patient</translation>
+            <translation>Regrouper par patient</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>按模态分组</source>
-            <translation>Group by Modal</translation>
+            <translation>Regrouper par modalité</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>按研究分组</source>
-            <translation>Group by Study</translation>
+            <translation>Regroupement par étude</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未加载</source>
-            <translation>Not loaded</translation>
+            <translation>Non chargé</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未知患者</source>
-            <translation>Unknown Patient</translation>
+            <translation>Patient inconnu</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未知模态</source>
-            <translation>Unknown Modal</translation>
+            <translation>Mode inconnu</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未知研究</source>
-            <translation>Unknown Research</translation>
+            <translation>Recherche inconnue</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未绑定</source>
-            <translation>Unbound</translation>
+            <translation>Non lié</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -742,17 +742,17 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>移除序列</source>
-            <translation>Remove Sequence</translation>
+            <translation>Supprimer la séquence</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>绑定到活动视图</source>
-            <translation>Bind to active view</translation>
+            <translation>Lier à la vue active</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>解除所有绑定</source>
-            <translation>Unbind all</translation>
+            <translation>Dissocier toutes les liaisons</translation>
         </message>
     </context>
     <context>
@@ -765,22 +765,22 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>ROI设置</source>
-            <translation>ROI Settings</translation>
+            <translation>Paramètres de ROI</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>主题:</source>
-            <translation>Subject:</translation>
+            <translation>Objet :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>信息板设置</source>
-            <translation>Message Board Settings</translation>
+            <translation>Paramètres du tableau d'informations</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>内边距:</source>
-            <translation>Inner Margin:</translation>
+            <translation>Marge intérieure :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -790,12 +790,12 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>圆角半径:</source>
-            <translation>Fillet Radius:</translation>
+            <translation>Rayon de courbure :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>填充颜色:</source>
-            <translation>Fill Color:</translation>
+            <translation>Couleur de remplissage :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -805,7 +805,7 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>字体大小:</source>
-            <translation>Font Size:</translation>
+            <translation>Taille de la police :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -815,12 +815,12 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>工具设置</source>
-            <translation>Tool Settings</translation>
+            <translation>Paramètres de l'outil</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>应用性能设置</source>
-            <translation>Application Performance Settings</translation>
+            <translation>Paramètres de performance de l'application</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -830,17 +830,17 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>性能设置</source>
-            <translation>Performance Settings</translation>
+            <translation>Paramètres de performance</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>恢复默认</source>
-            <translation>Restore Default</translation>
+            <translation>Restaurer les paramètres par défaut</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>数值精度:</source>
-            <translation>Numerical precision:</translation>
+            <translation>Précision numérique :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -850,27 +850,27 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>文本颜色:</source>
-            <translation>Text Color:</translation>
+            <translation>Couleur du texte :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>显示选项</source>
-            <translation>Display Options</translation>
+            <translation>Afficher les options</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>测量工具</source>
-            <translation>Measurement Tools</translation>
+            <translation>Outil de mesure</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>界面主题</source>
-            <translation>Interface Theme</translation>
+            <translation>Thème de l'interface</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>界面语言</source>
-            <translation>Interface Language</translation>
+            <translation>Langue de l'interface</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -880,37 +880,37 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>线条粗细:</source>
-            <translation>Line Thickness:</translation>
+            <translation>Épaisseur de ligne :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>线条颜色:</source>
-            <translation>Line Color:</translation>
+            <translation>Couleur de la ligne :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>线程数量:</source>
-            <translation>Number of threads:</translation>
+            <translation>Nombre de fils de discussion :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>缓存大小:</source>
-            <translation>Cache Size:</translation>
+            <translation>Taille du cache :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>背景颜色:</source>
-            <translation>Background Color:</translation>
+            <translation>Couleur de fond :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>自定义</source>
-            <translation>Custom</translation>
+            <translation>Personnaliser</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>自定义设置</source>
-            <translation>Custom Settings</translation>
+            <translation>Paramètres personnalisés</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -920,42 +920,42 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>语言:</source>
-            <translation>Language:</translation>
+            <translation>Langue :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>语言设置</source>
-            <translation>Language Settings</translation>
+            <translation>Paramètres de langue</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>语言设置将在下次启动时完全生效。</source>
-            <translation>The language settings will take full effect the next time you start.</translation>
+            <translation>Les paramètres de langue prendront pleinement effet au prochain démarrage.</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>距离文本背景色:</source>
-            <translation>Distance from text background color:</translation>
+            <translation>Couleur de fond du texte de distance :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>距离文本颜色:</source>
-            <translation>Distance from text color:</translation>
+            <translation>Couleur du texte de distance :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>边框粗细:</source>
-            <translation>Border Thickness:</translation>
+            <translation>Épaisseur de la bordure :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>边框颜色:</source>
-            <translation>Border Color:</translation>
+            <translation>Couleur de la bordure :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>选中时颜色:</source>
-            <translation>Color when selected:</translation>
+            <translation>Couleur sélectionnée :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -965,7 +965,7 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>通用设置</source>
-            <translation>General Settings</translation>
+            <translation>Paramètres généraux</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
@@ -975,17 +975,17 @@
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>锚点大小:</source>
-            <translation>Anchor Size:</translation>
+            <translation>Taille de l'ancre :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>锚点颜色:</source>
-            <translation>Anchor Color:</translation>
+            <translation>Couleur de l'ancre :</translation>
         </message>
         <message>
             <location filename="medimager/ui/dialogs/settings_dialog.py" />
             <source>鼠标离开时自动隐藏</source>
-            <translation>Automatically hide when the mouse leaves</translation>
+            <translation>Masquer automatiquement lorsque la souris quitte</translation>
         </message>
     </context>
     <context>
@@ -993,22 +993,22 @@
         <message>
             <location filename="medimager/ui/main_toolbar.py" />
             <source>同步位置</source>
-            <translation>Sync Location</translation>
+            <translation>Synchroniser la position</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_toolbar.py" />
             <source>同步平移</source>
-            <translation>Synchronized translation</translation>
+            <translation>Translation synchrone</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_toolbar.py" />
             <source>同步窗宽窗位</source>
-            <translation>Synchronize window width and window position</translation>
+            <translation>Synchroniser la largeur et la position de la fenêtre</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_toolbar.py" />
             <source>同步缩放</source>
-            <translation>Synchronized Zoom</translation>
+            <translation>Mise à l'échelle synchrone</translation>
         </message>
         <message>
             <location filename="medimager/ui/main_toolbar.py" />
@@ -1031,7 +1031,7 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>序列 %1</source>
-            <translation>Sequence %1</translation>
+            <translation>Séquence %1</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -1041,22 +1041,22 @@
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>未绑定</source>
-            <translation>Unbound</translation>
+            <translation>Non lié</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>绑定序列</source>
-            <translation>Binding Sequence</translation>
+            <translation>Séquence de liaison</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>视图位置</source>
-            <translation>View Position</translation>
+            <translation>Position de la vue</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
             <source>视图绑定</source>
-            <translation>View Binding</translation>
+            <translation>Liaison de vue</translation>
         </message>
         <message>
             <location filename="medimager/ui/panels/series_panel.py" />
@@ -1069,17 +1069,17 @@
         <message>
             <location filename="medimager/ui/multi_viewer_grid.py" />
             <source>CT值</source>
-            <translation>CT Value</translation>
+            <translation>Valeur CT</translation>
         </message>
         <message>
             <location filename="medimager/ui/multi_viewer_grid.py" />
             <source>切片</source>
-            <translation>Slice</translation>
+            <translation>切片</translation>
         </message>
         <message>
             <location filename="medimager/ui/multi_viewer_grid.py" />
             <source>无序列</source>
-            <translation>No serial number</translation>
+            <translation>Sans numéro de série</translation>
         </message>
     </context>
 </TS>
