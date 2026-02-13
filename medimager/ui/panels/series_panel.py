@@ -822,21 +822,22 @@ class SeriesInfoWidget(QWidget):
         """添加信息项"""
         if not value:
             value = self.tr("未知")
-        
+
         item_layout = QHBoxLayout()
         item_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         label_widget = QLabel(f"{label}:")
-        label_widget.setFixedWidth(80)
+        label_widget.setMinimumWidth(70)
+        label_widget.setMaximumWidth(100)
         label_widget.setAlignment(Qt.AlignRight | Qt.AlignTop)
-        
+
         value_widget = QLabel(str(value))
         value_widget.setWordWrap(True)
         value_widget.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        
+
         item_layout.addWidget(label_widget)
         item_layout.addWidget(value_widget, 1)
-        
+
         layout.addLayout(item_layout)
 
 

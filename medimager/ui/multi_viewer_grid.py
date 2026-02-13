@@ -81,6 +81,7 @@ class ViewFrame(QFrame):
         
         # 图像查看器
         self._image_viewer = ImageViewer(self)
+        self._image_viewer.view_id = self._view_id
         self._main_layout.addWidget(self._image_viewer, 1)
         
         # 连接图像查看器的信号以显示坐标和像素值
@@ -656,6 +657,7 @@ class MultiViewerGrid(QWidget):
         self._sync_manager = None  # 将由主窗口设置
         self._current_layout = (1, 1)
         self._view_frames: Dict[str, ViewFrame] = {}
+        self._rebuilding = False  # 防止 set_layout 与信号处理重复重建
         
         self._setup_ui()
         self._connect_signals()
@@ -685,7 +687,10 @@ class MultiViewerGrid(QWidget):
         for view_frame in self._view_frames.values():
             if hasattr(view_frame, 'set_sync_manager'):
                 view_frame.set_sync_manager(sync_manager)
-        
+            # 同时传播到 ImageViewer
+            if view_frame.image_viewer:
+                view_frame.image_viewer.sync_manager = sync_manager
+
         logger.debug("[MultiViewerGrid.set_sync_manager] 同步管理器设置完成")
 
     def _connect_sync_signals(self) -> None:
@@ -751,83 +756,105 @@ class MultiViewerGrid(QWidget):
     
     def set_layout(self, rows: int, cols: int) -> bool:
         """设置网格布局
-        
+
+        注意：调用方（MainWindow._set_layout）应先调用 series_manager.set_layout()，
+        再调用本方法。本方法不再重复调用 series_manager，避免二次清空绑定。
+
         Args:
             rows: 行数
             cols: 列数
-            
+
         Returns:
             是否成功设置
         """
         logger.debug(f"[MultiViewerGrid.set_layout] 设置网格布局: {rows}x{cols}")
-        
+
         try:
             if rows < 1 or rows > 3 or cols < 1 or cols > 4:
                 logger.error(f"[MultiViewerGrid.set_layout] 无效的布局参数: {rows}x{cols}")
                 return False
-            
+
             old_layout = self._current_layout
+
+            # 设置标志位，防止 series_manager 的 layout_changed 信号
+            # 触发 _on_layout_changed 导致重复重建
+            self._rebuilding = True
+
             self._current_layout = (rows, cols)
-            
+
             # 清除现有视图
             self._clear_grid()
-            
+
             # 创建新的视图框架
             self._create_view_frames(rows, cols)
-            
-            # 通知序列管理器布局变更
-            self._series_manager.set_layout(rows, cols)
-            
+
+            self._rebuilding = False
+
+            # 延迟执行自适应，等待布局引擎计算完最终尺寸
+            self._fit_all_bound_views_to_window()
+
             logger.info(f"[MultiViewerGrid.set_layout] 网格布局设置成功: "
                        f"{old_layout} -> {self._current_layout}")
             self.layout_changed.emit(self._current_layout)
-            
+
             return True
-            
+
         except Exception as e:
+            self._rebuilding = False
             logger.error(f"[MultiViewerGrid.set_layout] 设置网格布局失败: {e}", exc_info=True)
             return False
     
     def set_special_layout(self, layout_config: dict) -> bool:
         """设置特殊布局
-        
+
         Args:
             layout_config: 特殊布局配置字典
-            
+
         Returns:
             是否成功设置
         """
         logger.debug(f"[MultiViewerGrid.set_special_layout] 设置特殊布局: {layout_config}")
-        
+
+        # 保持 _rebuilding 为 True，防止内部 set_layout 重置后
+        # layout_changed 信号触发 _on_layout_changed 导致重复重建
+        saved_rebuilding = self._rebuilding
+        self._rebuilding = True
+
         try:
             layout_type = layout_config.get('type', '')
-            
+
             # 根据布局类型确定等效网格大小
             equivalent_layout = self._get_equivalent_layout(layout_config)
-            
-            # 先创建等效的网格布局
+
+            # 先创建等效的网格布局（会创建视图框架）
             rows, cols = equivalent_layout
             if not self.set_layout(rows, cols):
                 return False
-            
+
+            # 确保 _rebuilding 仍为 True（set_layout 内部会重置它）
+            self._rebuilding = True
+
             # 等待视图创建完成
             QApplication.processEvents()
-            
+
             # 然后重新排列为特殊布局
             success = self._arrange_special_layout(layout_config)
-            
+
             if success:
                 self._current_layout = layout_config  # 保存特殊布局配置
+                # 特殊布局重新排列了widget，需要再次延迟自适应
+                self._fit_all_bound_views_to_window()
                 logger.info(f"[MultiViewerGrid.set_special_layout] 特殊布局设置成功: {layout_type}")
-                self.layout_changed.emit(layout_config)
                 return True
             else:
                 logger.error(f"[MultiViewerGrid.set_special_layout] 特殊布局排列失败: {layout_type}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"[MultiViewerGrid.set_special_layout] 设置特殊布局失败: {e}", exc_info=True)
             return False
+        finally:
+            self._rebuilding = saved_rebuilding
     
     def _get_equivalent_layout(self, layout_config: dict) -> Tuple[int, int]:
         """获取特殊布局的等效网格大小"""
@@ -872,52 +899,53 @@ class MultiViewerGrid(QWidget):
     def _arrange_vertical_split_layout(self, layout_config: dict) -> bool:
         """排列上下分割布局"""
         logger.debug("[MultiViewerGrid._arrange_vertical_split_layout] 排列上下分割布局")
-        
+
         try:
             view_frames = list(self._view_frames.values())
-            
+
             if len(view_frames) < 2:
                 logger.warning("[MultiViewerGrid._arrange_vertical_split_layout] 视图框架数量不足")
                 return False
-            
-            # 移除现有布局
+
+            # 移除现有布局（不会创建新布局）
             self._clear_grid_layout()
-            
+
+            # 创建新布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+
             # 创建垂直分割器
-            main_splitter = QSplitter(Qt.Vertical, self._grid_container)
-            
+            main_splitter = QSplitter(Qt.Vertical)
+
             # 设置分割比例
             top_ratio = layout_config.get('top_ratio', 0.6)
-            
+
             # 添加上半部分
             main_splitter.addWidget(view_frames[0])
-            
+
             if layout_config.get('bottom_split', False) and len(view_frames) >= 3:
                 # 下半部分需要左右分割
                 bottom_splitter = QSplitter(Qt.Horizontal)
                 bottom_splitter.addWidget(view_frames[1])
                 bottom_splitter.addWidget(view_frames[2])
                 bottom_splitter.setSizes([50, 50])  # 下半部分左右等分
-                
+
                 main_splitter.addWidget(bottom_splitter)
             elif len(view_frames) >= 2:
                 # 下半部分整体
                 main_splitter.addWidget(view_frames[1])
-            
+
             # 设置分割比例
             total_height = 1000
             top_height = int(total_height * top_ratio)
             bottom_height = total_height - top_height
             main_splitter.setSizes([top_height, bottom_height])
-            
-            # 创建新的布局并添加分割器
-            new_layout = QVBoxLayout(self._grid_container)
-            new_layout.setContentsMargins(0, 0, 0, 0)
+
             new_layout.addWidget(main_splitter)
-            
+
             logger.info("[MultiViewerGrid._arrange_vertical_split_layout] 上下分割布局排列完成")
             return True
-            
+
         except Exception as e:
             logger.error(f"[MultiViewerGrid._arrange_vertical_split_layout] 排列上下分割布局失败: {e}", exc_info=True)
             return False
@@ -925,52 +953,53 @@ class MultiViewerGrid(QWidget):
     def _arrange_horizontal_split_layout(self, layout_config: dict) -> bool:
         """排列左右分割布局"""
         logger.debug("[MultiViewerGrid._arrange_horizontal_split_layout] 排列左右分割布局")
-        
+
         try:
             view_frames = list(self._view_frames.values())
-            
+
             if len(view_frames) < 2:
                 logger.warning("[MultiViewerGrid._arrange_horizontal_split_layout] 视图框架数量不足")
                 return False
-            
-            # 移除现有布局
+
+            # 移除现有布局（不会创建新布局）
             self._clear_grid_layout()
-            
+
+            # 创建新布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+
             # 创建水平分割器
-            main_splitter = QSplitter(Qt.Horizontal, self._grid_container)
-            
+            main_splitter = QSplitter(Qt.Horizontal)
+
             # 设置分割比例
             left_ratio = layout_config.get('left_ratio', 0.6)
-            
+
             # 添加左半部分
             main_splitter.addWidget(view_frames[0])
-            
+
             if layout_config.get('right_split', False) and len(view_frames) >= 3:
                 # 右半部分需要上下分割
                 right_splitter = QSplitter(Qt.Vertical)
                 right_splitter.addWidget(view_frames[1])
                 right_splitter.addWidget(view_frames[2])
                 right_splitter.setSizes([50, 50])  # 右半部分上下等分
-                
+
                 main_splitter.addWidget(right_splitter)
             elif len(view_frames) >= 2:
                 # 右半部分整体
                 main_splitter.addWidget(view_frames[1])
-            
+
             # 设置分割比例
             total_width = 1000
             left_width = int(total_width * left_ratio)
             right_width = total_width - left_width
             main_splitter.setSizes([left_width, right_width])
-            
-            # 创建新的布局并添加分割器
-            new_layout = QVBoxLayout(self._grid_container)
-            new_layout.setContentsMargins(0, 0, 0, 0)
+
             new_layout.addWidget(main_splitter)
-            
+
             logger.info("[MultiViewerGrid._arrange_horizontal_split_layout] 左右分割布局排列完成")
             return True
-            
+
         except Exception as e:
             logger.error(f"[MultiViewerGrid._arrange_horizontal_split_layout] 排列左右分割布局失败: {e}", exc_info=True)
             return False
@@ -978,30 +1007,34 @@ class MultiViewerGrid(QWidget):
     def _arrange_triple_column_layout(self, layout_config: dict) -> bool:
         """排列三列布局"""
         logger.debug("[MultiViewerGrid._arrange_triple_column_layout] 排列三列布局")
-        
+
         try:
             view_frames = list(self._view_frames.values())
-            
+
             if len(view_frames) < 4:
                 logger.warning("[MultiViewerGrid._arrange_triple_column_layout] 视图框架数量不足")
                 return False
-            
-            # 移除现有布局
+
+            # 移除现有布局（不会创建新布局）
             self._clear_grid_layout()
-            
+
+            # 创建新布局并添加分割器
+            new_layout = QVBoxLayout(self._grid_container)
+            new_layout.setContentsMargins(0, 0, 0, 0)
+
             # 创建主水平分割器
-            main_splitter = QSplitter(Qt.Horizontal, self._grid_container)
-            
+            main_splitter = QSplitter(Qt.Horizontal)
+
             # 设置分割比例
             left_ratio = layout_config.get('left_ratio', 0.33)
             middle_ratio = layout_config.get('middle_ratio', 0.34)
             right_ratio = 1.0 - left_ratio - middle_ratio
-            
+
             # 添加左列
             main_splitter.addWidget(view_frames[0])
-            
+
             layout_type = layout_config.get('type', '')
-            
+
             if layout_type == 'triple_column_middle_right_split' and len(view_frames) >= 5:
                 # 中间和右边都分割
                 # 中列分割
@@ -1010,7 +1043,7 @@ class MultiViewerGrid(QWidget):
                 middle_splitter.addWidget(view_frames[2])
                 middle_splitter.setSizes([50, 50])
                 main_splitter.addWidget(middle_splitter)
-                
+
                 # 右列分割
                 right_splitter = QSplitter(Qt.Vertical)
                 right_splitter.addWidget(view_frames[3])
@@ -1021,7 +1054,7 @@ class MultiViewerGrid(QWidget):
                 # 只有右边分割
                 # 中列整体
                 main_splitter.addWidget(view_frames[1])
-                
+
                 # 右列分割
                 if len(view_frames) >= 4:
                     right_splitter = QSplitter(Qt.Vertical)
@@ -1029,28 +1062,29 @@ class MultiViewerGrid(QWidget):
                     right_splitter.addWidget(view_frames[3])
                     right_splitter.setSizes([50, 50])
                     main_splitter.addWidget(right_splitter)
-            
+
             # 设置分割比例
             total_width = 1000
             left_width = int(total_width * left_ratio)
             middle_width = int(total_width * middle_ratio)
             right_width = total_width - left_width - middle_width
             main_splitter.setSizes([left_width, middle_width, right_width])
-            
-            # 创建新的布局并添加分割器
-            new_layout = QVBoxLayout(self._grid_container)
-            new_layout.setContentsMargins(0, 0, 0, 0)
+
             new_layout.addWidget(main_splitter)
-            
+
             logger.info("[MultiViewerGrid._arrange_triple_column_layout] 三列布局排列完成")
             return True
-            
+
         except Exception as e:
             logger.error(f"[MultiViewerGrid._arrange_triple_column_layout] 排列三列布局失败: {e}", exc_info=True)
             return False
     
     def _clear_grid_layout(self) -> None:
-        """清除网格布局但保留视图框架"""
+        """清除网格布局但保留视图框架
+
+        注意：此方法只负责清理，不会创建新布局。
+        调用方需要自行在 _grid_container 上创建所需的布局。
+        """
         old_layout = self._grid_container.layout()
         if old_layout:
             # 移除所有视图框架但不删除
@@ -1058,27 +1092,55 @@ class MultiViewerGrid(QWidget):
             for view_frame in view_frames:
                 old_layout.removeWidget(view_frame)
                 view_frame.setParent(None)
-            
-            # 删除旧布局
+
+            # 递归清理布局中残留的 splitter 等子 widget
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+
+            # 删除旧布局（转移给临时 widget，随其销毁）
             QWidget().setLayout(old_layout)
     
     def _clear_grid(self) -> None:
-        """清空网格"""
+        """清空网格
+
+        安全地移除所有视图框架，无论它们是在 QGridLayout 还是 QSplitter 中。
+        清理完成后重建 _grid_layout 供后续使用。
+        """
         logger.debug("[MultiViewerGrid._clear_grid] 清空网格")
-        
+
         # 清理所有视图框架的工具数据
         for view_frame in self._view_frames.values():
             if view_frame:
-                # 清理工具数据
                 view_frame._clear_tool_data()
-        
-        # 移除所有视图框架
+
+        # 将视图框架从父组件中移除并标记删除
         for view_frame in self._view_frames.values():
-            self._grid_layout.removeWidget(view_frame)
+            view_frame.setParent(None)
             view_frame.deleteLater()
-        
+
         self._view_frames.clear()
-        
+
+        # 销毁 _grid_container 上的旧布局（可能是 QGridLayout 或 QVBoxLayout+QSplitter）
+        old_layout = self._grid_container.layout()
+        if old_layout:
+            # 递归清理布局中残留的 splitter 等子 widget
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+            QWidget().setLayout(old_layout)
+
+        # 重建干净的 QGridLayout
+        self._grid_layout = QGridLayout(self._grid_container)
+        self._grid_layout.setContentsMargins(0, 0, 0, 0)
+        self._grid_layout.setSpacing(2)
+
         logger.debug("[MultiViewerGrid._clear_grid] 网格清空完成")
     
     def _create_view_frames(self, rows: int, cols: int) -> None:
@@ -1105,7 +1167,11 @@ class MultiViewerGrid(QWidget):
                 
                 # 创建视图框架
                 view_frame = ViewFrame(view_id, position, self)
-                
+
+                # 传播同步管理器到 ImageViewer
+                if self._sync_manager and view_frame.image_viewer:
+                    view_frame.image_viewer.sync_manager = self._sync_manager
+
                 # 连接信号
                 view_frame.view_activated.connect(self._on_view_frame_activated)
                 view_frame.view_clicked.connect(self._on_view_frame_clicked)
@@ -1181,16 +1247,22 @@ class MultiViewerGrid(QWidget):
             return f"{self.tr('序列')} {series_info.series_number}"
     
     def _on_layout_changed(self, layout: Tuple[int, int]) -> None:
-        """处理布局变更事件"""
+        """处理布局变更事件（由 series_manager.layout_changed 信号触发）
+
+        当 set_layout() 正在执行时（_rebuilding=True），跳过重建，
+        因为 set_layout() 自身已经在重建网格了。
+        """
+        if self._rebuilding:
+            return
+
         logger.debug(f"[MultiViewerGrid._on_layout_changed] 处理布局变更: {layout}")
-        
-        # 布局变更由外部触发时，重新创建网格
+
         rows, cols = layout
         if self._current_layout != layout:
             self._current_layout = layout
             self._clear_grid()
             self._create_view_frames(rows, cols)
-            
+
             # 布局变更后，为所有有绑定序列的视图自适应窗格大小
             self._fit_all_bound_views_to_window()
     
@@ -1257,18 +1329,26 @@ class MultiViewerGrid(QWidget):
         return None
     
     def _fit_all_bound_views_to_window(self) -> None:
-        """为所有绑定了序列的视图自适应窗格大小"""
-        logger.debug("[MultiViewerGrid._fit_all_bound_views_to_window] 为所有绑定视图自适应窗格大小")
-        
+        """为所有绑定了序列的视图自适应窗格大小
+
+        使用 QTimer.singleShot(0) 延迟执行，确保 Qt 布局引擎已完成
+        几何计算后再调用 fitInView，否则视口尺寸仍是旧值。
+        """
+        QTimer.singleShot(0, self._do_fit_all_bound_views)
+
+    def _do_fit_all_bound_views(self) -> None:
+        """实际执行自适应窗格大小（由 QTimer 延迟调用）"""
         try:
             for view_frame in self._view_frames.values():
                 if view_frame and view_frame.series_id and view_frame.image_viewer:
-                    view_frame.image_viewer.fit_to_window()
-                    logger.debug(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应完成: {view_frame.view_id}")
-                    
+                    viewer = view_frame.image_viewer
+                    viewer.fit_to_window()
+                    # 同时设置 _fit_pending 作为后备：如果此刻视口尺寸
+                    # 仍未最终确定，resizeEvent 到来时会再执行一次
+                    viewer._fit_pending = True
         except Exception as e:
-            logger.error(f"[MultiViewerGrid._fit_all_bound_views_to_window] 自适应失败: {e}", exc_info=True)
-    
+            logger.error(f"[MultiViewerGrid._do_fit_all_bound_views] 自适应失败: {e}", exc_info=True)
+
     def _register_to_theme_manager(self) -> None:
         """注册到主题管理器"""
         try:

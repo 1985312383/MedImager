@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 class LayoutPresetButton(QPushButton):
     """布局预设按钮 - 使用图标显示布局"""
     
-    layout_selected = Signal(tuple)  # 发送布局配置元组
+    layout_selected = Signal(object)  # 发送布局配置（tuple 或 dict）
     
     def __init__(self, layout_config: tuple, layout_name: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -602,10 +602,10 @@ class DynamicLayoutSelector(QFrame):
 class LayoutDropdown(QFrame):
     """布局下拉菜单"""
     
-    layout_selected = Signal(tuple)  # 修改为发送布局配置
+    layout_selected = Signal(object)  # 发送布局配置（tuple 或 dict）
     auto_assign_requested = Signal()
     clear_bindings_requested = Signal()
-    
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         logger.debug("[LayoutDropdown.__init__] 初始化布局下拉菜单")
@@ -916,7 +916,7 @@ class LayoutSelectorButton(QPushButton):
         clear_bindings_requested: 当请求清除绑定时发出
     """
     
-    layout_selected = Signal(tuple)  # 修改为发送布局配置
+    layout_selected = Signal(object)  # 发送布局配置（tuple 或 dict）
     auto_assign_requested = Signal()
     clear_bindings_requested = Signal()
     

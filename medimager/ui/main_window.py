@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Set
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, 
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
     QButtonGroup, QPushButton, QComboBox, QProgressBar, QToolButton
 )
@@ -28,6 +28,7 @@ from medimager.ui.multi_viewer_grid import MultiViewerGrid
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
 from medimager.ui.dialogs.custom_wl_dialog import CustomWLDialog
+from medimager.ui.widgets.panel_toggle_strip import PanelToggleStrip
 from medimager.ui.dialogs.settings_dialog import SettingsDialog
 from medimager.utils.logger import get_logger
 from medimager.utils.settings import SettingsManager
@@ -86,10 +87,13 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         logger.debug("[MainWindow.__init__] 开始初始化主窗口")
         
+        # 布局切换守卫标志（必须在信号连接之前初始化）
+        self._setting_layout = False
+
         # 初始化设置管理器和主题管理器
         self.settings_manager = SettingsManager()
         self.theme_manager = ThemeManager(self.settings_manager, self)
-        
+
         # 初始化核心组件
         self._init_core_components()
         
@@ -112,7 +116,7 @@ class MainWindow(QMainWindow):
         logger.info("[MainWindow.__init__] 准备进行初始工具传播")
         self._propagate_tool_to_viewers()
         logger.info("[MainWindow.__init__] 初始工具传播完成")
-        
+
         # 序列加载状态
         self._loading_threads: Dict[str, SeriesLoadingThread] = {}
         
@@ -167,10 +171,12 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
         
-        # 主分割器
-        main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(main_splitter)
-        
+        # 水平容器：序列面板 + 左切换条 + 视图网格 + 右切换条 + 信息面板
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        main_layout.addLayout(content_layout)
+
         # 左侧序列面板
         self.series_panel = SeriesPanel(
             self.series_manager,
@@ -179,26 +185,32 @@ class MainWindow(QMainWindow):
         )
         self.series_panel.setMinimumWidth(300)
         self.series_panel.setMaximumWidth(500)
-        main_splitter.addWidget(self.series_panel)
-        
+        content_layout.addWidget(self.series_panel)
+
+        # 左侧切换条（序列面板默认可见）
+        self.left_toggle_strip = PanelToggleStrip(
+            side='left', tooltip=self.tr("展开/收起序列面板"), parent=self)
+        self.left_toggle_strip.toggled.connect(self._on_left_toggle_strip_clicked)
+        content_layout.addWidget(self.left_toggle_strip)
+
         # 中央多视图网格
         self.multi_viewer_grid = MultiViewerGrid(self.series_manager, self)
-        main_splitter.addWidget(self.multi_viewer_grid)
-        
+        content_layout.addWidget(self.multi_viewer_grid, 1)
+
+        # 右侧切换条（信息面板默认隐藏）
+        self.panel_toggle_strip = PanelToggleStrip(
+            side='right', tooltip=self.tr("展开/收起信息面板 (F2)"), parent=self)
+        self.panel_toggle_strip.toggled.connect(self._on_toggle_strip_clicked)
+        content_layout.addWidget(self.panel_toggle_strip)
+
         # 右侧信息面板
         self.dicom_tag_panel = DicomTagPanel()
         self.dicom_tag_panel.setMinimumWidth(250)
         self.dicom_tag_panel.setMaximumWidth(400)
-        main_splitter.addWidget(self.dicom_tag_panel)
-        
+        content_layout.addWidget(self.dicom_tag_panel)
+
         # 默认隐藏右侧面板
         self.dicom_tag_panel.hide()
-        
-        # 设置分割器属性
-        main_splitter.setChildrenCollapsible(True)
-        main_splitter.setStretchFactor(0, 0)  # 序列面板固定宽度
-        main_splitter.setStretchFactor(1, 1)  # 视图网格占主要空间
-        main_splitter.setStretchFactor(2, 0)  # 信息面板固定宽度
         
         # 初始化菜单、工具栏和状态栏
         self._init_menus()
@@ -207,6 +219,9 @@ class MainWindow(QMainWindow):
         
         # 设置同步管理器到多视图网格
         self.multi_viewer_grid.set_sync_manager(self.sync_manager)
+
+        # 设置视图网格引用到同步管理器，用于缩放平移同步
+        self.sync_manager.set_viewer_grid(self.multi_viewer_grid)
         
         logger.debug("[MainWindow._init_ui] 主窗口UI初始化完成")
     
@@ -593,38 +608,76 @@ class MainWindow(QMainWindow):
         """切换序列面板显示状态"""
         logger.debug(f"[MainWindow._toggle_series_panel] 切换序列面板: {checked}")
         self.series_panel.setVisible(checked)
+        # 同步左侧切换条箭头方向
+        if hasattr(self, 'left_toggle_strip'):
+            self.left_toggle_strip.set_panel_visible(checked)
+
+    def _on_left_toggle_strip_clicked(self, visible: bool) -> None:
+        """处理左侧切换条点击事件"""
+        logger.debug(f"[MainWindow._on_left_toggle_strip_clicked] 左侧切换条点击: {visible}")
+        self.series_panel.setVisible(visible)
+        # 同步菜单中的勾选状态
+        if hasattr(self, 'toggle_series_panel_action'):
+            self.toggle_series_panel_action.blockSignals(True)
+            self.toggle_series_panel_action.setChecked(visible)
+            self.toggle_series_panel_action.blockSignals(False)
     
     def _toggle_info_panel(self, checked: bool) -> None:
         """切换信息面板显示状态"""
         logger.debug(f"[MainWindow._toggle_info_panel] 切换信息面板: {checked}")
         self.dicom_tag_panel.setVisible(checked)
+        # 同步切换条箭头方向
+        if hasattr(self, 'panel_toggle_strip'):
+            self.panel_toggle_strip.set_panel_visible(checked)
+
+    def _on_toggle_strip_clicked(self, visible: bool) -> None:
+        """处理切换条点击事件"""
+        logger.debug(f"[MainWindow._on_toggle_strip_clicked] 切换条点击: {visible}")
+        self.dicom_tag_panel.setVisible(visible)
+        # 同步菜单中的勾选状态
+        if hasattr(self, 'toggle_info_panel_action'):
+            self.toggle_info_panel_action.blockSignals(True)
+            self.toggle_info_panel_action.setChecked(visible)
+            self.toggle_info_panel_action.blockSignals(False)
     
     def _set_layout(self, layout_config: tuple) -> None:
         """设置视图布局"""
         logger.debug(f"[MainWindow._set_layout] 设置布局: {layout_config}")
-        
+
         try:
+            # 标记正在设置布局，阻止 _on_layout_changed 的干扰
+            self._setting_layout = True
+
             # 检查是否为规则网格布局
             if isinstance(layout_config, tuple) and len(layout_config) == 2:
                 rows, cols = layout_config
-                
-                # 设置序列管理器布局
+
+                # 阻止 MultiViewerGrid._on_layout_changed 的重复重建
+                self.multi_viewer_grid._rebuilding = True
+
+                # 设置序列管理器布局（会重新配置视图绑定）
                 success = self.series_manager.set_layout(rows, cols)
+
                 if success:
-                    # 同时设置多视图网格布局
+                    # 设置多视图网格布局（会清空并重建视图框架）
                     grid_success = self.multi_viewer_grid.set_layout(rows, cols)
                     if grid_success:
                         logger.info(f"[MainWindow._set_layout] 规则网格布局设置成功: {rows}×{cols}")
                     else:
                         logger.error(f"[MainWindow._set_layout] 多视图网格布局设置失败: {rows}×{cols}")
-                        return
                 else:
                     logger.error(f"[MainWindow._set_layout] 序列管理器布局设置失败: {rows}×{cols}")
-                    return
             elif isinstance(layout_config, dict):
                 # 特殊布局：使用多视图网格的特殊布局功能
                 layout_type = layout_config.get('type', '')
-                
+
+                # 阻止信号触发重复重建
+                self.multi_viewer_grid._rebuilding = True
+
+                # 先通知序列管理器等效网格大小
+                equivalent = self.multi_viewer_grid._get_equivalent_layout(layout_config)
+                self.series_manager.set_layout(equivalent[0], equivalent[1])
+
                 # 使用多视图网格的特殊布局功能
                 grid_success = self.multi_viewer_grid.set_special_layout(layout_config)
                 if grid_success:
@@ -640,13 +693,18 @@ class MainWindow(QMainWindow):
                 # 无效的布局配置
                 logger.error(f"[MainWindow._set_layout] 无效的布局配置: {layout_config}")
                 return
-            
-            # 更新布局选择器按钮显示
-            if hasattr(self, '_layout_selector_button') and self._layout_selector_button:
-                self._layout_selector_button.set_current_layout(layout_config)
-            
+
+            # 更新UI状态
+            self._update_ui_state()
+
+            # 布局切换完成后传播工具到新视图
+            self._propagate_tool_to_viewers()
+
         except Exception as e:
             logger.error(f"[MainWindow._set_layout] 设置布局失败: {e}", exc_info=True)
+        finally:
+            self._setting_layout = False
+            self.multi_viewer_grid._rebuilding = False
     
     def _set_binding_strategy(self, strategy: BindingStrategy) -> None:
         """设置绑定策略"""
@@ -1121,27 +1179,17 @@ class MainWindow(QMainWindow):
             self._propagate_tool_to_single_viewer(view_id)
     
     def _on_layout_changed(self, layout: tuple) -> None:
-        """处理布局变更事件"""
+        """处理布局变更事件
+
+        当 _setting_layout 为 True 时，说明 _set_layout() 正在主动执行布局切换，
+        此处不应再做任何干扰操作（如清除绑定），否则会破坏 _set_layout 的流程。
+        """
+        if getattr(self, '_setting_layout', False):
+            logger.debug(f"[MainWindow._on_layout_changed] _setting_layout=True, 跳过: {layout}")
+            return
+
         logger.debug(f"[MainWindow._on_layout_changed] 布局变更: {layout}")
-        
-        # 暂时禁用自动分配以避免自动绑定
-        current_strategy = self.binding_manager.get_binding_strategy()
-        if current_strategy == BindingStrategy.AUTO_ASSIGN:
-            self.binding_manager.set_binding_strategy(BindingStrategy.PRESERVE_EXISTING)
-            logger.debug("[MainWindow._on_layout_changed] 暂时禁用自动分配")
-        
-        # 布局切换前清除所有绑定以保证稳定性
-        self._clear_all_bindings()
-        logger.debug("[MainWindow._on_layout_changed] 已清除所有绑定")
-        
         self._update_ui_state()
-        
-        # 恢复原来的绑定策略
-        if current_strategy == BindingStrategy.AUTO_ASSIGN:
-            # 延迟恢复策略，避免立即触发自动分配
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(100, lambda: self.binding_manager.set_binding_strategy(current_strategy))
-            logger.debug("[MainWindow._on_layout_changed] 将恢复自动分配策略")
     
     def _on_auto_assignment_completed(self, assigned_count: int) -> None:
         """处理自动分配完成事件"""
@@ -1305,7 +1353,7 @@ class MainWindow(QMainWindow):
                     thread.wait(1000)  # 等待1秒
             
             # 保存设置
-            self.settings_manager.save()
+            self.settings_manager.save_settings()
             
             logger.info("[MainWindow.closeEvent] 应用程序正常关闭")
             event.accept()

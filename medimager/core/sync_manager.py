@@ -148,7 +148,10 @@ class SyncManager(QObject):
         
         # 同步锁，防止递归同步
         self._sync_lock = False
-        
+
+        # 视图网格引用，用于访问 ImageViewer 实例（由 MultiViewerGrid 设置）
+        self._viewer_grid = None
+
         # 连接信号
         self._connect_signals()
         
@@ -163,9 +166,26 @@ class SyncManager(QObject):
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)
         self._series_manager.layout_changed.connect(self._on_layout_changed)
     
+    def set_viewer_grid(self, viewer_grid) -> None:
+        """设置视图网格引用，用于访问 ImageViewer 实例
+
+        Args:
+            viewer_grid: MultiViewerGrid 实例
+        """
+        self._viewer_grid = viewer_grid
+        logger.debug("[SyncManager.set_viewer_grid] 视图网格引用已设置")
+
+    def _get_image_viewer(self, view_id: str):
+        """获取指定视图的 ImageViewer 实例"""
+        if self._viewer_grid:
+            view_frame = self._viewer_grid.get_view_frame(view_id)
+            if view_frame and view_frame.image_viewer:
+                return view_frame.image_viewer
+        return None
+
     def set_sync_mode(self, mode: SyncMode) -> None:
         """设置同步模式
-        
+
         Args:
             mode: 同步模式
         """
@@ -596,14 +616,18 @@ class SyncManager(QObject):
         except Exception as e:
             logger.error(f"[SyncManager._apply_slice_to_view] 应用切片失败: {e}")
     
-    def _apply_zoom_pan_to_view(self, view_id: str, zoom_factor: float, 
+    def _apply_zoom_pan_to_view(self, view_id: str, zoom_factor: float,
                                pan_offset: QPointF, transform: QTransform) -> None:
         """应用缩放平移到视图"""
         try:
-            # 这里需要与MultiViewerGrid或ViewFrame协作
-            # 由于当前架构限制，暂时记录状态，实际应用需要扩展ViewFrame接口
-            logger.debug(f"[SyncManager._apply_zoom_pan_to_view] "
-                       f"缩放平移状态已记录: {view_id}")
+            viewer = self._get_image_viewer(view_id)
+            if viewer:
+                viewer.setTransform(QTransform(transform))
+                logger.debug(f"[SyncManager._apply_zoom_pan_to_view] "
+                           f"缩放平移应用成功: {view_id}, zoom={zoom_factor:.2f}")
+            else:
+                logger.debug(f"[SyncManager._apply_zoom_pan_to_view] "
+                           f"未找到视图的ImageViewer: {view_id}")
         except Exception as e:
             logger.error(f"[SyncManager._apply_zoom_pan_to_view] 应用缩放平移失败: {e}")
     

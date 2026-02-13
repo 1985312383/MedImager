@@ -267,9 +267,19 @@ def create_sync_button(main_window) -> QToolButton:
         sync_button.setIcon(QIcon(pixmap))
     
     # 创建同步下拉菜单
-    sync_menu = QMenu(main_window)
+    # 使用自定义 QMenu 子类，防止点击内嵌 widget 时菜单自动关闭
+    class _SyncMenu(QMenu):
+        def mouseReleaseEvent(self, event):
+            action = self.activeAction()
+            if action and isinstance(action, QWidgetAction):
+                # 内嵌 widget 区域的点击不关闭菜单
+                action.trigger()
+                return
+            super().mouseReleaseEvent(event)
+
+    sync_menu = _SyncMenu(main_window)
     sync_widget = SyncDropdownWidget(main_window)
-    
+
     widget_action = QWidgetAction(main_window)
     widget_action.setDefaultWidget(sync_widget)
     sync_menu.addAction(widget_action)

@@ -259,24 +259,31 @@ class DefaultTool(BaseTool):
                 # 根据垂直移动切换切片
                 if abs(delta.y()) > 5:  # 阈值避免过于敏感
                     direction = 1 if delta.y() > 0 else -1
-                    model.set_current_slice(model.current_slice_index + direction)
-        
+                    new_index = model.current_slice_index + direction
+                    model.set_current_slice(new_index)
+                    self._sync_slice(model.current_slice_index)
+
         elif self._drag_mode == DragMode.ADJUST_WINDOW:
             # 调整窗口（亮度/对比度）
             if model:
                 ww, wl = model.window_width, model.window_level
-                model.set_window(max(1, ww + delta.x()), wl + delta.y())
+                new_ww = max(1, ww + delta.x())
+                new_wl = wl + delta.y()
+                model.set_window(new_ww, new_wl)
+                self._sync_window_level(model.window_width, model.window_level)
 
         elif self._drag_mode == DragMode.ZOOM:
             # 放大/缩小图像
             zoom_factor = 1.0 + delta.y() * 0.01  # 缩放敏感度
             if zoom_factor > 0.1:  # 防止缩放过小
                 self.viewer.scale(zoom_factor, zoom_factor)
+                self._sync_zoom_pan()
 
         elif self._drag_mode == DragMode.PAN:
             # 平移图像
             self.viewer.horizontalScrollBar().setValue(self.viewer.horizontalScrollBar().value() - delta.x())
             self.viewer.verticalScrollBar().setValue(self.viewer.verticalScrollBar().value() - delta.y())
+            self._sync_zoom_pan()
 
         elif self._drag_mode == DragMode.ROI_RESIZE and self._target_roi_id and model:
             roi = model.get_roi_by_id(self._target_roi_id)
@@ -325,18 +332,20 @@ class DefaultTool(BaseTool):
         if modifiers == Qt.ControlModifier:
             if angle > 0: self.viewer.zoom_in()
             else: self.viewer.zoom_out()
+            self._sync_zoom_pan()
             event.accept()
         elif modifiers == Qt.NoModifier:
             if self.viewer.model and self.viewer.model.get_slice_count() > 1:
                 direction = -1 if angle > 0 else 1
                 self.viewer.model.set_current_slice(self.viewer.model.current_slice_index + direction)
-                
+                self._sync_slice(self.viewer.model.current_slice_index)
+
                 # 切片切换后，如果鼠标在图像区域内，主动更新像素信息
                 if hasattr(self.viewer, 'last_mouse_scene_pos') and self.viewer.last_mouse_scene_pos:
                     if hasattr(self.viewer, '_update_pixel_info'):
                         self.viewer._update_pixel_info(self.viewer.last_mouse_scene_pos)
-                
-                event.accept() 
+
+                event.accept()
 
     def key_press_event(self, event: QKeyEvent):
         """处理键盘按键事件"""
@@ -376,8 +385,52 @@ class DefaultTool(BaseTool):
                 else:
                     self.logger.debug("[DefaultTool.key_press_event] Del键按下，但没有选中的ROI或测量")
             else:
-                self.logger.debug("[DefaultTool.key_press_event] Del键按下，但模型为空") 
-    
+                self.logger.debug("[DefaultTool.key_press_event] Del键按下，但模型为空")
+
+    # ---- 同步辅助方法 ----
+
+    def _get_sync_context(self):
+        """获取同步上下文（view_id 和 sync_manager）"""
+        viewer = self.viewer
+        if not viewer:
+            return None, None
+        view_id = getattr(viewer, '_view_id', None)
+        sync_manager = getattr(viewer, '_sync_manager', None)
+        return view_id, sync_manager
+
+    def _sync_window_level(self, window_width: int, window_level: int) -> None:
+        """同步窗宽窗位到其他视图"""
+        view_id, sync_manager = self._get_sync_context()
+        if view_id and sync_manager:
+            try:
+                sync_manager.sync_window_level(view_id, window_width, window_level)
+            except Exception as e:
+                self.logger.debug(f"[DefaultTool._sync_window_level] 同步失败: {e}")
+
+    def _sync_slice(self, slice_index: int) -> None:
+        """同步切片位置到其他视图"""
+        view_id, sync_manager = self._get_sync_context()
+        if view_id and sync_manager:
+            try:
+                sync_manager.sync_slice(view_id, slice_index)
+            except Exception as e:
+                self.logger.debug(f"[DefaultTool._sync_slice] 同步失败: {e}")
+
+    def _sync_zoom_pan(self) -> None:
+        """同步缩放平移到其他视图"""
+        view_id, sync_manager = self._get_sync_context()
+        if view_id and sync_manager:
+            try:
+                from PySide6.QtCore import QPointF
+                transform = self.viewer.transform()
+                zoom_factor = transform.m11()
+                h_scroll = self.viewer.horizontalScrollBar().value()
+                v_scroll = self.viewer.verticalScrollBar().value()
+                pan_offset = QPointF(h_scroll, v_scroll)
+                sync_manager.sync_zoom_pan(view_id, zoom_factor, pan_offset, transform)
+            except Exception as e:
+                self.logger.debug(f"[DefaultTool._sync_zoom_pan] 同步失败: {e}")
+
     def _debug_all_measurements(self):
         """调试输出所有测量线信息"""
         model = self.viewer.model

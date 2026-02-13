@@ -48,6 +48,10 @@ class ImageViewer(QGraphicsView):
         self.model: Optional[ImageDataModel] = None
         self.current_tool: Optional[BaseTool] = None
 
+        # 同步相关：由 ViewFrame 设置
+        self._view_id: Optional[str] = None
+        self._sync_manager = None  # SyncManager 实例
+
         self._init_scene()
         self._init_viewer_settings()
 
@@ -59,6 +63,9 @@ class ImageViewer(QGraphicsView):
 
         # 缓存的QImage，避免每次鼠标移动都调用pixmap.toImage()
         self._cached_qimage: Optional[QImage] = None
+
+        # 延迟自适应标志：布局切换后在下次 resizeEvent 中执行 fit_to_window
+        self._fit_pending = False
         
         # 自定义光标
         self.cross_cursor = self._create_cross_cursor()
@@ -238,6 +245,24 @@ class ImageViewer(QGraphicsView):
     def set_model(self, model: ImageDataModel) -> None:
         """设置数据模型并更新视图"""
         self.model = model
+
+    @property
+    def view_id(self) -> Optional[str]:
+        """获取关联的视图ID"""
+        return self._view_id
+
+    @view_id.setter
+    def view_id(self, value: str) -> None:
+        self._view_id = value
+
+    @property
+    def sync_manager(self):
+        """获取同步管理器"""
+        return self._sync_manager
+
+    @sync_manager.setter
+    def sync_manager(self, value) -> None:
+        self._sync_manager = value
 
     def display_qimage(self, q_image: Optional[QImage]) -> None:
         """显示 QImage
@@ -527,8 +552,10 @@ class ImageViewer(QGraphicsView):
         # 将放大镜放在右上角
         magnifier_size = self.magnifier.size()
         self.magnifier.move(self.width() - magnifier_size.width() - 5, 5)
-        # 可以选择在改变大小时自动适应窗口
-        # self.fit_to_window() 
+        # 布局切换后执行一次自适应
+        if self._fit_pending:
+            self._fit_pending = False
+            self.fit_to_window()
 
     def _update_view(self):
         """当模型数据变化时，重新渲染视图"""
