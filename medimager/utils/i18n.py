@@ -151,3 +151,19 @@ class TranslationManager:
                         languages.append(lang_code)
 
         return languages
+
+
+# 全局翻译管理器单例
+_translation_manager: Optional[TranslationManager] = None
+
+
+def get_translation_manager() -> TranslationManager:
+    """获取全局翻译管理器单例实例
+
+    Returns:
+        TranslationManager: 翻译管理器实例
+    """
+    global _translation_manager
+    if _translation_manager is None:
+        _translation_manager = TranslationManager()
+    return _translation_manager

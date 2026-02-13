@@ -28,8 +28,8 @@ if __name__ == "__main__" and __package__ is None:
 
 # 导入项目模块
 from medimager.utils.logger import setup_logger, get_logger
-from medimager.utils.settings import SettingsManager
-from medimager.utils.i18n import TranslationManager
+from medimager.utils.settings import SettingsManager, get_settings_manager
+from medimager.utils.i18n import TranslationManager, get_translation_manager
 
 from medimager.ui.main_window import MainWindow
 
@@ -109,8 +109,8 @@ class MedImagerApplication:
     def _load_settings(self) -> bool:
         """加载应用程序设置"""
         try:
-            self.settings_manager = SettingsManager()
-            
+            self.settings_manager = get_settings_manager()
+
             # 设置默认值
             default_settings = {
                 'language': 'zh_CN',
@@ -122,15 +122,15 @@ class MedImagerApplication:
                 'auto_save_interval': 300,  # 5分钟
                 'log_level': 'INFO'
             }
-            
+
             # 加载设置并设置默认值
             for key, default_value in default_settings.items():
                 if not self.settings_manager.has_setting(key):
                     self.settings_manager.set_setting(key, default_value)
-                    
+
             self.logger.info("应用程序设置加载完成")
             return True
-            
+
         except Exception as e:
             self._show_error(f"设置加载失败: {e}")
             return False
@@ -154,11 +154,11 @@ class MedImagerApplication:
     def _setup_translations(self) -> bool:
         """设置多语言支持"""
         try:
-            self.translation_manager = TranslationManager()
-            
+            self.translation_manager = get_translation_manager()
+
             # 获取语言设置，确保默认为中文
             language = self.settings_manager.get_setting('language', 'zh_CN')
-            
+
             # 只在非中文时加载翻译文件，中文是源语言不需要翻译
             if language != 'zh_CN':
                 if self.translation_manager.load_translation(language):
@@ -167,9 +167,9 @@ class MedImagerApplication:
                     self.logger.warning(f"翻译文件加载失败，使用默认语言: {language}")
             else:
                 self.logger.info(f"使用默认语言: {language}")
-                
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"多语言支持初始化失败: {e}")
             return False
@@ -243,9 +243,10 @@ class MedImagerApplication:
             # 保存窗口状态
             self._save_window_state()
 
-            # 保存设置
+            # 保存设置并关闭性能管理器（线程池 + 缓存）
             if self.settings_manager:
                 self.settings_manager.save_settings()
+                self.settings_manager.shutdown()
 
         except Exception as e:
             self.logger.error(f"关闭应用程序时出错: {e}")

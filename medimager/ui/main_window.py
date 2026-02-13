@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
     QButtonGroup, QPushButton, QComboBox, QProgressBar, QToolButton
 )
-from PySide6.QtCore import Qt, QDir, QThread, QTimer
+from PySide6.QtCore import Qt, QDir, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QActionGroup
 from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
@@ -31,7 +31,7 @@ from medimager.ui.dialogs.custom_wl_dialog import CustomWLDialog
 from medimager.ui.widgets.panel_toggle_strip import PanelToggleStrip
 from medimager.ui.dialogs.settings_dialog import SettingsDialog
 from medimager.utils.logger import get_logger
-from medimager.utils.settings import SettingsManager
+from medimager.utils.settings import SettingsManager, get_settings_manager, get_performance_manager
 from medimager.utils.theme_manager import ThemeManager
 from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
@@ -41,39 +41,31 @@ from medimager.ui.main_toolbar import create_main_toolbar
 logger = get_logger(__name__)
 
 
-class SeriesLoadingThread(QThread):
-    """序列加载线程
-    
-    在后台线程中加载DICOM序列，避免阻塞UI。
-    """
-    
-    def __init__(self, file_paths: List[str], series_info: SeriesInfo, parent=None):
-        super().__init__(parent)
-        self.file_paths = file_paths
-        self.series_info = series_info
+class _SeriesLoadResult:
+    """序列加载结果容器"""
+    __slots__ = ('series_id', 'image_model', 'success')
+
+    def __init__(self, series_id: str):
+        self.series_id = series_id
         self.image_model: Optional[ImageDataModel] = None
         self.success = False
-        
-    def run(self) -> None:
-        """运行加载任务"""
-        logger.debug(f"[SeriesLoadingThread.run] 开始加载序列: {self.series_info.series_id}")
-        
-        try:
-            # 创建图像数据模型
-            self.image_model = ImageDataModel()
-            
-            # 加载DICOM序列
-            success = self.image_model.load_dicom_series(self.file_paths)
-            
-            if success:
-                self.success = True
-                logger.info(f"[SeriesLoadingThread.run] 序列加载成功: {self.series_info.series_id}")
-            else:
-                logger.error(f"[SeriesLoadingThread.run] 序列加载失败: {self.series_info.series_id}")
-                
-        except Exception as e:
-            logger.error(f"[SeriesLoadingThread.run] 序列加载异常: {e}", exc_info=True)
-            self.success = False
+
+
+def _load_series_task(file_paths: List[str], series_id: str) -> _SeriesLoadResult:
+    """在线程池中执行的序列加载任务（纯函数，不涉及Qt信号）"""
+    result = _SeriesLoadResult(series_id)
+    try:
+        image_model = ImageDataModel()
+        success = image_model.load_dicom_series(file_paths)
+        if success:
+            result.image_model = image_model
+            result.success = True
+            logger.info(f"[_load_series_task] 序列加载成功: {series_id}")
+        else:
+            logger.error(f"[_load_series_task] 序列加载失败: {series_id}")
+    except Exception as e:
+        logger.error(f"[_load_series_task] 序列加载异常: {e}", exc_info=True)
+    return result
 
 
 class MainWindow(QMainWindow):
@@ -90,8 +82,8 @@ class MainWindow(QMainWindow):
         # 布局切换守卫标志（必须在信号连接之前初始化）
         self._setting_layout = False
 
-        # 初始化设置管理器和主题管理器
-        self.settings_manager = SettingsManager()
+        # 使用全局单例设置管理器和主题管理器
+        self.settings_manager = get_settings_manager()
         self.theme_manager = ThemeManager(self.settings_manager, self)
 
         # 初始化核心组件
@@ -117,8 +109,8 @@ class MainWindow(QMainWindow):
         self._propagate_tool_to_viewers()
         logger.info("[MainWindow.__init__] 初始工具传播完成")
 
-        # 序列加载状态
-        self._loading_threads: Dict[str, SeriesLoadingThread] = {}
+        # 序列加载状态（future 对象由线程池管理）
+        self._loading_futures: Dict[str, object] = {}
         
         logger.info("[MainWindow.__init__] 主窗口初始化完成")
     
@@ -944,50 +936,57 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, self.tr("错误"), self.tr("加载DICOM文件夹失败: %1").replace("%1", str(e)))
     
     def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
-        """在后台线程中加载序列"""
+        """使用性能管理器的线程池在后台加载序列"""
         logger.debug(f"[MainWindow._load_series_in_background] 后台加载序列: {series_id}")
-        
-        # 创建加载线程
-        loading_thread = SeriesLoadingThread(file_paths, series_info, self)
-        loading_thread.finished.connect(lambda: self._on_series_loading_finished(series_id, loading_thread))
-        
-        # 存储线程引用
-        self._loading_threads[series_id] = loading_thread
-        
+
+        # 获取性能管理器的线程池
+        perf_manager = get_performance_manager()
+        thread_pool = perf_manager.get_thread_pool()
+
+        # 提交加载任务到线程池
+        future = thread_pool.submit(_load_series_task, file_paths, series_id)
+        self._loading_futures[series_id] = future
+
+        # 使用回调 + QTimer 将结果安全地传回主线程
+        def _on_done(fut):
+            # 此回调在线程池线程中执行，用 QTimer.singleShot 切回主线程
+            QTimer.singleShot(0, lambda: self._on_series_loading_finished(series_id, fut))
+
+        future.add_done_callback(_on_done)
+
         # 显示加载进度
         self.loading_progress.setVisible(True)
         self.status_bar.showMessage(self.tr("正在加载序列: %1").replace("%1", series_info.series_description or series_id))
-        
-        # 启动线程
-        loading_thread.start()
-    
-    def _on_series_loading_finished(self, series_id: str, loading_thread: SeriesLoadingThread) -> None:
-        """处理序列加载完成"""
+
+    def _on_series_loading_finished(self, series_id: str, future) -> None:
+        """处理序列加载完成（在主线程中执行）"""
         logger.debug(f"[MainWindow._on_series_loading_finished] 序列加载完成: {series_id}")
-        
+
         try:
-            if loading_thread.success and loading_thread.image_model:
+            result: _SeriesLoadResult = future.result()
+
+            if result.success and result.image_model:
                 # 将图像模型添加到管理器
-                success = self.series_manager.load_series_data(series_id, loading_thread.image_model)
-                
+                success = self.series_manager.load_series_data(series_id, result.image_model)
+
                 if success:
                     logger.info(f"[MainWindow._on_series_loading_finished] 序列数据加载成功: {series_id}")
                 else:
                     logger.error(f"[MainWindow._on_series_loading_finished] 序列数据加载失败: {series_id}")
             else:
                 logger.error(f"[MainWindow._on_series_loading_finished] 序列加载失败: {series_id}")
-            
-            # 清理线程引用
-            if series_id in self._loading_threads:
-                del self._loading_threads[series_id]
-            
+
+            # 清理 future 引用
+            self._loading_futures.pop(series_id, None)
+
             # 如果没有正在加载的序列，隐藏进度条
-            if not self._loading_threads:
+            if not self._loading_futures:
                 self.loading_progress.setVisible(False)
                 self.status_bar.showMessage(self.tr("加载完成"), 2000)
-            
+
         except Exception as e:
             logger.error(f"[MainWindow._on_series_loading_finished] 处理加载完成失败: {e}", exc_info=True)
+            self._loading_futures.pop(series_id, None)
     
     def _open_image_file(self) -> None:
         """打开图像文件"""
@@ -1126,13 +1125,22 @@ class MainWindow(QMainWindow):
     def _open_settings_dialog(self) -> None:
         """打开设置对话框"""
         logger.debug("[MainWindow._open_settings_dialog] 打开设置对话框")
-        
+
         dialog = SettingsDialog(self.settings_manager, self)
-        
+
         if dialog.exec_() == QDialog.Accepted:
             # 应用新设置 - 使用set_theme确保发出信号
             current_theme = self.theme_manager.get_current_theme()
             self.theme_manager.set_theme(current_theme)
+
+            # 如果语言发生了变化，提示用户部分界面需要重启才能完全生效
+            if getattr(dialog, '_language_changed', False):
+                QMessageBox.information(
+                    self,
+                    self.tr("语言设置"),
+                    self.tr("语言已切换。部分界面文本将在重启后完全更新。")
+                )
+
             logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
     
     def _show_about(self) -> None:
@@ -1346,11 +1354,10 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow.closeEvent] 处理窗口关闭事件")
         
         try:
-            # 停止所有加载线程
-            for thread in self._loading_threads.values():
-                if thread.isRunning():
-                    thread.terminate()
-                    thread.wait(1000)  # 等待1秒
+            # 取消所有正在进行的加载任务
+            for future in self._loading_futures.values():
+                future.cancel()
+            self._loading_futures.clear()
             
             # 保存设置
             self.settings_manager.save_settings()

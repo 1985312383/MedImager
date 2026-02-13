@@ -376,35 +376,32 @@ class ViewFrame(QFrame):
             logger.debug(f"[ViewFrame._update_slice_info] 更新切片信息失败: {e}")
     
     def _update_image_display(self) -> None:
-        """更新图像显示"""
+        """更新图像显示（使用带缓存的 get_display_slice）"""
         try:
             if self._image_model:
                 model = self._image_model
-                
-                # 获取当前切片数据
-                original_slice = model.get_current_slice_data()
-                
-                if original_slice is not None:
-                    # 应用窗宽窗位设置
-                    display_slice = model.apply_window_level(original_slice)
-                    
+
+                # 使用 get_display_slice（内部带 PerformanceManager 缓存）
+                display_slice = model.get_display_slice()
+
+                if display_slice is not None:
                     # 转换为QImage
                     from PySide6.QtGui import QImage
                     height, width = display_slice.shape
                     bytes_per_line = width
-                    
+
                     # 创建QImage - 必须保持numpy数组引用，防止GC回收导致悬空指针
                     image_data = display_slice.copy()
                     q_image = QImage(image_data.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
-                    
+
                     # 显示图像
                     self._image_viewer.display_qimage(q_image)
-                    
+
                     logger.debug(f"[ViewFrame._update_image_display] 图像显示更新完成: {self._view_id}")
                 else:
                     # 清空显示
                     self._image_viewer.display_qimage(None)
-                    
+
         except Exception as e:
             logger.error(f"[ViewFrame._update_image_display] 更新图像显示失败: {e}", exc_info=True)
     

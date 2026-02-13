@@ -20,7 +20,7 @@ from medimager.ui.tools.roi_tool import EllipseROITool
 from medimager.core.roi import CircleROI, EllipseROI, RectangleROI
 from medimager.core.analysis import calculate_roi_statistics
 from medimager.ui.widgets.roi_stats_box import draw_stats_box
-from ..utils.settings import SettingsManager
+from ..utils.settings import get_settings_manager
 
 if TYPE_CHECKING:
     from medimager.core.image_data_model import ImageDataModel
@@ -116,7 +116,7 @@ class ImageViewer(QGraphicsView):
     def _init_settings(self):
         """初始化设置管理器"""
         try:
-            self.settings_manager = SettingsManager()
+            self.settings_manager = get_settings_manager()
         except Exception as e:
             self.logger.warning(f"初始化设置管理器失败: {e}")
             self.settings_manager = None

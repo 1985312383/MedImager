@@ -14,7 +14,7 @@ from PySide6.QtCore import QObject, Signal, QByteArray, Qt
 from PySide6.QtGui import QIcon, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from typing import Dict, Any, Optional
-from medimager.utils.settings import SettingsManager
+from medimager.utils.settings import SettingsManager, get_settings_manager
 from medimager.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,7 +34,7 @@ def get_theme_settings(category: str, theme_name: str = None) -> Dict[str, Any]:
     try:
         # 如果没有指定主题名称，从设置中获取当前主题
         if theme_name is None:
-            settings_manager = SettingsManager()
+            settings_manager = get_settings_manager()
             theme_name = settings_manager.get_setting(f'{category}_theme', 'default')
         
         # 加载主题文件

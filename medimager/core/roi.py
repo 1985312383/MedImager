@@ -6,14 +6,16 @@ import uuid
 import numpy as np
 import logging
 
-from ..utils.settings import SettingsManager
+from ..utils.settings import get_settings_manager
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QPainter, QTransform, QColor, QPen
     from PySide6.QtCore import QPointF, QRectF, Qt
 
 
-settings = SettingsManager()
+def _get_settings():
+    """延迟获取全局设置管理器，避免模块导入时过早实例化"""
+    return get_settings_manager()
 
 
 def _create_circle_mask(center_y: int, center_x: int, radius: int, height: int, width: int) -> tuple[np.ndarray, np.ndarray]:

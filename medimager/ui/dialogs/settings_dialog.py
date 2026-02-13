@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
 from typing import Dict, Any, List, Tuple, Optional
 from medimager.utils.settings import SettingsManager
-from medimager.utils.i18n import TranslationManager
+from medimager.utils.i18n import get_translation_manager
 
 
 class ColorButton(QPushButton):
@@ -76,7 +76,8 @@ class SettingsDialog(QDialog):
     def __init__(self, settings_manager: SettingsManager, parent=None):
         super().__init__(parent)
         self.settings_manager = settings_manager
-        self.translation_manager = TranslationManager()
+        self.translation_manager = get_translation_manager()
+        self._language_changed = False
         self.setWindowTitle(self.tr("设置"))
         self.setMinimumSize(900, 700)
         self.setModal(True)
@@ -835,15 +836,12 @@ class SettingsDialog(QDialog):
             self.settings_manager.set_setting('thread_count', thread_count_spin.value())
         
         self.settings_manager.save_settings()
-        
-        # 如果语言发生变化，提示用户重启应用
+
+        # 如果语言发生变化，立即应用翻译
         if language_changed:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self,
-                self.tr("语言设置"),
-                self.tr("语言设置将在下次启动时完全生效。")
-            )
+            self.translation_manager.load_translation(new_language)
+            # 记录语言变更标志，供调用方使用
+            self._language_changed = True
     
     def _save_theme_to_file(self, category: str, theme_name: str):
         """保存主题设置到TOML文件"""

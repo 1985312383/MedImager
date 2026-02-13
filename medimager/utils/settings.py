@@ -447,17 +447,22 @@ class SettingsManager(QObject):
 
 # 全局设置管理器实例
 _settings_manager: Optional[SettingsManager] = None
+_settings_manager_lock = threading.Lock()
 
 
 def get_settings_manager() -> SettingsManager:
-    """获取全局设置管理器实例
-    
+    """获取全局设置管理器单例实例
+
+    所有组件应通过此函数获取 SettingsManager，而不是自行创建实例。
+
     Returns:
         SettingsManager: 设置管理器实例
     """
     global _settings_manager
     if _settings_manager is None:
-        _settings_manager = SettingsManager()
+        with _settings_manager_lock:
+            if _settings_manager is None:
+                _settings_manager = SettingsManager()
     return _settings_manager
 
 

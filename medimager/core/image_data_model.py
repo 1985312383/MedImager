@@ -17,6 +17,7 @@ from typing import List, Dict, Any, Optional, Union
 from PySide6.QtCore import QObject, Signal, QRect, QPointF
 
 from medimager.utils.logger import get_logger
+from medimager.utils.settings import get_performance_manager
 from medimager.core.dicom_parser import DicomParser
 from medimager.core.roi import BaseROI
 from dataclasses import dataclass
@@ -297,21 +298,41 @@ class ImageDataModel(QObject):
     def get_display_slice(self, slice_index: Optional[int] = None) -> Optional[np.ndarray]:
         """
         Gets slice data, applies window/level, and returns it for display.
-        
+        Uses PerformanceManager cache to avoid redundant window/level computations.
+
         Args:
             slice_index: The index of the slice to get. If None, uses the current slice.
-            
+
         Returns:
             A 2D numpy array of uint8, ready for QImage conversion.
         """
         if slice_index is None:
             slice_index = self.current_slice_index
-            
+
         slice_data = self.get_slice_data(slice_index)
         if slice_data is None:
             return None
-            
-        return self.apply_window_level(slice_data)
+
+        # 构建缓存键：模型ID + 切片索引 + 窗宽窗位
+        cache_key = f"display_{id(self)}_{slice_index}_{self.window_width}_{self.window_level}"
+
+        try:
+            perf = get_performance_manager()
+            cached = perf.get_from_cache(cache_key)
+            if cached is not None:
+                return cached
+        except Exception:
+            pass  # 缓存不可用时回退到直接计算
+
+        result = self.apply_window_level(slice_data)
+
+        try:
+            perf = get_performance_manager()
+            perf.add_to_cache(cache_key, result)
+        except Exception:
+            pass
+
+        return result
 
     def has_image(self) -> bool:
         """Check if any image data is loaded."""
