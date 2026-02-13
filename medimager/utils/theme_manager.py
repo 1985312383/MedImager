@@ -7,6 +7,7 @@
 """
 
 import toml
+import weakref
 from pathlib import Path
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import QObject, Signal, QByteArray, Qt
@@ -66,12 +67,13 @@ class ThemeManager(QObject):
         self.available_themes = self._load_ui_themes()
         self.current_theme = self.get_current_theme()
         
-        # 注册的主题组件列表
-        self._registered_components = []
-        
+        # 注册的主题组件列表 - 使用WeakSet防止内存泄漏
+        # 当Qt组件被销毁时，弱引用自动失效，不会保留悬空引用
+        self._registered_components = weakref.WeakSet()
+
     def register_component(self, component) -> None:
         """注册需要主题管理的组件
-        
+
         Args:
             component: 需要主题管理的组件，应该实现以下方法之一：
                       - update_theme(theme_name: str)
@@ -79,77 +81,52 @@ class ThemeManager(QObject):
                       - apply_theme(theme_name: str)
         """
         if component not in self._registered_components:
-            self._registered_components.append(component)
-            logger.info(f"[ThemeManager.register_component] 注册主题组件: {component.__class__.__name__} (总数: {len(self._registered_components)})")
-            logger.info(f"[ThemeManager.register_component] 组件对象ID: {id(component)}")
-            
-            # 检查组件是否实现了主题接口
-            has_update_theme = hasattr(component, 'update_theme')
-            has_on_theme_changed = hasattr(component, '_on_theme_changed')
-            has_apply_theme = hasattr(component, 'apply_theme')
-            logger.info(f"[ThemeManager.register_component] 组件 {component.__class__.__name__} 接口检查: "
-                        f"update_theme={has_update_theme}, _on_theme_changed={has_on_theme_changed}, apply_theme={has_apply_theme}")
-            
+            self._registered_components.add(component)
+            logger.debug(f"[ThemeManager.register_component] 注册主题组件: {component.__class__.__name__}")
+
             # 立即应用当前主题
-            logger.info(f"[ThemeManager.register_component] 为新注册组件应用当前主题: {self.current_theme}")
             self._apply_theme_to_component(component, self.current_theme)
         else:
-            logger.info(f"[ThemeManager.register_component] 组件 {component.__class__.__name__} 已经注册，跳过")
-    
+            logger.debug(f"[ThemeManager.register_component] 组件 {component.__class__.__name__} 已经注册，跳过")
+
     def unregister_component(self, component) -> None:
         """取消注册主题组件"""
-        if component in self._registered_components:
-            self._registered_components.remove(component)
-            logger.info(f"[ThemeManager.unregister_component] 取消注册主题组件: {component.__class__.__name__} (剩余: {len(self._registered_components)})")
-        else:
-            logger.debug(f"[ThemeManager.unregister_component] 组件 {component.__class__.__name__} 未注册，跳过")
-    
+        self._registered_components.discard(component)
+        logger.debug(f"[ThemeManager.unregister_component] 取消注册主题组件: {component.__class__.__name__}")
+
     def _apply_theme_to_component(self, component, theme_name: str) -> None:
         """为单个组件应用主题"""
         try:
-            logger.info(f"[ThemeManager._apply_theme_to_component] 开始为组件 {component.__class__.__name__} (ID: {id(component)}) 应用主题: {theme_name}")
-            
-            # 尝试不同的主题应用方法
             if hasattr(component, 'update_theme'):
-                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}.update_theme({theme_name})")
                 component.update_theme(theme_name)
-                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}.update_theme() 调用完成")
             elif hasattr(component, '_on_theme_changed'):
-                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}._on_theme_changed({theme_name})")
                 component._on_theme_changed(theme_name)
-                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}._on_theme_changed() 调用完成")
             elif hasattr(component, 'apply_theme'):
-                logger.info(f"[ThemeManager._apply_theme_to_component] 调用 {component.__class__.__name__}.apply_theme({theme_name})")
                 component.apply_theme(theme_name)
-                logger.info(f"[ThemeManager._apply_theme_to_component] {component.__class__.__name__}.apply_theme() 调用完成")
             else:
                 logger.warning(f"[ThemeManager._apply_theme_to_component] 组件 {component.__class__.__name__} 没有实现主题更新方法")
-                
+
         except Exception as e:
             logger.error(f"[ThemeManager._apply_theme_to_component] 为组件 {component.__class__.__name__} 应用主题失败: {e}", exc_info=True)
-    
+
     def _apply_theme_to_all_components(self, theme_name: str) -> None:
         """为所有注册的组件应用主题"""
-        logger.info(f"[ThemeManager._apply_theme_to_all_components] 开始为 {len(self._registered_components)} 个组件应用主题: {theme_name}")
-        
-        if not self._registered_components:
-            logger.warning("[ThemeManager._apply_theme_to_all_components] 没有注册的组件")
+        # 迭代WeakSet的快照，防止迭代期间集合变化
+        components = list(self._registered_components)
+        logger.debug(f"[ThemeManager._apply_theme_to_all_components] 开始为 {len(components)} 个组件应用主题: {theme_name}")
+
+        if not components:
             return
-        
+
         success_count = 0
-        for i, component in enumerate(self._registered_components[:]):  # 使用副本避免迭代过程中修改列表
+        for component in components:
             try:
-                logger.debug(f"[ThemeManager._apply_theme_to_all_components] 处理组件 {i+1}/{len(self._registered_components)}: {component.__class__.__name__}")
                 self._apply_theme_to_component(component, theme_name)
                 success_count += 1
             except Exception as e:
                 logger.error(f"[ThemeManager._apply_theme_to_all_components] 为组件应用主题失败: {e}")
-                # 移除有问题的组件
-                if component in self._registered_components:
-                    self._registered_components.remove(component)
-                    logger.warning(f"[ThemeManager._apply_theme_to_all_components] 移除有问题的组件: {component.__class__.__name__}")
-        
-        logger.info(f"[ThemeManager._apply_theme_to_all_components] 主题应用完成: 成功 {success_count}/{len(self._registered_components)} 个组件")
+
+        logger.debug(f"[ThemeManager._apply_theme_to_all_components] 主题应用完成: 成功 {success_count}/{len(components)} 个组件")
     
     def _load_ui_themes(self):
         """加载UI主题文件"""

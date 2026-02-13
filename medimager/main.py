@@ -1,5 +1,3 @@
-print("--- MedImager main.py loaded ---")
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -180,16 +178,17 @@ class MedImagerApplication:
         """创建主窗口"""
         try:
             self.main_window = MainWindow()
-            
+
             # 恢复窗口几何和状态
             self._restore_window_state()
-            
-            # 连接窗口关闭信号
-            self.main_window.closeEvent = self._on_main_window_close
-            
+
+            # 使用 aboutToQuit 信号代替 monkey-patch closeEvent
+            # 这样不会绕过 PySide6 的 C++ 虚函数分发
+            self.app.aboutToQuit.connect(self._on_app_about_to_quit)
+
             self.logger.info("主窗口创建完成")
             return True
-            
+
         except Exception as e:
             self._show_error(f"主窗口创建失败: {e}")
             return False
@@ -236,24 +235,20 @@ class MedImagerApplication:
         except Exception as e:
             self.logger.warning(f"窗口状态保存失败: {e}")
             
-    def _on_main_window_close(self, event) -> None:
-        """主窗口关闭事件处理"""
+    def _on_app_about_to_quit(self) -> None:
+        """应用程序即将退出时的处理"""
         try:
             self.logger.info("应用程序正在关闭...")
-            
+
             # 保存窗口状态
             self._save_window_state()
-            
+
             # 保存设置
             if self.settings_manager:
                 self.settings_manager.save_settings()
-                
-            # 接受关闭事件
-            event.accept()
-            
+
         except Exception as e:
             self.logger.error(f"关闭应用程序时出错: {e}")
-            event.accept()  # 即使出错也要关闭
             
     def _show_error(self, message: str) -> None:
         """显示错误消息"""
@@ -288,16 +283,15 @@ def main() -> int:
     app = QApplication(sys.argv)
     try:
         medimager_app = MedImagerApplication(app)
-        if medimager_app.initialize():
-            return medimager_app.run()
-        return 1
+        return medimager_app.run()
+
     except Exception as e:
         # 最后的防线，捕获任何未处理的异常
         print(f"发生致命错误: {e}")
         # 此时可能无法显示QMessageBox，但尝试一下
         try:
             QMessageBox.critical(None, "致命错误", f"应用程序遇到无法恢复的错误:\n\n{e}")
-        except:
+        except Exception:
             pass
         return 1
 
@@ -366,13 +360,12 @@ if __name__ == "__main__":
     
     # 通用配置
     try:
-        # 启用高DPI支持
-        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-        
+        # AA_EnableHighDpiScaling 和 AA_UseHighDpiPixmaps 在 Qt 6 中已弃用且为 no-op
+        # Qt 6 默认启用高DPI支持，无需手动设置
+
         # 设置样式
         QApplication.setStyle('Fusion')
-        
+
     except Exception as e:
         print(f"通用配置失败: {e}")
 

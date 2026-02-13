@@ -369,31 +369,30 @@ class MeasurementTool(BaseTool):
         """根据DICOM信息计算实际距离"""
         model = self.viewer.model
         if not model or not model.has_image():
-            return 0.0, "mm"
-            
-        pixel_distance = self._calculate_pixel_distance(point1, point2)
-        
+            return 0.0, "px"
+
+        dx = point2.x() - point1.x()
+        dy = point2.y() - point1.y()
+
         dicom_header = model.dicom_header
         if not dicom_header:
-            return 0.0, "mm"
-            
+            # 无DICOM头信息，返回像素距离
+            pixel_distance = math.sqrt(dx * dx + dy * dy)
+            return pixel_distance, "px"
+
         pixel_spacing = dicom_header.get('Pixel Spacing', None)
+        if not pixel_spacing or len(pixel_spacing) < 2:
+            pixel_spacing = dicom_header.get('Imager Pixel Spacing', None)
+
         if pixel_spacing and len(pixel_spacing) >= 2:
-            row_spacing = float(pixel_spacing[0])
-            col_spacing = float(pixel_spacing[1])
-            avg_spacing = (row_spacing + col_spacing) / 2.0
-            real_distance = pixel_distance * avg_spacing
+            row_spacing = float(pixel_spacing[0])  # dy方向
+            col_spacing = float(pixel_spacing[1])  # dx方向
+            real_distance = math.sqrt((dx * col_spacing) ** 2 + (dy * row_spacing) ** 2)
             return real_distance, "mm"
-            
-        imager_pixel_spacing = dicom_header.get('Imager Pixel Spacing', None)
-        if imager_pixel_spacing and len(imager_pixel_spacing) >= 2:
-            row_spacing = float(imager_pixel_spacing[0])
-            col_spacing = float(imager_pixel_spacing[1])
-            avg_spacing = (row_spacing + col_spacing) / 2.0
-            real_distance = pixel_distance * avg_spacing
-            return real_distance, "mm"
-            
-        return 0.0, "mm"
+
+        # 无像素间距信息，返回像素距离
+        pixel_distance = math.sqrt(dx * dx + dy * dy)
+        return pixel_distance, "px"
 
     def _calculate_pixel_distance(self, point1: QPointF, point2: QPointF) -> float:
         """计算两点间的像素距离"""

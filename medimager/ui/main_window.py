@@ -1062,7 +1062,7 @@ class MainWindow(QMainWindow):
         dialog = CustomWLDialog(current_width, current_level, self)
         
         if dialog.exec_() == QDialog.Accepted:
-            new_width, new_level = dialog.get_window_level()
+            new_width, new_level = dialog.get_values()
             self._set_window_level_preset(new_width, new_level)
     
     def _open_settings_dialog(self) -> None:
@@ -1250,16 +1250,16 @@ class MainWindow(QMainWindow):
     def _on_sync_group_changed(self, group) -> None:
         """处理同步分组变更事件"""
         logger.debug(f"[MainWindow._on_sync_group_changed] 同步分组变更: {group}")
-        
-        # 更新下拉框选择状态
-        from medimager.core.sync_manager import SyncGroup
-        for i in range(self._sync_group_combo.count()):
-            if self._sync_group_combo.itemData(i) == group:
-                self._sync_group_combo.blockSignals(True)
-                self._sync_group_combo.setCurrentIndex(i)
-                self._sync_group_combo.blockSignals(False)
-                break
-        
+
+        # 更新下拉框选择状态（如果存在）
+        if hasattr(self, '_sync_group_combo') and self._sync_group_combo:
+            for i in range(self._sync_group_combo.count()):
+                if self._sync_group_combo.itemData(i) == group:
+                    self._sync_group_combo.blockSignals(True)
+                    self._sync_group_combo.setCurrentIndex(i)
+                    self._sync_group_combo.blockSignals(False)
+                    break
+
         logger.info(f"[MainWindow._on_sync_group_changed] 同步分组已更新: {group}")
     
 

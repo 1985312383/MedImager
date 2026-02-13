@@ -3,7 +3,7 @@ from typing import List, Optional, Dict, Any
 import os
 import pydicom
 import numpy as np
-from PySide6.QtCore import QObject, Signal, QObject
+from PySide6.QtCore import QObject, Signal
 from medimager.utils.logger import get_logger
 
 class DicomParser(QObject):
@@ -29,20 +29,21 @@ class DicomParser(QObject):
         
     def load_file(self, file_path: str) -> bool:
         """加载单个 DICOM 文件
-        
+
         Args:
             file_path: DICOM 文件的路径
-            
+
         Returns:
             bool: 加载是否成功
         """
         try:
-            self._dataset = pydicom.dcmread(file_path)
-            self._pixel_array = self._dataset.pixel_array
+            dataset = pydicom.dcmread(file_path)
+            self._datasets = [dataset]
+            self._pixel_array = dataset.pixel_array
             self.data_loaded.emit()
             return True
         except Exception as e:
-            print(f"加载 DICOM 文件失败: {str(e)}")
+            self.logger.error(f"加载 DICOM 文件失败: {str(e)}")
             return False
             
     def load_series(self, file_paths: List[str]) -> bool:
@@ -156,9 +157,8 @@ class DicomParser(QObject):
         ds = self._datasets[0]
         metadata = {}
         for elem in ds:
-            # 使用标准的DICOM关键字 (tag name) 作为键，而不是描述性名称
-            # 例如：使用 "WindowWidth" 而不是 "Window Width"
-            key = elem.name 
+            # 使用标准的DICOM关键字作为键
+            key = elem.keyword if elem.keyword else elem.name
             value = elem.value
             
             if isinstance(value, pydicom.multival.MultiValue):
@@ -183,16 +183,18 @@ class DicomParser(QObject):
         
     def get_window_center_width(self) -> tuple[float, float]:
         """获取窗位和窗宽
-        
+
         Returns:
             tuple[float, float]: (窗位, 窗宽)，如果未指定则返回默认值
         """
-        if not self._dataset:
+        if not self._datasets:
             return 40.0, 400.0  # 默认值
-            
+
+        ds = self._datasets[0]
+
         # 获取窗位和窗宽，可能是单个值或列表
-        center = getattr(self._dataset, 'WindowCenter', 40.0)
-        width = getattr(self._dataset, 'WindowWidth', 400.0)
+        center = getattr(ds, 'WindowCenter', 40.0)
+        width = getattr(ds, 'WindowWidth', 400.0)
         
         # 如果是列表，取第一个值
         if isinstance(center, list):

@@ -56,6 +56,9 @@ class ImageViewer(QGraphicsView):
         
         # 图像Item
         self.image_item: Optional[QGraphicsPixmapItem] = None
+
+        # 缓存的QImage，避免每次鼠标移动都调用pixmap.toImage()
+        self._cached_qimage: Optional[QImage] = None
         
         # 自定义光标
         self.cross_cursor = self._create_cross_cursor()
@@ -92,6 +95,9 @@ class ImageViewer(QGraphicsView):
         self._cross_reference_enabled = False
         self._cross_reference_pos = QPointF(-1, -1)  # 无效位置表示不显示
         self._cross_reference_color = QColor(255, 255, 0, 180)  # 半透明黄色
+
+        # 缓存的测量线主题设置，避免每次绘制都从文件加载
+        self._measurement_theme_cache = None
         
         # 初始化设置管理器
         self._init_settings()
@@ -152,9 +158,11 @@ class ImageViewer(QGraphicsView):
             
             # 更新放大镜主题
             if hasattr(self, 'magnifier') and self.magnifier:
-                self.logger.info(f"[ImageViewer.update_theme] 更新放大镜主题")
                 if hasattr(self.magnifier, 'update_theme'):
                     self.magnifier.update_theme(theme_name)
+
+            # 使测量线主题缓存失效
+            self._measurement_theme_cache = None
             
             self.logger.info(f"[ImageViewer.update_theme] 主题更新完成: {theme_name}")
         except Exception as e:
@@ -245,6 +253,7 @@ class ImageViewer(QGraphicsView):
                 self.scene.removeItem(self.image_item)
                 self.image_item = None
             self.scene.clear()
+            self._cached_qimage = None
             return
 
         pixmap = QPixmap.fromImage(q_image)
@@ -252,7 +261,8 @@ class ImageViewer(QGraphicsView):
             self.image_item = self.scene.addPixmap(pixmap)
         else:
             self.image_item.setPixmap(pixmap)
-            
+
+        self._cached_qimage = None  # 使缓存失效，下次鼠标移动时重建
         self.scene.setSceneRect(pixmap.rect())
 
     def fit_to_window(self) -> None:
@@ -467,8 +477,10 @@ class ImageViewer(QGraphicsView):
         
         self.magnifier.show()
         
-        # 更新放大镜
-        source_qimage = pixmap.toImage()
+        # 更新放大镜 - 使用缓存的QImage避免每次鼠标移动都转换
+        if self._cached_qimage is None:
+            self._cached_qimage = pixmap.toImage()
+        source_qimage = self._cached_qimage
         # 定义放大镜源区域大小, 必须是偶数
         magnifier_source_size = 8 
         half_size = magnifier_source_size // 2
@@ -535,11 +547,13 @@ class ImageViewer(QGraphicsView):
         self.zoom_factor = self.transform().m11()
         self.zoom_changed.emit(self.zoom_factor)
 
-    def fit_to_window(self):
-        """图像自适应窗口大小"""
+    def _fit_to_bounding_rect(self):
+        """图像自适应边界矩形（内部使用）"""
         if not self.image_item or self.image_item.pixmap().isNull():
             return
-        self.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio) 
+        self.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+        self.zoom_factor = self.transform().m11()
+        self.zoom_changed.emit(self.zoom_factor)
 
     def is_shift_pressed(self) -> bool:
         """检查Shift键是否被按下"""
@@ -587,74 +601,66 @@ class ImageViewer(QGraphicsView):
         if not enabled:
             self.hide_cross_reference()
 
+    def _get_measurement_theme(self) -> dict:
+        """获取测量线主题设置（带缓存）"""
+        if self._measurement_theme_cache is not None:
+            return self._measurement_theme_cache
+        defaults = {
+            'line_color': "#00FF00", 'anchor_color': "#00FF00",
+            'text_color': "#FFFFFF", 'background_color': "#00000080",
+            'line_width': 2, 'anchor_size': 8, 'font_size': 14,
+        }
+        try:
+            from medimager.utils.theme_manager import get_theme_settings
+            theme_data = get_theme_settings('measurement')
+            for k, v in defaults.items():
+                defaults[k] = theme_data.get(k, v)
+        except Exception:
+            pass
+        self._measurement_theme_cache = defaults
+        return defaults
+
     def _draw_measurement_line(self, painter):
         """绘制测量线（独立于工具）"""
         if not self.measurement_start_point or not self.measurement_end_point:
             return
-            
-        # 从主题文件中获取样式
-        try:
-            from medimager.utils.theme_manager import get_theme_settings
-            
-            # 使用统一的主题设置读取函数
-            theme_data = get_theme_settings('measurement')
-        
-            line_color = theme_data.get('line_color', "#00FF00")
-            anchor_color = theme_data.get('anchor_color', "#00FF00")
-            text_color = theme_data.get('text_color', "#FFFFFF")
-            bg_color = theme_data.get('background_color', "#00000080")
-            line_width = theme_data.get('line_width', 2)
-            anchor_size = theme_data.get('anchor_size', 8)
-            font_size = theme_data.get('font_size', 14)
-        except Exception:
-            # 默认设置
-            line_color = "#00FF00"
-            anchor_color = "#00FF00"
-            text_color = "#FFFFFF"
-            bg_color = "#00000080"
-            line_width = 2
-            anchor_size = 8
-            font_size = 14
 
-        from PySide6.QtGui import QColor, QPen, QFont, QBrush
-        from PySide6.QtCore import QPointF, QRectF, Qt
+        t = self._get_measurement_theme()
 
         painter.save()
 
         # 1. 绘制线
-        pen = QPen(QColor(line_color), line_width)
-        pen.setCosmetic(True) # 确保线宽不受缩放影响
+        pen = QPen(QColor(t['line_color']), t['line_width'])
+        pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawLine(self.measurement_start_point, self.measurement_end_point)
 
-        # 2. 绘制锚点 (大小固定)
-        painter.setBrush(QColor(anchor_color))
+        # 2. 绘制锚点
+        painter.setBrush(QColor(t['anchor_color']))
         painter.setPen(Qt.NoPen)
         pixel_size = 1.0 / self.transform().m11()
-        scaled_anchor_size = anchor_size * pixel_size
+        scaled_anchor_size = t['anchor_size'] * pixel_size
         painter.drawEllipse(self.measurement_start_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
         painter.drawEllipse(self.measurement_end_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
 
         # 3. 绘制距离文本
         if self.measurement_distance is not None:
             font = QFont()
-            font.setPixelSize(font_size)
+            font.setPixelSize(t['font_size'])
             painter.setFont(font)
 
             text = f"{self.measurement_distance:.2f} {self.measurement_unit}"
             metrics = painter.fontMetrics()
             text_rect = metrics.boundingRect(text).adjusted(-4, -2, 4, 2)
-            
+
             mid_point = (self.measurement_start_point + self.measurement_end_point) / 2
             text_rect.moveCenter(mid_point.toPoint())
-            
-            # 绘制背景
-            painter.setBrush(QColor(bg_color))
+
+            painter.setBrush(QColor(t['background_color']))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(text_rect, 5, 5)
 
-            # 绘制文本
-            painter.setPen(QColor(text_color))
+            painter.setPen(QColor(t['text_color']))
             painter.drawText(text_rect, Qt.AlignCenter, text)
 
         painter.restore()
@@ -744,31 +750,9 @@ class ImageViewer(QGraphicsView):
         """绘制所有测量线，包括选中状态"""
         if not self.model:
             return
-            
-        from PySide6.QtGui import QPen, QColor, QFont, QBrush
-        from PySide6.QtCore import QPointF, QRectF, Qt
-        
-        # 获取样式设置
-        try:
-            from medimager.utils.theme_manager import get_theme_settings
-            theme_data = get_theme_settings('measurement')
-            line_color = theme_data.get('line_color', "#00FF00")
-            anchor_color = theme_data.get('anchor_color', "#00FF00")
-            text_color = theme_data.get('text_color', "#FFFFFF")
-            bg_color = theme_data.get('background_color', "#00000080")
-            line_width = theme_data.get('line_width', 2)
-            anchor_size = theme_data.get('anchor_size', 8)
-            font_size = theme_data.get('font_size', 14)
-        except Exception:
-            # 默认设置
-            line_color = "#00FF00"
-            anchor_color = "#00FF00"
-            text_color = "#FFFFFF"
-            bg_color = "#00000080"
-            line_width = 2
-            anchor_size = 8
-            font_size = 14
-        
+
+        t = self._get_measurement_theme()
+
         painter.save()
         
         # 绘制当前切片的所有测量线
@@ -802,41 +786,41 @@ class ImageViewer(QGraphicsView):
                 current_line_color = "#FFFF00"  # 黄色 - 编辑状态
                 current_anchor_color = "#FFFF00"
             else:
-                current_line_color = line_color  # 默认绿色
-                current_anchor_color = anchor_color
-            
+                current_line_color = t['line_color']
+                current_anchor_color = t['anchor_color']
+
             # 绘制线
-            pen = QPen(QColor(current_line_color), line_width)
+            pen = QPen(QColor(current_line_color), t['line_width'])
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawLine(measurement.start_point, measurement.end_point)
-            
+
             # 绘制锚点
             painter.setBrush(QColor(current_anchor_color))
             painter.setPen(Qt.NoPen)
             pixel_size = 1.0 / self.transform().m11()
-            scaled_anchor_size = anchor_size * pixel_size
-            
+            scaled_anchor_size = t['anchor_size'] * pixel_size
+
             painter.drawEllipse(measurement.start_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
             painter.drawEllipse(measurement.end_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
-            
+
             # 绘制距离文本
             font = QFont()
-            font.setPixelSize(font_size)
+            font.setPixelSize(t['font_size'])
             painter.setFont(font)
 
             text = f"{measurement.distance:.2f} {measurement.unit}"
             metrics = painter.fontMetrics()
             text_rect = metrics.boundingRect(text).adjusted(-4, -2, 4, 2)
-            
+
             mid_point = (measurement.start_point + measurement.end_point) / 2
             text_rect.moveCenter(mid_point.toPoint())
-            
-            painter.setBrush(QColor(bg_color))
+
+            painter.setBrush(QColor(t['background_color']))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(text_rect, 5, 5)
 
-            painter.setPen(QColor(text_color))
+            painter.setPen(QColor(t['text_color']))
             painter.drawText(text_rect, Qt.AlignCenter, text)
         
         painter.restore()

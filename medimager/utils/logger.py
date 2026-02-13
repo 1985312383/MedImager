@@ -8,9 +8,10 @@
 import logging
 import logging.handlers
 import sys
+import time
+import functools
 from pathlib import Path
 from typing import Optional, Union
-from datetime import datetime
 
 
 class ColoredFormatter(logging.Formatter):
@@ -28,13 +29,11 @@ class ColoredFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """格式化日志记录"""
-        # 获取颜色
+        # 复制record，避免污染共享的LogRecord（防止ANSI码写入文件handler）
+        record = logging.makeLogRecord(record.__dict__)
         color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
         reset = self.COLORS['RESET']
-        
-        # 添加颜色到级别名称
         record.levelname = f"{color}{record.levelname}{reset}"
-        
         return super().format(record)
 
 
@@ -134,18 +133,11 @@ class LogContext:
 
 
 def log_function_call(func):
-    """装饰器：记录函数调用
-    
-    Args:
-        func: 要装饰的函数
-        
-    Returns:
-        装饰后的函数
-    """
+    """装饰器：记录函数调用"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         logger = get_logger(func.__module__)
         logger.debug(f"调用函数: {func.__name__}")
-        
         try:
             result = func(*args, **kwargs)
             logger.debug(f"函数 {func.__name__} 执行完成")
@@ -153,33 +145,22 @@ def log_function_call(func):
         except Exception as e:
             logger.error(f"函数 {func.__name__} 执行失败: {e}")
             raise
-            
     return wrapper
 
 
 def log_performance(func):
-    """装饰器：记录函数执行时间
-    
-    Args:
-        func: 要装饰的函数
-        
-    Returns:
-        装饰后的函数
-    """
+    """装饰器：记录函数执行时间"""
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         logger = get_logger(func.__module__)
-        start_time = datetime.now()
-        
+        start_time = time.perf_counter()
         try:
             result = func(*args, **kwargs)
-            end_time = datetime.now()
-            duration = (end_time - start_time).total_seconds()
+            duration = time.perf_counter() - start_time
             logger.info(f"函数 {func.__name__} 执行时间: {duration:.3f}秒")
             return result
         except Exception as e:
-            end_time = datetime.now()
-            duration = (end_time - start_time).total_seconds()
+            duration = time.perf_counter() - start_time
             logger.error(f"函数 {func.__name__} 执行失败 (耗时 {duration:.3f}秒): {e}")
             raise
-            
     return wrapper 

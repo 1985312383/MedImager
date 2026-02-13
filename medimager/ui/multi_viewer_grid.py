@@ -293,7 +293,16 @@ class ViewFrame(QFrame):
             
             # 绑定图像数据
             self._image_viewer.set_model(image_model)
-            
+
+            # 先断开该模型上可能存在的旧连接，防止重复绑定时信号叠加
+            try:
+                image_model.data_changed.disconnect(self._update_status_info)
+                image_model.data_changed.disconnect(self._update_image_display)
+                image_model.slice_changed.disconnect(self._update_slice_info)
+                image_model.slice_changed.disconnect(self._update_image_display)
+            except (RuntimeError, TypeError):
+                pass  # 没有已连接的信号，忽略
+
             # 连接信号以更新状态信息和图像显示
             image_model.data_changed.connect(self._update_status_info)
             image_model.data_changed.connect(self._update_image_display)
@@ -383,8 +392,9 @@ class ViewFrame(QFrame):
                     height, width = display_slice.shape
                     bytes_per_line = width
                     
-                    # 创建QImage
-                    q_image = QImage(display_slice.copy().data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+                    # 创建QImage - 必须保持numpy数组引用，防止GC回收导致悬空指针
+                    image_data = display_slice.copy()
+                    q_image = QImage(image_data.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
                     
                     # 显示图像
                     self._image_viewer.display_qimage(q_image)
