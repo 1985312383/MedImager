@@ -20,6 +20,89 @@ from medimager.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class ThemeAwareMixin:
+    """Mixin 为 QWidget 子类提供统一的主题管理器注册/注销逻辑。
+
+    子类需要实现 ``update_theme(self, theme_name: str)`` 方法。
+    在 ``__init__`` 末尾调用 ``self._register_to_theme_manager()`` 即可完成注册。
+    """
+
+    _theme_manager: "Optional[ThemeManager]" = None
+
+    # ------------------------------------------------------------------
+    def _register_to_theme_manager(self) -> None:
+        """尝试从父窗口或 QApplication 获取 ThemeManager 并注册自身。"""
+        if self._theme_manager is not None:
+            return  # 已注册
+
+        try:
+            tm = self._find_theme_manager()
+            if tm is not None:
+                self._theme_manager = tm
+                tm.register_component(self)
+                logger.debug(f"[{self.__class__.__name__}] 成功注册到主题管理器")
+        except Exception as e:
+            logger.debug(f"[{self.__class__.__name__}] 注册主题管理器失败: {e}")
+
+    def _find_theme_manager(self) -> "Optional[ThemeManager]":
+        """查找 ThemeManager 实例。"""
+        # 1. 从 window() 获取
+        main_window = self.window()  # type: ignore[attr-defined]
+        if main_window is not None and hasattr(main_window, 'theme_manager'):
+            tm = main_window.theme_manager
+            if tm is not None:
+                return tm
+
+        # 2. 从 QApplication 获取
+        app = QApplication.instance()
+        if app is not None and hasattr(app, 'main_window'):
+            mw = app.main_window
+            if mw is not None and hasattr(mw, 'theme_manager'):
+                return mw.theme_manager
+
+        return None
+
+    def _unregister_from_theme_manager(self) -> None:
+        """从 ThemeManager 注销自身。"""
+        if self._theme_manager is not None:
+            self._theme_manager.unregister_component(self)
+            self._theme_manager = None
+
+    # 便捷的 Qt 事件钩子 —— 子类可直接调用 super()
+    def showEvent(self, event):  # type: ignore[override]
+        super().showEvent(event)  # type: ignore[misc]
+        if self._theme_manager is None:
+            self._register_to_theme_manager()
+
+    def closeEvent(self, event):  # type: ignore[override]
+        self._unregister_from_theme_manager()
+        super().closeEvent(event)  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # 颜色工具方法（之前在多个类中重复）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def adjust_color_brightness(color_hex: str, amount: int) -> str:
+        """调整十六进制颜色的亮度。"""
+        try:
+            color_hex = color_hex.lstrip('#')
+            r = max(0, min(255, int(color_hex[0:2], 16) + amount))
+            g = max(0, min(255, int(color_hex[2:4], 16) + amount))
+            b = max(0, min(255, int(color_hex[4:6], 16) + amount))
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return color_hex
+
+    @staticmethod
+    def get_color_brightness(color_hex: str) -> int:
+        """计算颜色感知亮度 (ITU-R BT.709)。"""
+        color_hex = color_hex.lstrip('#')
+        r = int(color_hex[0:2], 16)
+        g = int(color_hex[2:4], 16)
+        b = int(color_hex[4:6], 16)
+        return int(0.2126 * r + 0.7152 * g + 0.0722 * b)
+
+
 def get_theme_settings(category: str, theme_name: str = None) -> Dict[str, Any]:
     """
     统一的主题设置读取函数

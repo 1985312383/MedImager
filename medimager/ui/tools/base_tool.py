@@ -1,7 +1,60 @@
+import math
 from abc import ABC, abstractmethod
+from typing import Optional
+
 from PySide6.QtWidgets import QGraphicsView
 from PySide6.QtCore import QEvent, Qt, QPointF, QCoreApplication
 from PySide6.QtGui import QMouseEvent, QWheelEvent, QKeyEvent
+
+
+# ---------------------------------------------------------------------------
+# 共享几何工具函数
+# ---------------------------------------------------------------------------
+
+def point_distance(p1: QPointF, p2: QPointF) -> float:
+    """计算两点间的像素距离。"""
+    dx = p2.x() - p1.x()
+    dy = p2.y() - p1.y()
+    return math.sqrt(dx * dx + dy * dy)
+
+
+def point_to_line_distance(point: QPointF, line_start: QPointF, line_end: QPointF) -> float:
+    """计算点到线段的最短距离。"""
+    line_vec = line_end - line_start
+    point_vec = point - line_start
+
+    line_len_sq = line_vec.x() ** 2 + line_vec.y() ** 2
+    if line_len_sq == 0:
+        return point_distance(point, line_start)
+
+    t = max(0, min(1, (point_vec.x() * line_vec.x() + point_vec.y() * line_vec.y()) / line_len_sq))
+    projection = line_start + t * line_vec
+    return point_distance(point, projection)
+
+
+def check_measurement_hit(viewer: 'QGraphicsView', pos: QPointF) -> Optional[int]:
+    """检查点击位置是否命中某个测量线，返回全局索引或 None。"""
+    model = getattr(viewer, 'model', None)
+    if not model:
+        return None
+
+    current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
+    if not current_slice_measurements:
+        return None
+
+    transform = viewer.transform()
+    scale_factor = transform.m11()
+    scene_detection_radius = 10.0 / scale_factor  # 10 屏幕像素
+
+    for measurement in current_slice_measurements:
+        line_distance = point_to_line_distance(pos, measurement.start_point, measurement.end_point)
+        if line_distance <= scene_detection_radius:
+            for global_idx, gm in enumerate(model.measurements):
+                if gm.id == measurement.id:
+                    return global_idx
+
+    return None
+
 
 class BaseTool(ABC):
     """
@@ -114,13 +167,6 @@ class BaseTool(ABC):
     def wheel_event(self, event: QWheelEvent):
         """处理鼠标滚轮事件。"""
         pass
-
-    def wheelEvent(self, event: QWheelEvent) -> bool:
-        """
-        处理鼠标滚轮事件
-        返回 True 表示事件已被处理，False 则表示未处理
-        """
-        return False
 
     def key_press_event(self, event: QKeyEvent):
         """处理键盘按键事件。子类可以重写此方法以处理特定的按键。"""

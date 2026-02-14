@@ -1,4 +1,4 @@
-from medimager.ui.tools.base_tool import BaseTool
+from medimager.ui.tools.base_tool import BaseTool, point_distance, check_measurement_hit
 from medimager.utils.logger import get_logger
 from PySide6.QtWidgets import QGraphicsView
 from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor, QKeyEvent
@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, QPointF, QPoint
 from medimager.core.roi import BaseROI
 from enum import Enum, auto
 import math
-from typing import Optional
 
 
 class DragMode(Enum):
@@ -100,7 +99,7 @@ class DefaultTool(BaseTool):
             return False
         
         # 检查是否击中测量线 - 只处理选中，不触发拖拽
-        clicked_measurement_index = self._check_measurement_hit(scene_pos)
+        clicked_measurement_index = check_measurement_hit(self.viewer, scene_pos)
         
         if clicked_measurement_index is not None:
             # DefaultTool只处理选中/取消选中，不处理拖拽
@@ -170,72 +169,6 @@ class DefaultTool(BaseTool):
             model.clear_measurement_selection()
         
         return False
-
-    def _check_measurement_hit(self, pos: QPointF) -> Optional[int]:
-        """检查点击位置是否命中某个测量线"""
-        model = self.viewer.model
-        if not model:
-            return None
-            
-        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
-        
-        # 获取变换信息
-        transform = self.viewer.transform()
-        scale_factor = transform.m11()
-        screen_detection_radius = 10  # 屏幕像素
-        scene_detection_radius = screen_detection_radius / scale_factor
-        
-        for i, measurement in enumerate(current_slice_measurements):
-            # 检查测量线的基本信息
-            line_length = self._calculate_line_length(measurement.start_point, measurement.end_point)
-            
-            # 特殊检查：线段长度为0的情况
-            if line_length < 0.1:
-                self.logger.warning(f"测量线{i}长度过短({line_length:.2f})，可能无法正确选中")
-                continue
-            
-            # 计算点到线段的距离
-            line_distance = self._point_to_line_distance(pos, measurement.start_point, measurement.end_point)
-            
-            if line_distance <= scene_detection_radius:
-                # 找到对应的全局索引
-                for global_idx, global_measurement in enumerate(model.measurements):
-                    if global_measurement.id == measurement.id:
-                        return global_idx
-                
-                self.logger.warning(f"找到命中的测量但无法找到全局索引，ID: {measurement.id}")
-        
-        return None
-    
-    def _calculate_line_length(self, start: QPointF, end: QPointF) -> float:
-        """计算线段长度"""
-        dx = end.x() - start.x()
-        dy = end.y() - start.y()
-        return math.sqrt(dx * dx + dy * dy)
-
-    def _point_to_line_distance(self, point: QPointF, line_start: QPointF, line_end: QPointF) -> float:
-        """计算点到线段的最短距离"""
-        # 向量计算
-        line_vec = line_end - line_start
-        point_vec = point - line_start
-        
-        line_len_sq = line_vec.x() ** 2 + line_vec.y() ** 2
-        if line_len_sq == 0:
-            # 线段长度为0，返回点到起点的距离
-            dx = point.x() - line_start.x()
-            dy = point.y() - line_start.y()
-            return math.sqrt(dx * dx + dy * dy)
-        
-        # 计算投影参数
-        t = max(0, min(1, (point_vec.x() * line_vec.x() + point_vec.y() * line_vec.y()) / line_len_sq))
-        
-        # 计算线段上最近的点
-        projection = line_start + t * line_vec
-        
-        # 返回距离
-        dx = point.x() - projection.x()
-        dy = point.y() - projection.y()
-        return math.sqrt(dx * dx + dy * dy)
 
     def mouse_move_event(self, event: QMouseEvent):
         """根据当前的拖动模式执行相应的操作。"""

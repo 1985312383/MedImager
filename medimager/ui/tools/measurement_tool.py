@@ -1,5 +1,5 @@
-# 测量工具 
-from medimager.ui.tools.base_tool import BaseTool
+# 测量工具
+from medimager.ui.tools.base_tool import BaseTool, point_distance, check_measurement_hit
 from medimager.core.image_data_model import MeasurementData
 from medimager.utils.logger import get_logger
 from PySide6.QtWidgets import QGraphicsView
@@ -122,7 +122,7 @@ class MeasurementTool(BaseTool):
                 return
             
             # 检查是否点击了现有测量（非锚点区域）
-            clicked_measurement_index = self._check_measurement_hit(click_pos)
+            clicked_measurement_index = check_measurement_hit(self.viewer, click_pos)
             
             if clicked_measurement_index is not None:
                 # 选中该测量
@@ -229,8 +229,8 @@ class MeasurementTool(BaseTool):
         screen_detection_radius = 20
         scene_detection_radius = screen_detection_radius / scale_factor
             
-        start_distance = self._calculate_pixel_distance(pos, self.start_point)
-        end_distance = self._calculate_pixel_distance(pos, self.end_point)
+        start_distance = point_distance(pos, self.start_point)
+        end_distance = point_distance(pos, self.end_point)
         
         if start_distance <= scene_detection_radius and end_distance <= scene_detection_radius:
             return 'start' if start_distance < end_distance else 'end'
@@ -394,38 +394,6 @@ class MeasurementTool(BaseTool):
         pixel_distance = math.sqrt(dx * dx + dy * dy)
         return pixel_distance, "px"
 
-    def _calculate_pixel_distance(self, point1: QPointF, point2: QPointF) -> float:
-        """计算两点间的像素距离"""
-        dx = point2.x() - point1.x()
-        dy = point2.y() - point1.y()
-        return math.sqrt(dx * dx + dy * dy)
-
-    def _check_measurement_hit(self, pos: QPointF) -> Optional[int]:
-        """检查点击位置是否命中某个测量线"""
-        model = self.viewer.model
-        if not model:
-            return None
-            
-        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
-        
-        for i, measurement in enumerate(current_slice_measurements):
-            # 计算点到线段的距离
-            line_distance = self._point_to_line_distance(pos, measurement.start_point, measurement.end_point)
-            
-            # 使用屏幕像素距离进行检测
-            transform = self.viewer.transform()
-            scale_factor = transform.m11()
-            screen_detection_radius = 10  # 屏幕像素
-            scene_detection_radius = screen_detection_radius / scale_factor
-            
-            if line_distance <= scene_detection_radius:
-                # 找到对应的全局索引
-                for global_idx, global_measurement in enumerate(model.measurements):
-                    if global_measurement.id == measurement.id:
-                        return global_idx
-        
-        return None
-
     def _check_measurement_anchor_hit(self, pos: QPointF) -> tuple[Optional[int], Optional[str]]:
         """检查点击位置是否命中某个测量的锚点"""
         model = self.viewer.model
@@ -440,8 +408,8 @@ class MeasurementTool(BaseTool):
         scene_detection_radius = screen_detection_radius / scale_factor
         
         for i, measurement in enumerate(current_slice_measurements):
-            start_distance = self._calculate_pixel_distance(pos, measurement.start_point)
-            end_distance = self._calculate_pixel_distance(pos, measurement.end_point)
+            start_distance = point_distance(pos, measurement.start_point)
+            end_distance = point_distance(pos, measurement.end_point)
             
             if start_distance <= scene_detection_radius or end_distance <= scene_detection_radius:
                 # 找到对应的全局索引
@@ -451,26 +419,6 @@ class MeasurementTool(BaseTool):
                         return global_idx, anchor_type
         
         return None, None
-
-    def _point_to_line_distance(self, point: QPointF, line_start: QPointF, line_end: QPointF) -> float:
-        """计算点到线段的最短距离"""
-        # 向量计算
-        line_vec = line_end - line_start
-        point_vec = point - line_start
-        
-        line_len_sq = line_vec.x() ** 2 + line_vec.y() ** 2
-        if line_len_sq == 0:
-            # 线段长度为0，返回点到起点的距离
-            return self._calculate_pixel_distance(point, line_start)
-        
-        # 计算投影参数
-        t = max(0, min(1, (point_vec.x() * line_vec.x() + point_vec.y() * line_vec.y()) / line_len_sq))
-        
-        # 计算线段上最近的点
-        projection = line_start + t * line_vec
-        
-        # 返回距离
-        return self._calculate_pixel_distance(point, projection)
 
     def draw_temporary_shape(self, painter):
         """在图像上绘制临时的测量线和预览信息"""

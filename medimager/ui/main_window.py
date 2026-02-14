@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
     QButtonGroup, QPushButton, QComboBox, QProgressBar, QToolButton
 )
-from PySide6.QtCore import Qt, QDir, QTimer
+from PySide6.QtCore import Qt, QDir, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QActionGroup
 from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
@@ -70,15 +70,21 @@ def _load_series_task(file_paths: List[str], series_id: str) -> _SeriesLoadResul
 
 class MainWindow(QMainWindow):
     """主窗口
-    
+
     支持多序列管理、多视图布局和高级绑定功能的新主窗口。
     """
-    
+
+    # 线程安全信号：从工作线程通知主线程序列加载完成
+    _series_load_done = Signal(str, object)  # (series_id, future)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """初始化主窗口"""
         super().__init__(parent)
         logger.debug("[MainWindow.__init__] 开始初始化主窗口")
-        
+
+        # 连接线程安全的序列加载完成信号
+        self._series_load_done.connect(self._on_series_loading_finished)
+
         # 布局切换守卫标志（必须在信号连接之前初始化）
         self._setting_layout = False
 
@@ -947,10 +953,9 @@ class MainWindow(QMainWindow):
         future = thread_pool.submit(_load_series_task, file_paths, series_id)
         self._loading_futures[series_id] = future
 
-        # 使用回调 + QTimer 将结果安全地传回主线程
+        # 使用信号将结果安全地传回主线程（QTimer.singleShot 从工作线程调用不可靠）
         def _on_done(fut):
-            # 此回调在线程池线程中执行，用 QTimer.singleShot 切回主线程
-            QTimer.singleShot(0, lambda: self._on_series_loading_finished(series_id, fut))
+            self._series_load_done.emit(series_id, fut)
 
         future.add_done_callback(_on_done)
 

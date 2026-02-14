@@ -21,6 +21,9 @@ from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
 from typing import Dict, Any, List, Tuple, Optional
 from medimager.utils.settings import SettingsManager
 from medimager.utils.i18n import get_translation_manager
+from medimager.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ColorButton(QPushButton):
@@ -591,7 +594,7 @@ class SettingsDialog(QDialog):
                         theme_name = theme_file.stem
                         self.themes[category][theme_name] = theme_data
                     except Exception as e:
-                        pass  # 静默处理主题加载失败
+                        logger.warning(f"加载主题文件失败 {theme_file}: {e}")
         
         self._populate_theme_combos()
 
@@ -753,7 +756,7 @@ class SettingsDialog(QDialog):
         # 恢复语言默认值
         language_combo = self.setting_widgets.get('language')
         if language_combo:
-            index = language_combo.findData('en_US')
+            index = language_combo.findData('zh_CN')
             if index != -1:
                 language_combo.setCurrentIndex(index)
         
@@ -795,7 +798,7 @@ class SettingsDialog(QDialog):
     def _save_settings(self):
         """从UI控件收集并保存所有设置"""
         # 检查语言是否发生变化
-        old_language = self.settings_manager.get_setting('language', 'en_US')
+        old_language = self.settings_manager.get_setting('language', 'zh_CN')
         new_language = self.setting_widgets['language'].currentData()
         language_changed = old_language != new_language
         
@@ -879,7 +882,7 @@ class SettingsDialog(QDialog):
             self.themes[category][theme_name] = theme_data
             
         except Exception as e:
-            pass  # 静默处理保存失败
+            logger.warning(f"保存主题文件失败 ({category}/{theme_name}): {e}")
 
     def _ensure_custom_theme_exists(self, category: str):
         """确保自定义主题文件存在"""
@@ -899,7 +902,7 @@ class SettingsDialog(QDialog):
                         custom_theme_data.update(default_data)
                         custom_theme_data['name'] = self.tr('自定义')  # 确保名称是"自定义"
                     except Exception as e:
-                        pass  # 静默处理读取失败
+                        logger.warning(f"读取默认主题失败: {e}")
                 
                 # 创建自定义主题文件
                 custom_theme_file.parent.mkdir(parents=True, exist_ok=True)
@@ -914,7 +917,7 @@ class SettingsDialog(QDialog):
                 self.themes[category]['custom'] = custom_theme_data
                 
         except Exception as e:
-            pass  # 静默处理创建失败
+            logger.warning(f"创建自定义主题文件失败 ({category}): {e}")
     
     def _enable_roi_custom_controls(self, enabled: bool):
         """启用/禁用ROI自定义控件"""

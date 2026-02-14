@@ -270,10 +270,14 @@ class ViewFrame(QFrame):
             
             if active:
                 logger.info(f"[ViewFrame.set_active] 视图激活: {self._view_id}")
-    
+
+    def has_bound_model(self) -> bool:
+        """检查是否已绑定了图像数据模型"""
+        return self._image_model is not None
+
     def bind_series(self, series_id: str, image_model: ImageDataModel, series_info: str) -> None:
         """绑定序列到视图
-        
+
         Args:
             series_id: 序列ID
             image_model: 图像数据模型
@@ -750,6 +754,7 @@ class MultiViewerGrid(QWidget):
         self._series_manager.layout_changed.connect(self._on_layout_changed)
         self._series_manager.binding_changed.connect(self._on_binding_changed)
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)
+        self._series_manager.series_loaded.connect(self._on_series_data_ready)
     
     def set_layout(self, rows: int, cols: int) -> bool:
         """设置网格布局
@@ -1275,6 +1280,17 @@ class MultiViewerGrid(QWidget):
             else:
                 view_frame.unbind_series()
     
+    def _on_series_data_ready(self, series_id: str) -> None:
+        """当序列数据加载完成后，重新绑定已关联但尚未显示图像的视图"""
+        for view_id, view_frame in self._view_frames.items():
+            binding = self._series_manager.get_view_binding(view_id)
+            if binding and binding.series_id == series_id:
+                image_model = self._series_manager.get_series_model(series_id)
+                if image_model and not view_frame.has_bound_model():
+                    logger.debug(f"[MultiViewerGrid._on_series_data_ready] "
+                                f"数据就绪，重新绑定: view_id={view_id}, series_id={series_id}")
+                    self._bind_series_to_view_frame(view_frame, series_id)
+
     def _on_active_view_changed(self, view_id: str) -> None:
         """处理活动视图变更事件"""
         logger.debug(f"[MultiViewerGrid._on_active_view_changed] "

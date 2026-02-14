@@ -6,6 +6,7 @@
 """
 
 import os
+import threading
 from typing import Optional
 from PySide6.QtCore import QTranslator, QCoreApplication, QLocale, QEvent
 from PySide6.QtWidgets import QApplication
@@ -155,6 +156,7 @@ class TranslationManager:
 
 # 全局翻译管理器单例
 _translation_manager: Optional[TranslationManager] = None
+_translation_manager_lock = threading.Lock()
 
 
 def get_translation_manager() -> TranslationManager:
@@ -165,5 +167,7 @@ def get_translation_manager() -> TranslationManager:
     """
     global _translation_manager
     if _translation_manager is None:
-        _translation_manager = TranslationManager()
+        with _translation_manager_lock:
+            if _translation_manager is None:
+                _translation_manager = TranslationManager()
     return _translation_manager
