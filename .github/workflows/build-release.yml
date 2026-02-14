@@ -40,12 +40,17 @@ jobs:
     - name: Build application
       run: uv run pyinstaller MedImager.spec --clean --noconfirm
 
-    - name: Get project info
+    - name: Get version from tag
       id: project_info
       run: |
-        $content = Get-Content "pyproject.toml" -Raw
-        $version = ($content | Select-String 'version = "([^"]+)"').Matches[0].Groups[1].Value
+        $tag = "${{ github.event.inputs.version || github.ref_name }}"
+        $version = $tag -replace '^v', ''
         echo "version=$version" >> $env:GITHUB_OUTPUT
+
+    - name: Sync version to pyproject.toml
+      run: |
+        $version = "${{ steps.project_info.outputs.version }}"
+        (Get-Content "pyproject.toml") -replace 'version = "[^"]+"', "version = `"$version`"" | Set-Content "pyproject.toml"
 
     - name: Create release package
       run: |
