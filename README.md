@@ -43,11 +43,15 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
     - [x] Multi-viewport for image comparison with flexible layouts.
     - [x] Display patient info and image overlays (scale, orientation marker).
 - [x] **Image Interaction Tools:**
-    - [x] **Windowing:** Interactive adjustment of HU window width/level (WW/WL).
+    - [x] **Windowing:** Interactive adjustment of HU window width/level (WW/WL) with toolbar presets.
     - [x] **Measurement Tools:**
         - [x] Ruler tool for distance measurement.
+        - [x] Angle measurement tool.
         - [x] Ellipse/rectangle/circle ROI tools.
     - [x] **ROI Analysis:** Calculate statistics within ROI (mean, std, area, max/min HU).
+    - [x] **Image Transforms:** Flip (horizontal/vertical), rotate (90° left/right), invert, with per-view state.
+    - [x] **Cine Playback:** Auto-play through slices with adjustable FPS.
+    - [x] **Image Export:** Export current view to PNG/JPG, or copy to clipboard.
 - [x] **Advanced Features:**
     - [x] **Multi-Series Management:** Load and manage multiple DICOM series simultaneously.
     - [x] **Series-View Binding:** Flexible binding system with auto-assignment and manual control.
@@ -64,9 +68,7 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
 - [ ] **Multi-Planar Reconstruction (MPR):** View axial, sagittal, and coronal planes from 3D volume data.
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
-- [ ] **Annotation & Export:**
-    - [ ] Save annotation info (ROIs, measurements).
-    - [ ] Export annotated views as PNG/JPG images.
+- [ ] **Annotation Persistence:** Save and reload annotations (ROIs, measurements) across sessions.
 - [ ] **Plugin System:** Allow users to extend features via custom Python scripts for research.
 
 ## 3. Tech Stack
@@ -113,14 +115,14 @@ medimager/
 │   ├── panels/             # Dockable panels
 │   │   ├── __init__.py
 │   │   ├── series_panel.py     # Multi-series management panel
-│   │   ├── dicom_tag_panel.py  # DICOM tag panel
-│   │   └── analysis_panel.py   # ROI analysis panel
+│   │   └── dicom_tag_panel.py  # DICOM tag panel
 │   ├── tools/              # Interactive tool implementations
 │   │   ├── __init__.py
 │   │   ├── base_tool.py        # Abstract base class for tools
 │   │   ├── default_tool.py     # Default pointer/pan/zoom/window tool
 │   │   ├── roi_tool.py         # ROI tools (ellipse, rectangle, circle)
-│   │   └── measurement_tool.py # Distance measurement tool
+│   │   ├── measurement_tool.py # Distance measurement tool
+│   │   └── angle_tool.py       # Angle measurement tool
 │   ├── dialogs/            # Dialog windows
 │   │   ├── custom_wl_dialog.py # Custom window/level dialog
 │   │   └── settings_dialog.py  # Application settings dialog
@@ -128,13 +130,15 @@ medimager/
 │       ├── __init__.py
 │       ├── magnifier.py        # Magnifier widget
 │       ├── roi_stats_box.py    # ROI statistics display
-│       └── layout_grid_selector.py # Layout selection widget
+│       ├── layout_grid_selector.py # Layout selection widget
+│       └── panel_toggle_strip.py   # Panel toggle strip widget
 │
 ├── utils/                  # General utilities (MVC Model Support)
 │   ├── __init__.py
 │   ├── logger.py           # Global logging configuration
 │   ├── settings.py         # User settings management
 │   ├── theme_manager.py    # Theme system with icon management
+│   ├── resource_path.py    # Resource/icon path resolution
 │   └── i18n.py             # Internationalization utilities
 │
 ├── tests/                  # Unit/integration tests

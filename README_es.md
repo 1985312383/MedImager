@@ -43,11 +43,15 @@ Crear un visor de imágenes médicas de código abierto potente, fácil de usar 
     - [x] Multi-viewport para comparación de imágenes con diseños flexibles.
     - [x] Mostrar información del paciente y superposiciones de imagen (escala, marcador de orientación).
 - [x] **Herramientas de Interacción con Imágenes:**
-    - [x] **Ventana:** Ajuste interactivo del ancho/nivel de ventana HU (WW/WL).
+    - [x] **Ventana:** Ajuste interactivo del ancho/nivel de ventana HU (WW/WL) con preajustes en la barra de herramientas.
     - [x] **Herramientas de Medición:**
         - [x] Herramienta de regla para medición de distancias.
+        - [x] Herramienta de medición de ángulos.
         - [x] Herramientas ROI de elipse/rectángulo/círculo.
     - [x] **Análisis ROI:** Calcular estadísticas dentro de ROI (media, desv. est., área, HU máx/mín).
+    - [x] **Transformaciones de Imagen:** Voltear (horizontal/vertical), rotar (90° izquierda/derecha), invertir, con estado independiente por vista.
+    - [x] **Reproducción Cine:** Reproducción automática de cortes con FPS ajustable.
+    - [x] **Exportación de Imagen:** Exportar vista actual como PNG/JPG, o copiar al portapapeles.
 - [x] **Características Avanzadas:**
     - [x] **Gestión Multi-Series:** Cargar y gestionar múltiples series DICOM simultáneamente.
     - [x] **Vinculación Serie-Vista:** Sistema de vinculación flexible con asignación automática y control manual.
@@ -64,9 +68,7 @@ Crear un visor de imágenes médicas de código abierto potente, fácil de usar 
 - [ ] **Reconstrucción Multi-Planar (MPR):** Ver planos axial, sagital y coronal desde datos de volumen 3D.
 - [ ] **Renderizado de Volumen 3D:** Visualización 3D básica de series DICOM.
 - [ ] **Fusión de Imágenes:** Superponer dos series diferentes (ej. PET/CT).
-- [ ] **Anotación y Exportación:**
-    - [ ] Guardar información de anotaciones (ROIs, mediciones).
-    - [ ] Exportar vistas anotadas como imágenes PNG/JPG.
+- [ ] **Persistencia de Anotaciones:** Guardar y recargar anotaciones (ROIs, mediciones) entre sesiones.
 - [ ] **Sistema de Plugins:** Permitir a los usuarios extender funciones mediante scripts Python personalizados para investigación.
 
 ## 3. Stack Tecnológico

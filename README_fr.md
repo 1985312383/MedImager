@@ -43,11 +43,15 @@ Créer un visualiseur d'images médicales open source puissant, convivial et ori
     - [x] Multi-viewport pour la comparaison d'images avec des mises en page flexibles.
     - [x] Affichage des informations patient et des superpositions d'image (échelle, marqueur d'orientation).
 - [x] **Outils d'Interaction d'Images :**
-    - [x] **Fenêtrage :** Ajustement interactif de la largeur/niveau de fenêtre HU (WW/WL).
+    - [x] **Fenêtrage :** Ajustement interactif de la largeur/niveau de fenêtre HU (WW/WL) avec préréglages dans la barre d'outils.
     - [x] **Outils de Mesure :**
         - [x] Outil règle pour la mesure de distance.
+        - [x] Outil de mesure d'angle.
         - [x] Outils ROI ellipse/rectangle/cercle.
     - [x] **Analyse ROI :** Calculer les statistiques dans la ROI (moyenne, écart-type, aire, HU max/min).
+    - [x] **Transformations d'Image :** Retournement (horizontal/vertical), rotation (90° gauche/droite), inversion, avec état indépendant par vue.
+    - [x] **Lecture Ciné :** Lecture automatique des coupes avec FPS ajustable.
+    - [x] **Export d'Image :** Exporter la vue actuelle en PNG/JPG, ou copier dans le presse-papiers.
 - [x] **Fonctionnalités Avancées :**
     - [x] **Gestion Multi-Séries :** Charger et gérer plusieurs séries DICOM simultanément.
     - [x] **Liaison Série-Vue :** Système de liaison flexible avec attribution automatique et contrôle manuel.
@@ -64,9 +68,7 @@ Créer un visualiseur d'images médicales open source puissant, convivial et ori
 - [ ] **Reconstruction Multi-Planaire (MPR) :** Visualiser les plans axial, sagittal et coronal à partir de données de volume 3D.
 - [ ] **Rendu de Volume 3D :** Visualisation 3D de base des séries DICOM.
 - [ ] **Fusion d'Images :** Superposer deux séries différentes (ex. PET/CT).
-- [ ] **Annotation et Export :**
-    - [ ] Sauvegarder les informations d'annotation (ROIs, mesures).
-    - [ ] Exporter les vues annotées en images PNG/JPG.
+- [ ] **Persistance des Annotations :** Sauvegarder et recharger les annotations (ROIs, mesures) entre les sessions.
 - [ ] **Système de Plugins :** Permettre aux utilisateurs d'étendre les fonctionnalités via des scripts Python personnalisés pour la recherche.
 
 ## 3. Stack Technologique
@@ -113,14 +115,14 @@ medimager/
 │   ├── panels/             # Panneaux ancrables
 │   │   ├── __init__.py
 │   │   ├── series_panel.py     # Panneau de gestion multi-séries
-│   │   ├── dicom_tag_panel.py  # Panneau de balises DICOM
-│   │   └── analysis_panel.py   # Panneau d'analyse ROI
+│   │   └── dicom_tag_panel.py  # Panneau de balises DICOM
 │   ├── tools/              # Implémentations d'outils interactifs
 │   │   ├── __init__.py
 │   │   ├── base_tool.py        # Classe de base abstraite pour les outils
 │   │   ├── default_tool.py     # Outil par défaut pointeur/panoramique/zoom/fenêtre
 │   │   ├── roi_tool.py         # Outils ROI (ellipse, rectangle, cercle)
-│   │   └── measurement_tool.py # Outil de mesure de distance
+│   │   ├── measurement_tool.py # Outil de mesure de distance
+│   │   └── angle_tool.py       # Outil de mesure d'angle
 │   ├── dialogs/            # Fenêtres de dialogue
 │   │   ├── custom_wl_dialog.py # Dialogue personnalisé fenêtre/niveau
 │   │   └── settings_dialog.py  # Dialogue de paramètres d'application
@@ -128,13 +130,15 @@ medimager/
 │       ├── __init__.py
 │       ├── magnifier.py        # Widget loupe
 │       ├── roi_stats_box.py    # Affichage des statistiques ROI
-│       └── layout_grid_selector.py # Widget sélecteur de mise en page
+│       ├── layout_grid_selector.py # Widget sélecteur de mise en page
+│       └── panel_toggle_strip.py   # Widget bande de basculement de panneau
 │
 ├── utils/                  # Utilitaires généraux (Support Modèle MVC)
 │   ├── __init__.py
 │   ├── logger.py           # Configuration de logging globale
 │   ├── settings.py         # Gestion des paramètres utilisateur
 │   ├── theme_manager.py    # Système de thèmes avec gestion d'icônes
+│   ├── resource_path.py    # Résolution des chemins de ressources/icônes
 │   └── i18n.py             # Utilitaires d'internationalisation
 │
 ├── tests/                  # Tests unitaires/intégration

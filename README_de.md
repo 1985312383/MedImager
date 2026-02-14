@@ -43,11 +43,15 @@ Erstellen Sie einen leistungsstarken, benutzerfreundlichen und forschungsorienti
     - [x] Multi-Viewport für Bildvergleiche mit flexiblen Layouts.
     - [x] Anzeige von Patienteninformationen und Bildüberlagerungen (Maßstab, Orientierungsmarker).
 - [x] **Bildinteraktions-Tools:**
-    - [x] **Fensterung:** Interaktive Anpassung der HU-Fensterbreite/-ebene (WW/WL).
+    - [x] **Fensterung:** Interaktive Anpassung der HU-Fensterbreite/-ebene (WW/WL) mit Symbolleisten-Voreinstellungen.
     - [x] **Messwerkzeuge:**
         - [x] Lineal-Tool für Entfernungsmessungen.
+        - [x] Winkelmesswerkzeug.
         - [x] Ellipse/Rechteck/Kreis-ROI-Tools.
     - [x] **ROI-Analyse:** Berechnung von Statistiken innerhalb der ROI (Mittelwert, Std, Fläche, max/min HU).
+    - [x] **Bildtransformationen:** Spiegeln (horizontal/vertikal), Drehen (90° links/rechts), Invertieren, mit separatem Zustand pro Ansicht.
+    - [x] **Cine-Wiedergabe:** Automatische Wiedergabe durch Schichten mit einstellbarer Bildrate.
+    - [x] **Bildexport:** Aktuelle Ansicht als PNG/JPG exportieren oder in die Zwischenablage kopieren.
 - [x] **Erweiterte Funktionen:**
     - [x] **Multi-Serien-Management:** Gleichzeitiges Laden und Verwalten mehrerer DICOM-Serien.
     - [x] **Serien-View-Bindung:** Flexibles Bindungssystem mit automatischer Zuweisung und manueller Kontrolle.
@@ -64,9 +68,7 @@ Erstellen Sie einen leistungsstarken, benutzerfreundlichen und forschungsorienti
 - [ ] **Multi-Planar-Rekonstruktion (MPR):** Anzeige axialer, sagittaler und koronaler Ebenen aus 3D-Volumendaten.
 - [ ] **3D-Volumen-Rendering:** Grundlegende 3D-Visualisierung von DICOM-Serien.
 - [ ] **Bildfusion:** Überlagerung zweier verschiedener Serien (z.B. PET/CT).
-- [ ] **Annotation & Export:**
-    - [ ] Speichern von Annotationsinformationen (ROIs, Messungen).
-    - [ ] Export annotierter Ansichten als PNG/JPG-Bilder.
+- [ ] **Annotationspersistenz:** Speichern und Wiederladen von Annotationen (ROIs, Messungen) über Sitzungen hinweg.
 - [ ] **Plugin-System:** Ermöglicht Benutzern, Funktionen über benutzerdefinierte Python-Skripte für die Forschung zu erweitern.
 
 ## 3. Tech Stack
