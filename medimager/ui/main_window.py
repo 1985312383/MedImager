@@ -117,7 +117,13 @@ class MainWindow(QMainWindow):
 
         # 序列加载状态（future 对象由线程池管理）
         self._loading_futures: Dict[str, object] = {}
-        
+
+        # Cine 播放状态
+        self._cine_timer = QTimer(self)
+        self._cine_timer.timeout.connect(self._cine_advance)
+        self._cine_playing = False
+        self._cine_fps = 10
+
         logger.info("[MainWindow.__init__] 主窗口初始化完成")
     
     def _ensure_initial_layout(self) -> None:
@@ -339,9 +345,25 @@ class MainWindow(QMainWindow):
         load_test_series_action = QAction(self.tr("加载测试序列"), self)
         load_test_series_action.triggered.connect(self._load_test_series)
         test_menu.addAction(load_test_series_action)
-        
+
         file_menu.addSeparator()
-        
+
+        # 导出当前视图
+        export_action = QAction(self.tr("导出当前视图(&E)"), self)
+        export_action.setShortcut("Ctrl+E")
+        export_action.setStatusTip(self.tr("将当前视图导出为图像文件"))
+        export_action.triggered.connect(self._export_current_view)
+        file_menu.addAction(export_action)
+
+        # 复制视图到剪贴板
+        copy_view_action = QAction(self.tr("复制视图到剪贴板(&C)"), self)
+        copy_view_action.setShortcut("Ctrl+Shift+C")
+        copy_view_action.setStatusTip(self.tr("将当前视图复制到剪贴板"))
+        copy_view_action.triggered.connect(self._copy_view_to_clipboard)
+        file_menu.addAction(copy_view_action)
+
+        file_menu.addSeparator()
+
         # 退出
         exit_action = QAction(self.tr("退出(&X)"), self)
         exit_action.setShortcut(QKeySequence.Quit)
@@ -522,13 +544,15 @@ class MainWindow(QMainWindow):
         from medimager.ui.tools.default_tool import DefaultTool
         from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
         from medimager.ui.tools.measurement_tool import MeasurementTool
-        
+        from medimager.ui.tools.angle_tool import AngleTool
+
         tool_map = {
             'default': DefaultTool,
             'ellipse_roi': EllipseROITool,
             'rectangle_roi': RectangleROITool,
             'circle_roi': CircleROITool,
-            'measurement': MeasurementTool
+            'measurement': MeasurementTool,
+            'angle': AngleTool,
         }
         
         tool_class = tool_map.get(tool_name, DefaultTool)
@@ -1126,7 +1150,130 @@ class MainWindow(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             new_width, new_level = dialog.get_values()
             self._set_window_level_preset(new_width, new_level)
-    
+
+    def _apply_viewer_transform(self, transform_type: str) -> None:
+        """对活动视图应用图像变换"""
+        active_frame = self.multi_viewer_grid.get_active_view_frame()
+        if not active_frame:
+            return
+        viewer = active_frame._image_viewer
+        if not viewer:
+            return
+        method = getattr(viewer, {
+            'flip_h': 'flip_horizontal',
+            'flip_v': 'flip_vertical',
+            'rotate_left': 'rotate_left',
+            'rotate_right': 'rotate_right',
+            'invert': 'toggle_invert',
+            'reset': 'reset_transforms',
+        }.get(transform_type, ''), None)
+        if method:
+            method()
+
+    def _export_current_view(self) -> None:
+        """导出当前视图为图像文件"""
+        active_frame = self.multi_viewer_grid.get_active_view_frame()
+        if not active_frame:
+            QMessageBox.warning(self, self.tr("警告"), self.tr("没有活动的视图"))
+            return
+        viewer = active_frame._image_viewer
+        if not viewer or not viewer.image_item or viewer.image_item.pixmap().isNull():
+            QMessageBox.warning(self, self.tr("警告"), self.tr("当前视图没有图像"))
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("导出视图"),
+            QDir.homePath() + "/MedImager_export.png",
+            self.tr("PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;BMP图像 (*.bmp)")
+        )
+        if not file_path:
+            return
+
+        pixmap = viewer.viewport().grab()
+        if pixmap.save(file_path):
+            self.statusBar().showMessage(self.tr("视图已导出: ") + file_path, 5000)
+        else:
+            QMessageBox.critical(self, self.tr("错误"), self.tr("导出失败"))
+
+    def _copy_view_to_clipboard(self) -> None:
+        """复制当前视图到剪贴板"""
+        active_frame = self.multi_viewer_grid.get_active_view_frame()
+        if not active_frame:
+            QMessageBox.warning(self, self.tr("警告"), self.tr("没有活动的视图"))
+            return
+        viewer = active_frame._image_viewer
+        if not viewer or not viewer.image_item or viewer.image_item.pixmap().isNull():
+            QMessageBox.warning(self, self.tr("警告"), self.tr("当前视图没有图像"))
+            return
+
+        pixmap = viewer.viewport().grab()
+        QApplication.clipboard().setPixmap(pixmap)
+        self.statusBar().showMessage(self.tr("视图已复制到剪贴板"), 3000)
+
+    def _cine_toggle_play(self):
+        """切换 Cine 播放/暂停"""
+        if self._cine_playing:
+            self._cine_stop()
+        else:
+            self._cine_start()
+
+    def _cine_start(self):
+        """开始 Cine 播放"""
+        model = self._get_active_image_model()
+        if not model or model.get_slice_count() <= 1:
+            return
+        self._cine_playing = True
+        self._cine_timer.start(int(1000 / self._cine_fps))
+        if hasattr(self, '_cine_play_btn'):
+            self._cine_play_btn.blockSignals(True)
+            self._cine_play_btn.setChecked(True)
+            self._cine_play_btn.blockSignals(False)
+            # 切换为暂停图标
+            from medimager.utils.resource_path import get_icon_path
+            pause_icon_path = get_icon_path("pause.svg")
+            self._cine_play_btn.setIcon(self.theme_manager.create_themed_icon(pause_icon_path))
+            self._cine_play_btn._icon_path = pause_icon_path
+
+    def _cine_stop(self):
+        """停止 Cine 播放"""
+        self._cine_playing = False
+        self._cine_timer.stop()
+        if hasattr(self, '_cine_play_btn'):
+            self._cine_play_btn.blockSignals(True)
+            self._cine_play_btn.setChecked(False)
+            self._cine_play_btn.blockSignals(False)
+            # 切换回播放图标
+            from medimager.utils.resource_path import get_icon_path
+            play_icon_path = get_icon_path("play.svg")
+            self._cine_play_btn.setIcon(self.theme_manager.create_themed_icon(play_icon_path))
+            self._cine_play_btn._icon_path = play_icon_path
+
+    def _cine_advance(self):
+        """Cine 播放前进一帧"""
+        model = self._get_active_image_model()
+        if not model:
+            self._cine_stop()
+            return
+        next_idx = (model.current_slice_index + 1) % model.get_slice_count()
+        model.set_current_slice(next_idx)
+
+    def _cine_set_fps(self, fps: int):
+        """设置 Cine 播放帧率"""
+        self._cine_fps = max(1, min(60, fps))
+        if self._cine_playing:
+            self._cine_timer.setInterval(int(1000 / self._cine_fps))
+
+    def _get_active_image_model(self) -> Optional[ImageDataModel]:
+        """获取当前活动视图的图像模型"""
+        active_view_id = self.series_manager.get_active_view_id()
+        if not active_view_id:
+            return None
+        binding = self.series_manager.get_view_binding(active_view_id)
+        if not binding or not binding.series_id:
+            return None
+        return self.series_manager.get_series_model(binding.series_id)
+
     def _open_settings_dialog(self) -> None:
         """打开设置对话框"""
         logger.debug("[MainWindow._open_settings_dialog] 打开设置对话框")

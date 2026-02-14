@@ -305,7 +305,12 @@ class ThemeManager(QObject):
         border_pressed_delta = 60 if is_dark_bg else -60
         border_checked_delta = 50 if is_dark_bg else -50
         border_checked_hover_delta = 70 if is_dark_bg else -70
-        
+
+        # 下拉箭头图标路径（根据主题亮度选择）
+        from medimager.utils.resource_path import get_icon_path
+        arrow_svg = "dropdown_arrow_light.svg" if is_dark_bg else "dropdown_arrow_dark.svg"
+        arrow_icon_path = get_icon_path(arrow_svg).replace("\\", "/")
+
         stylesheet = f"""
         /* 全局样式 */
         QMainWindow {{
@@ -354,18 +359,17 @@ class ThemeManager(QObject):
         QToolBar {{
             background-color: {bg_color};
             border: 1px solid {border_color};
-            spacing: 2px;
+            spacing: 4px;
         }}
-        
+
         /* 工具栏按钮 */
         QToolButton {{
             background-color: {bg_color};
             color: {text_color};
             border: 1px solid {border_color};
             border-radius: 4px;
-            padding: 6px;
+            padding: 4px;
             margin: 1px;
-            icon-size: 16px;
         }}
         
         QToolButton:hover {{
@@ -398,44 +402,40 @@ class ThemeManager(QObject):
             border: 1px solid {self._adjust_color_brightness(border_color, 20)};
         }}
         
-        /* 工具栏按钮菜单 */
+        /* 工具栏下拉按钮 - 右侧箭头条 */
         QToolButton::menu-button {{
-            border: none;
-            width: 12px;
-            height: 12px;
-            subcontrol-origin: padding;
-            subcontrol-position: bottom right;
+            border-left: 1px solid {border_color};
+            border-top: none;
+            border-right: none;
+            border-bottom: none;
+            width: 14px;
+            subcontrol-origin: border;
+            subcontrol-position: center right;
+            border-top-right-radius: 4px;
+            border-bottom-right-radius: 4px;
         }}
-        
+
+        QToolButton::menu-button:hover {{
+            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+        }}
+
         QToolButton::menu-arrow {{
-            image: none;
-            border: none;
+            image: url({arrow_icon_path});
+            width: 8px;
+            height: 8px;
+            subcontrol-origin: content;
+            subcontrol-position: center center;
+        }}
+
+        /* InstantPopup 按钮右下角小三角指示 */
+        QToolButton::menu-indicator {{
+            image: url({arrow_icon_path});
             width: 6px;
             height: 6px;
             subcontrol-origin: padding;
             subcontrol-position: bottom right;
-            right: 2px;
-            bottom: 2px;
-        }}
-        
-        QToolButton::menu-arrow:open {{
-            top: 1px;
-            left: 1px;
-        }}
-        
-        QToolButton[popupMode="1"] {{
-            color: {text_color};
-            padding-right: 12px;
-        }}
-        
-        QToolButton[popupMode="1"]:hover {{
-            color: {text_color};
-        }}
-        
-        QToolButton[popupMode="1"]:checked {{
-            background-color: {self._adjust_color_brightness(bg_color, checked_brightness_delta)};
-            color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_delta)};
+            right: 1px;
+            bottom: 1px;
         }}
         
         /* 布局选择器按钮 - 与工具栏按钮样式保持一致 */

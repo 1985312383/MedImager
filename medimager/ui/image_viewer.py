@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QFrame, QApplication
 )
 from PySide6.QtCore import Qt, Signal, QPointF, QRect, QRectF, QPoint, QSizeF
-from PySide6.QtGui import QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QColor, QPen, QFontMetrics
+from PySide6.QtGui import QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QCursor, QColor, QPen, QFont, QFontMetrics
 import math
 from medimager.utils.logger import get_logger
 from medimager.core.image_data_model import ImageDataModel
@@ -102,6 +102,12 @@ class ImageViewer(QGraphicsView):
         self._cross_reference_enabled = False
         self._cross_reference_pos = QPointF(-1, -1)  # 无效位置表示不显示
         self._cross_reference_color = QColor(255, 255, 0, 180)  # 半透明黄色
+
+        # 视图变换状态（翻转/旋转/反色）
+        self._flip_h = False
+        self._flip_v = False
+        self._rotation = 0  # 0, 90, 180, 270
+        self._inverted = False
 
         # 缓存的测量线主题设置，避免每次绘制都从文件加载
         self._measurement_theme_cache = None
@@ -266,10 +272,10 @@ class ImageViewer(QGraphicsView):
 
     def display_qimage(self, q_image: Optional[QImage]) -> None:
         """显示 QImage
-        
+
         此方法是该控件的核心入口，由外部（如MainWindow）调用，
         传入已经经过窗宽窗位等处理的 QImage。
-        
+
         Args:
             q_image: 要显示的 QImage 对象，如果为 None，则清空视图。
         """
@@ -281,6 +287,7 @@ class ImageViewer(QGraphicsView):
             self._cached_qimage = None
             return
 
+        q_image = self._apply_view_transforms(q_image)
         pixmap = QPixmap.fromImage(q_image)
         if self.image_item is None:
             self.image_item = self.scene.addPixmap(pixmap)
@@ -289,6 +296,61 @@ class ImageViewer(QGraphicsView):
 
         self._cached_qimage = None  # 使缓存失效，下次鼠标移动时重建
         self.scene.setSceneRect(pixmap.rect())
+
+    def _apply_view_transforms(self, q_image: QImage) -> QImage:
+        """对 QImage 应用视图变换（翻转/旋转/反色）"""
+        from PySide6.QtGui import QTransform as QT
+        if self._inverted:
+            q_image = q_image.copy()
+            q_image.invertPixels()
+        if self._flip_h or self._flip_v or self._rotation:
+            t = QT()
+            if self._flip_h:
+                t.scale(-1, 1)
+            if self._flip_v:
+                t.scale(1, -1)
+            if self._rotation:
+                t.rotate(self._rotation)
+            q_image = q_image.transformed(t)
+        return q_image
+
+    def flip_horizontal(self):
+        """水平翻转"""
+        self._flip_h = not self._flip_h
+        self._refresh_display()
+
+    def flip_vertical(self):
+        """垂直翻转"""
+        self._flip_v = not self._flip_v
+        self._refresh_display()
+
+    def rotate_left(self):
+        """左旋90°"""
+        self._rotation = (self._rotation - 90) % 360
+        self._refresh_display()
+
+    def rotate_right(self):
+        """右旋90°"""
+        self._rotation = (self._rotation + 90) % 360
+        self._refresh_display()
+
+    def toggle_invert(self):
+        """切换反色"""
+        self._inverted = not self._inverted
+        self._refresh_display()
+
+    def reset_transforms(self):
+        """重置所有视图变换"""
+        self._flip_h = False
+        self._flip_v = False
+        self._rotation = 0
+        self._inverted = False
+        self._refresh_display()
+
+    def _refresh_display(self):
+        """重新触发当前图像的显示以应用变换"""
+        if self.model:
+            self.model.data_changed.emit()
 
     def fit_to_window(self) -> None:
         """自适应窗口大小"""
@@ -468,6 +530,7 @@ class ImageViewer(QGraphicsView):
         
         # --- 始终绘制所有测量线（独立于当前工具）---
         self._draw_all_measurements(painter)
+        self._draw_all_angle_measurements(painter)
             
         # --- 绘制测量线 (独立于当前工具) ---
         if self.measurement_start_point and self.measurement_end_point:
@@ -850,6 +913,44 @@ class ImageViewer(QGraphicsView):
             painter.setPen(QColor(t['text_color']))
             painter.drawText(text_rect, Qt.AlignCenter, text)
         
+        painter.restore()
+
+    def _draw_all_angle_measurements(self, painter):
+        """绘制所有角度测量"""
+        if not self.model:
+            return
+        angle_measurements = self.model.get_angle_measurements_for_slice(self.model.current_slice_index)
+        if not angle_measurements:
+            return
+
+        t = self._get_measurement_theme()
+        painter.save()
+
+        pixel_size = 1.0 / self.transform().m11()
+        scaled_anchor = t['anchor_size'] * pixel_size
+
+        for am in angle_measurements:
+            # 绘制两条线段
+            pen = QPen(QColor(t['line_color']), t['line_width'])
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.drawLine(am.point1, am.vertex)
+            painter.drawLine(am.vertex, am.point3)
+
+            # 绘制锚点
+            painter.setBrush(QColor(t['anchor_color']))
+            painter.setPen(Qt.NoPen)
+            for pt in (am.point1, am.vertex, am.point3):
+                painter.drawEllipse(pt, scaled_anchor / 2, scaled_anchor / 2)
+
+            # 绘制弧线和角度文字
+            from medimager.ui.tools.angle_tool import AngleTool
+            AngleTool._draw_angle_arc_and_text(
+                painter, am.point1, am.vertex, am.point3, am.angle_degrees,
+                t['line_color'], t['text_color'], t['background_color'],
+                t['line_width'], t['font_size'], pixel_size
+            )
+
         painter.restore()
 
     def _draw_cross_reference_lines(self, painter):

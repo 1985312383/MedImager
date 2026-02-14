@@ -32,10 +32,21 @@ class MeasurementData:
     end_point: QPointF
     distance: float
     unit: str = "mm"
-    
+
     def __post_init__(self):
         """初始化后处理"""
         pass
+
+
+@dataclass
+class AngleMeasurementData:
+    """角度测量数据类"""
+    id: str
+    slice_index: int
+    point1: QPointF      # 第一条射线端点
+    vertex: QPointF      # 顶点
+    point3: QPointF      # 第二条射线端点
+    angle_degrees: float
 
 class ImageDataModel(QObject):
     """
@@ -78,6 +89,7 @@ class ImageDataModel(QObject):
         # Measurement data
         self.measurements: List[MeasurementData] = []
         self.selected_measurement_indices: set[int] = set()  # 选中的测量索引集合
+        self.angle_measurements: List[AngleMeasurementData] = []
         
     def clear_all_data(self) -> None:
         """Clears all data and resets the model to its initial state."""
@@ -92,6 +104,7 @@ class ImageDataModel(QObject):
         self.selected_indices.clear()  # 确保清除ROI选择状态
         self.measurements.clear()  # 清除测量数据
         self.selected_measurement_indices.clear()  # 清除测量选择状态
+        self.angle_measurements.clear()  # 清除角度测量数据
         
         self.data_changed.emit()
         
@@ -622,4 +635,14 @@ class ImageDataModel(QObject):
         """清除所有测量数据"""
         self.measurements.clear()
         self.selected_measurement_indices.clear()
-        self.data_changed.emit() 
+        self.angle_measurements.clear()
+        self.data_changed.emit()
+
+    def add_angle_measurement(self, data: AngleMeasurementData) -> None:
+        """添加角度测量数据"""
+        self.angle_measurements.append(data)
+        self.data_changed.emit()
+
+    def get_angle_measurements_for_slice(self, slice_index: int) -> List[AngleMeasurementData]:
+        """获取指定切片的所有角度测量数据"""
+        return [m for m in self.angle_measurements if m.slice_index == slice_index]

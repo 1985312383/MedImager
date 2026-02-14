@@ -1096,10 +1096,13 @@ class SeriesPanel(QWidget):
                                 
                                 # 选中切片项目
                                 self._series_list._tree_widget.setCurrentItem(slice_item)
-                                
+
                                 # 确保父项目展开
                                 series_item.setExpanded(True)
-                                
+
+                                # 滚动到选中项目，确保可见
+                                self._series_list._tree_widget.scrollToItem(slice_item)
+
                                 # 重新连接信号
                                 self._series_list._tree_widget.itemSelectionChanged.connect(self._series_list._on_selection_changed)
                                 
