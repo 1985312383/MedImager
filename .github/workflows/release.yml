@@ -68,8 +68,10 @@ jobs:
             $commitHeader = "当前历史记录"
           }
 
-          $commits = git log $commitRange --pretty=format:"- %h %s (%an)"
-          if (-not $commits) {
+          $commitLines = @(git log $commitRange --pretty=format:"- %h %s (%an)")
+          if ($commitLines.Count -gt 0) {
+            $commits = $commitLines -join "`n"
+          } else {
             $commits = "- No commits found."
           }
 
