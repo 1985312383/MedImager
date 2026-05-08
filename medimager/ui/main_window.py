@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         self._cine_timer = QTimer(self)
         self._cine_timer.timeout.connect(self._cine_advance)
         self._cine_playing = False
-        self._cine_fps = 10
+        self._cine_fps = self._int_setting('cine.default_fps', 10, 1, 60)
 
         logger.info("[MainWindow.__init__] 主窗口初始化完成")
     
@@ -133,11 +133,46 @@ class MainWindow(QMainWindow):
         """确保初始布局正确设置"""
         logger.debug("[MainWindow._ensure_initial_layout] 确保初始布局设置")
         
-        # 显式设置1x1布局，确保序列管理器和多视图网格同步
-        self.series_manager.set_layout(1, 1)
-        self.multi_viewer_grid.set_layout(1, 1)
+        rows, cols = self._default_layout_from_settings()
+        self.series_manager.set_layout(rows, cols)
+        self.multi_viewer_grid.set_layout(rows, cols)
         
         logger.debug("[MainWindow._ensure_initial_layout] 初始布局设置完成")
+
+    def _default_layout_from_settings(self) -> Tuple[int, int]:
+        value = self.settings_manager.get_setting("multiview.default_layout", "1x1")
+        mapping = {
+            "1x1": (1, 1),
+            "1x2": (1, 2),
+            "2x1": (2, 1),
+            "2x2": (2, 2),
+        }
+        return mapping.get(str(value), (1, 1))
+
+    def _sync_mode_from_setting(self):
+        from medimager.core.sync_manager import SyncMode
+
+        value = self.settings_manager.get_setting("multiview.default_sync_mode", "basic")
+        mapping = {
+            "none": SyncMode.NONE,
+            "basic": SyncMode.BASIC,
+            "advanced": SyncMode.ADVANCED,
+            "full": SyncMode.ADVANCED | SyncMode.CROSS_REFERENCE,
+        }
+        return mapping.get(str(value), SyncMode.BASIC)
+
+    def _int_setting(self, key: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(self.settings_manager.get_setting(key, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _bool_setting(self, key: str, default: bool) -> bool:
+        value = self.settings_manager.get_setting(key, default)
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return bool(value)
     
     def _init_core_components(self) -> None:
         """初始化核心组件"""
@@ -147,11 +182,11 @@ class MainWindow(QMainWindow):
         self.series_manager = MultiSeriesManager(self)
         
         # 同步管理器
-        from medimager.core.sync_manager import SyncManager, SyncMode
+        from medimager.core.sync_manager import SyncManager
         self.sync_manager = SyncManager(self.series_manager, self)
         
-        # 默认启用基本同步模式（窗宽窗位和切片同步）
-        self.sync_manager.set_sync_mode(SyncMode.BASIC)
+        # 按设置启用默认同步模式
+        self.sync_manager.set_sync_mode(self._sync_mode_from_setting())
         
         # 序列视图绑定管理器
         self.binding_manager = SeriesViewBindingManager(self.series_manager, self)
@@ -932,9 +967,16 @@ class MainWindow(QMainWindow):
             # 扫描文件夹中的DICOM文件
             dicom_files = []
             folder = Path(folder_path)
-            
-            for file_path in folder.rglob("*"):
-                if file_path.is_file() and file_path.suffix.lower() in ['.dcm', '.dicom', '']:
+
+            recursive = self._bool_setting("dicom.recursive_scan", True)
+            include_extensionless = self._bool_setting("dicom.include_extensionless", True)
+            allowed_suffixes = ['.dcm', '.dicom']
+            if include_extensionless:
+                allowed_suffixes.append('')
+
+            candidates = folder.rglob("*") if recursive else folder.glob("*")
+            for file_path in candidates:
+                if file_path.is_file() and file_path.suffix.lower() in allowed_suffixes:
                     dicom_files.append(str(file_path))
             
             if not dicom_files:
@@ -954,6 +996,7 @@ class MainWindow(QMainWindow):
                 import pydicom
                 try:
                     first_ds = pydicom.dcmread(files[0], force=True)
+                    self._warn_if_strict_metadata_incomplete(first_ds, files[0])
                     
                     series_info = SeriesInfo(
                         series_id=str(uuid.uuid4()),
@@ -986,6 +1029,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"[MainWindow._load_dicom_folder_as_series] 加载文件夹失败: {e}", exc_info=True)
             QMessageBox.critical(self, self.tr("错误"), self.tr("加载DICOM文件夹失败: %1").replace("%1", str(e)))
+
+    def _warn_if_strict_metadata_incomplete(self, dataset, file_path: str) -> None:
+        """在严格元数据模式下记录缺失关键标签。"""
+        if not self._bool_setting("dicom.strict_metadata", False):
+            return
+        required_tags = [
+            "SeriesInstanceUID",
+            "StudyInstanceUID",
+            "Modality",
+            "Rows",
+            "Columns",
+            "PhotometricInterpretation",
+        ]
+        missing = [tag for tag in required_tags if not getattr(dataset, tag, None)]
+        if missing:
+            logger.warning(
+                "[MainWindow._warn_if_strict_metadata_incomplete] DICOM 缺失关键标签: "
+                f"{missing}, file={file_path}"
+            )
     
     def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
         """使用性能管理器的线程池在后台加载序列"""
@@ -1386,6 +1448,7 @@ class MainWindow(QMainWindow):
             # 应用新设置 - 使用set_theme确保发出信号
             current_theme = self.theme_manager.get_current_theme()
             self.theme_manager.set_theme(current_theme)
+            self._apply_runtime_settings()
 
             # 如果语言发生了变化，提示用户部分界面需要重启才能完全生效
             if getattr(dialog, '_language_changed', False):
@@ -1396,6 +1459,15 @@ class MainWindow(QMainWindow):
                 )
 
             logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
+
+    def _apply_runtime_settings(self) -> None:
+        """应用设置面板中可即时生效的选项。"""
+        self._cine_set_fps(self._int_setting('cine.default_fps', self._cine_fps, 1, 60))
+        self.sync_manager.set_sync_mode(self._sync_mode_from_setting())
+        if hasattr(self.multi_viewer_grid, "apply_runtime_settings"):
+            self.multi_viewer_grid.apply_runtime_settings()
+        get_performance_manager().clear_cache()
+        self._update_sync_button_states()
     
     def _show_about(self) -> None:
         """显示关于对话框"""

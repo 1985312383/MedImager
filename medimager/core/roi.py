@@ -7,9 +7,10 @@ import numpy as np
 import logging
 
 from ..utils.settings import get_settings_manager
+from ..utils.theme_colors import qcolor_from_theme
 
 if TYPE_CHECKING:
-    from PySide6.QtGui import QPainter, QTransform, QColor, QPen
+    from PySide6.QtGui import QPainter, QTransform
     from PySide6.QtCore import QPointF, QRectF, Qt
 
 
@@ -149,7 +150,7 @@ class BaseROI(ABC):
         """
         pass
 
-    def _get_style_from_settings(self) -> Tuple[str, str, str, int, int]:
+    def _get_style_from_settings(self) -> Tuple[str, str, str, str, int, int]:
         """从设置中获取ROI的样式"""
         try:
             from medimager.utils.theme_manager import get_theme_settings
@@ -159,6 +160,7 @@ class BaseROI(ABC):
             
             return (
                 theme_data.get('border_color', "#FFFF00"),
+                theme_data.get('fill_color', "#00000000"),
                 theme_data.get('selected_color', "#FF0000"),
                 theme_data.get('anchor_color', "#FF0000"),
                 theme_data.get('border_width', 2),
@@ -168,6 +170,7 @@ class BaseROI(ABC):
             # 默认设置
             return (
                 "#FFFF00",  # border_color
+                "#00000000",  # fill_color
                 "#FF0000",  # selected_color
                 "#FF0000",  # anchor_color
                 2,          # border_width
@@ -193,17 +196,18 @@ class EllipseROI(BaseROI):
         self.radius_y = radius_y
 
     def draw(self, painter: 'QPainter', view_transform: 'QTransform') -> None:
-        from PySide6.QtGui import QColor, QPen, QBrush
+        from PySide6.QtGui import QPen, QBrush
         from PySide6.QtCore import QPointF, Qt
 
-        border_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
+        border_color_str, fill_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
 
         painter.save()
         
-        pen_color = QColor(selected_color_str) if self.selected else QColor(border_color_str)
+        pen_color = qcolor_from_theme(selected_color_str) if self.selected else qcolor_from_theme(border_color_str)
         pen = QPen(pen_color, border_width)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        fill_color = qcolor_from_theme(fill_color_str)
+        painter.setBrush(QBrush(fill_color) if fill_color.alpha() > 0 else Qt.BrushStyle.NoBrush)
 
         center_point = QPointF(self.center[1], self.center[0])
         painter.drawEllipse(center_point, self.radius_x, self.radius_y)
@@ -213,7 +217,7 @@ class EllipseROI(BaseROI):
             pixel_size = 1.0 / view_transform.m11()
             scaled_anchor_size = anchor_size * pixel_size
             
-            painter.setBrush(QColor(anchor_color_str))
+            painter.setBrush(qcolor_from_theme(anchor_color_str))
             painter.setPen(Qt.PenStyle.NoPen)
             for ay, ax in self.get_anchor_points():
                 painter.drawEllipse(QPointF(ax, ay), scaled_anchor_size / 2, scaled_anchor_size / 2)
@@ -315,17 +319,18 @@ class CircleROI(EllipseROI):
         self.radius = radius
 
     def draw(self, painter: 'QPainter', view_transform: 'QTransform') -> None:
-        from PySide6.QtGui import QColor, QPen, QBrush
+        from PySide6.QtGui import QPen, QBrush
         from PySide6.QtCore import QPointF, Qt
 
-        border_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
+        border_color_str, fill_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
         
         painter.save()
 
-        pen_color = QColor(selected_color_str) if self.selected else QColor(border_color_str)
+        pen_color = qcolor_from_theme(selected_color_str) if self.selected else qcolor_from_theme(border_color_str)
         pen = QPen(pen_color, border_width)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        fill_color = qcolor_from_theme(fill_color_str)
+        painter.setBrush(QBrush(fill_color) if fill_color.alpha() > 0 else Qt.BrushStyle.NoBrush)
 
         center_point = QPointF(self.center[1], self.center[0])
         painter.drawEllipse(center_point, self.radius, self.radius)
@@ -334,7 +339,7 @@ class CircleROI(EllipseROI):
             pixel_size = 1.0 / view_transform.m11()
             scaled_anchor_size = anchor_size * pixel_size
             
-            painter.setBrush(QColor(anchor_color_str))
+            painter.setBrush(qcolor_from_theme(anchor_color_str))
             painter.setPen(Qt.PenStyle.NoPen)
             for ay, ax in self.get_anchor_points():
                 painter.drawEllipse(QPointF(ax, ay), scaled_anchor_size / 2, scaled_anchor_size / 2)
@@ -451,17 +456,18 @@ class RectangleROI(BaseROI):
         self.bottom_right = (max(top_left[0], bottom_right[0]), max(top_left[1], bottom_right[1]))
 
     def draw(self, painter: 'QPainter', view_transform: 'QTransform') -> None:
-        from PySide6.QtGui import QColor, QPen, QBrush
+        from PySide6.QtGui import QPen, QBrush
         from PySide6.QtCore import QPointF, QRectF, Qt
 
-        border_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
+        border_color_str, fill_color_str, selected_color_str, anchor_color_str, border_width, anchor_size = self._get_style_from_settings()
         
         painter.save()
 
-        pen_color = QColor(selected_color_str) if self.selected else QColor(border_color_str)
+        pen_color = qcolor_from_theme(selected_color_str) if self.selected else qcolor_from_theme(border_color_str)
         pen = QPen(pen_color, border_width)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        fill_color = qcolor_from_theme(fill_color_str)
+        painter.setBrush(QBrush(fill_color) if fill_color.alpha() > 0 else Qt.BrushStyle.NoBrush)
 
         y1, x1 = self.top_left
         y2, x2 = self.bottom_right
@@ -472,7 +478,7 @@ class RectangleROI(BaseROI):
             pixel_size = 1.0 / view_transform.m11()
             scaled_anchor_size = anchor_size * pixel_size
             
-            painter.setBrush(QColor(anchor_color_str))
+            painter.setBrush(qcolor_from_theme(anchor_color_str))
             painter.setPen(Qt.PenStyle.NoPen)
             for ay, ax in self.get_anchor_points():
                 painter.drawEllipse(QPointF(ax, ay), scaled_anchor_size / 2, scaled_anchor_size / 2)

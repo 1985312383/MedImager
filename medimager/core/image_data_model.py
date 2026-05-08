@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional, Union
 from PySide6.QtCore import QObject, Signal, QRect, QPointF
 
 from medimager.utils.logger import get_logger
-from medimager.utils.settings import get_performance_manager
+from medimager.utils.settings import get_performance_manager, get_settings_manager
 from medimager.core.dicom_parser import DicomParser
 from medimager.core.roi import BaseROI
 from dataclasses import dataclass
@@ -183,8 +183,18 @@ class ImageDataModel(QObject):
             self.set_window(255, 127)
             return
 
+        try:
+            strategy = get_settings_manager().get_setting("display.window_level_strategy", "dicom")
+        except Exception:
+            strategy = "dicom"
+
+        if strategy == "fixed":
+            self.set_window(400, 40)
+            self.logger.info("Using fixed default W/L: W=400, L=40")
+            return
+
         # Try to get from DICOM metadata first
-        if "WindowWidth" in self.dicom_header and "WindowCenter" in self.dicom_header:
+        if strategy == "dicom" and "WindowWidth" in self.dicom_header and "WindowCenter" in self.dicom_header:
             ww = self.dicom_header.get("WindowWidth")
             wc = self.dicom_header.get("WindowCenter")
             if ww is not None and wc is not None:

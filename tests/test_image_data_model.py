@@ -1,6 +1,7 @@
 import numpy as np
 
 from medimager.core.image_data_model import ImageDataModel
+from medimager.utils.settings import get_settings_manager
 
 
 def test_rgb_image_loads_as_single_rgb_slice():
@@ -50,3 +51,18 @@ def test_3d_non_rgb_array_remains_grayscale_volume():
     assert model.image_mode == "grayscale_volume"
     assert model.get_slice_count() == 3
     assert model.pixel_array.shape == (3, 4, 5)
+
+
+def test_window_level_strategy_fixed_uses_400_40():
+    settings = get_settings_manager()
+    previous = settings.get_setting("display.window_level_strategy", "dicom")
+    settings.set_setting("display.window_level_strategy", "fixed")
+
+    try:
+        model = ImageDataModel()
+        assert model.load_single_image(np.arange(100, dtype=np.float32).reshape(10, 10))
+    finally:
+        settings.set_setting("display.window_level_strategy", previous)
+
+    assert model.window_width == 400
+    assert model.window_level == 40

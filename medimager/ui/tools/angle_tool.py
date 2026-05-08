@@ -3,10 +3,11 @@ from medimager.ui.tools.base_tool import BaseTool, point_distance
 from medimager.core.image_data_model import AngleMeasurementData
 from medimager.utils.logger import get_logger
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtGui import QMouseEvent, QKeyEvent, QPen, QColor, QFont, QBrush
+from PySide6.QtGui import QMouseEvent, QKeyEvent, QPen, QFont
 from PySide6.QtCore import Qt, QPointF, QRectF
 import math
 import uuid
+from medimager.utils.theme_colors import qcolor_from_theme
 
 
 class AngleTool(BaseTool):
@@ -127,7 +128,7 @@ class AngleTool(BaseTool):
 
         painter.save()
 
-        pen = QPen(QColor(line_color), line_width)
+        pen = QPen(qcolor_from_theme(line_color), line_width)
         pen.setCosmetic(True)
         painter.setPen(pen)
 
@@ -135,7 +136,7 @@ class AngleTool(BaseTool):
         scaled_anchor = anchor_size * pixel_size
 
         # 绘制已确定的点
-        painter.setBrush(QColor(anchor_color))
+        painter.setBrush(qcolor_from_theme(anchor_color))
         painter.setPen(Qt.NoPen)
         for pt in self._points:
             painter.drawEllipse(pt, scaled_anchor / 2, scaled_anchor / 2)
@@ -145,7 +146,7 @@ class AngleTool(BaseTool):
             painter.drawEllipse(preview, scaled_anchor / 2, scaled_anchor / 2)
 
         # 绘制线段
-        pen = QPen(QColor(line_color), line_width)
+        pen = QPen(qcolor_from_theme(line_color), line_width)
         pen.setCosmetic(True)
         painter.setPen(pen)
 
@@ -186,7 +187,7 @@ class AngleTool(BaseTool):
         elif span < -180:
             span += 360
 
-        pen = QPen(QColor(line_color), line_width)
+        pen = QPen(qcolor_from_theme(line_color), line_width)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
@@ -212,9 +213,9 @@ class AngleTool(BaseTool):
         text_rect = metrics.boundingRect(text).adjusted(-4, -2, 4, 2)
         text_rect.moveCenter(QPointF(text_x, text_y).toPoint())
 
-        painter.setBrush(QColor(bg_color))
+        painter.setBrush(qcolor_from_theme(bg_color))
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(text_rect, 5, 5)
 
-        painter.setPen(QColor(text_color))
+        painter.setPen(qcolor_from_theme(text_color))
         painter.drawText(text_rect, Qt.AlignCenter, text)

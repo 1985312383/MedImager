@@ -19,7 +19,8 @@ from medimager.ui.tools.base_tool import BaseTool
 from medimager.ui.tools.roi_tool import EllipseROITool
 from medimager.core.roi import CircleROI, EllipseROI, RectangleROI
 from medimager.core.analysis import calculate_roi_statistics
-from medimager.ui.widgets.roi_stats_box import draw_stats_box
+from medimager.ui.widgets.roi_stats_box import draw_stats_box, _get_stats_box_settings
+from medimager.utils.theme_colors import qcolor_from_theme
 from ..utils.settings import get_settings_manager
 
 if TYPE_CHECKING:
@@ -114,6 +115,7 @@ class ImageViewer(QGraphicsView):
         
         # 初始化设置管理器
         self._init_settings()
+        self._apply_interpolation_setting()
         
         # 主题管理器注册
         self._theme_manager = None
@@ -176,6 +178,7 @@ class ImageViewer(QGraphicsView):
 
             # 使测量线主题缓存失效
             self._measurement_theme_cache = None
+            self.viewport().update()
             
             self.logger.info(f"[ImageViewer.update_theme] 主题更新完成: {theme_name}")
         except Exception as e:
@@ -185,11 +188,26 @@ class ImageViewer(QGraphicsView):
         """设置视图属性"""
         self.setDragMode(QGraphicsView.NoDrag) # 拖拽模式由工具类控制
         self.setRenderHint(QPainter.Antialiasing, False)
-        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        self._apply_interpolation_setting()
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setMouseTracking(True)
         self.setStyleSheet("background-color: #2b2b2b;")
         self.setFrameShape(QFrame.NoFrame)
+
+    def _apply_interpolation_setting(self) -> None:
+        """按设置应用图像缩放插值策略。"""
+        try:
+            smooth = self.settings_manager.get_setting("display.smooth_interpolation", True) if self.settings_manager else True
+            if isinstance(smooth, str):
+                smooth = smooth.lower() in ("1", "true", "yes", "on")
+            self.setRenderHint(QPainter.SmoothPixmapTransform, bool(smooth))
+        except Exception:
+            self.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+    def apply_runtime_settings(self) -> None:
+        """重新应用设置面板中可即时生效的查看器设置。"""
+        self._apply_interpolation_setting()
+        self.viewport().update()
         
     def _create_cross_cursor(self) -> QCursor:
         """创建一个洋红色的十字光标"""
@@ -509,9 +527,12 @@ class ImageViewer(QGraphicsView):
         painter.setRenderHint(QPainter.Antialiasing, True)
         current_slice_index = self.model.current_slice_index
 
+        stats_box_settings = _get_stats_box_settings()
+        auto_hide_stats = bool(stats_box_settings.get('auto_hide', False))
+
         # Draw ROIs
         if self.model:
-            for roi in self.model.rois:
+            for idx, roi in enumerate(self.model.rois):
                 if roi.slice_index != current_slice_index:
                     continue
 
@@ -519,10 +540,15 @@ class ImageViewer(QGraphicsView):
                 roi.draw(painter, self.transform())
                 
                 # 2. 绘制统计信息框 (由Viewer管理位置)
-                if roi.id in self.stats_box_positions and roi.show_stats:
+                should_draw_stats = (
+                    roi.id in self.stats_box_positions
+                    and roi.show_stats
+                    and (not auto_hide_stats or roi.selected or self.hovered_roi_index == idx)
+                )
+                if should_draw_stats:
                     stats = calculate_roi_statistics(self.model, roi)
                     if stats:
-                        draw_stats_box(painter, stats, self.stats_box_positions[roi.id])
+                        draw_stats_box(painter, stats, self.stats_box_positions[roi.id], selected=roi.selected)
 
         # Draw measurement tool if it is active and has points
         if self.current_tool and hasattr(self.current_tool, 'draw_temporary_shape'):
@@ -720,13 +746,13 @@ class ImageViewer(QGraphicsView):
         painter.save()
 
         # 1. 绘制线
-        pen = QPen(QColor(t['line_color']), t['line_width'])
+        pen = QPen(qcolor_from_theme(t['line_color']), t['line_width'])
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawLine(self.measurement_start_point, self.measurement_end_point)
 
         # 2. 绘制锚点
-        painter.setBrush(QColor(t['anchor_color']))
+        painter.setBrush(qcolor_from_theme(t['anchor_color']))
         painter.setPen(Qt.NoPen)
         pixel_size = 1.0 / self.transform().m11()
         scaled_anchor_size = t['anchor_size'] * pixel_size
@@ -746,11 +772,11 @@ class ImageViewer(QGraphicsView):
             mid_point = (self.measurement_start_point + self.measurement_end_point) / 2
             text_rect.moveCenter(mid_point.toPoint())
 
-            painter.setBrush(QColor(t['background_color']))
+            painter.setBrush(qcolor_from_theme(t['background_color']))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(text_rect, 5, 5)
 
-            painter.setPen(QColor(t['text_color']))
+            painter.setPen(qcolor_from_theme(t['text_color']))
             painter.drawText(text_rect, Qt.AlignCenter, text)
 
         painter.restore()
@@ -880,13 +906,13 @@ class ImageViewer(QGraphicsView):
                 current_anchor_color = t['anchor_color']
 
             # 绘制线
-            pen = QPen(QColor(current_line_color), t['line_width'])
+            pen = QPen(qcolor_from_theme(current_line_color), t['line_width'])
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawLine(measurement.start_point, measurement.end_point)
 
             # 绘制锚点
-            painter.setBrush(QColor(current_anchor_color))
+            painter.setBrush(qcolor_from_theme(current_anchor_color))
             painter.setPen(Qt.NoPen)
             pixel_size = 1.0 / self.transform().m11()
             scaled_anchor_size = t['anchor_size'] * pixel_size
@@ -906,11 +932,11 @@ class ImageViewer(QGraphicsView):
             mid_point = (measurement.start_point + measurement.end_point) / 2
             text_rect.moveCenter(mid_point.toPoint())
 
-            painter.setBrush(QColor(t['background_color']))
+            painter.setBrush(qcolor_from_theme(t['background_color']))
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(text_rect, 5, 5)
 
-            painter.setPen(QColor(t['text_color']))
+            painter.setPen(qcolor_from_theme(t['text_color']))
             painter.drawText(text_rect, Qt.AlignCenter, text)
         
         painter.restore()
@@ -931,14 +957,14 @@ class ImageViewer(QGraphicsView):
 
         for am in angle_measurements:
             # 绘制两条线段
-            pen = QPen(QColor(t['line_color']), t['line_width'])
+            pen = QPen(qcolor_from_theme(t['line_color']), t['line_width'])
             pen.setCosmetic(True)
             painter.setPen(pen)
             painter.drawLine(am.point1, am.vertex)
             painter.drawLine(am.vertex, am.point3)
 
             # 绘制锚点
-            painter.setBrush(QColor(t['anchor_color']))
+            painter.setBrush(qcolor_from_theme(t['anchor_color']))
             painter.setPen(Qt.NoPen)
             for pt in (am.point1, am.vertex, am.point3):
                 painter.drawEllipse(pt, scaled_anchor / 2, scaled_anchor / 2)

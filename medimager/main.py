@@ -121,7 +121,28 @@ class MedImagerApplication:
                 'recent_files': [],
                 'max_recent_files': 10,
                 'auto_save_interval': 300,  # 5分钟
-                'log_level': 'INFO'
+                'log_level': 'INFO',
+                'display.window_level_strategy': 'dicom',
+                'display.smooth_interpolation': True,
+                'display.show_view_title': True,
+                'display.show_view_status': True,
+                'interaction.left_drag_action': 'browse',
+                'interaction.middle_drag_action': 'window',
+                'interaction.right_drag_action': 'zoom',
+                'interaction.wheel_reverse': False,
+                'cine.default_fps': 10,
+                'dicom.recursive_scan': True,
+                'dicom.include_extensionless': True,
+                'dicom.strict_metadata': False,
+                'roi.stats.show_mean': True,
+                'roi.stats.show_std': True,
+                'roi.stats.show_max': True,
+                'roi.stats.show_min': True,
+                'roi.stats.show_area': True,
+                'roi.stats.show_count': True,
+                'roi.stats.area_unit': 'auto',
+                'multiview.default_layout': '1x1',
+                'multiview.default_sync_mode': 'basic',
             }
 
             # 加载设置并设置默认值

@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QPointF, QRectF
 from typing import Optional
 import math
 import uuid
+from medimager.utils.theme_colors import qcolor_from_theme
 
 
 class MeasurementTool(BaseTool):
@@ -426,7 +427,7 @@ class MeasurementTool(BaseTool):
         if not model:
             return
             
-        from PySide6.QtGui import QPen, QColor, QFont, QBrush
+        from PySide6.QtGui import QPen, QFont
         from PySide6.QtCore import QPointF, QRectF, Qt
             
         line_color, anchor_color, text_color, bg_color, line_width, anchor_size, font_size = self._get_style_from_settings()
@@ -442,13 +443,13 @@ class MeasurementTool(BaseTool):
             
             if draw_end_point:
                 # 绘制线
-                pen = QPen(QColor(line_color), line_width)
+                pen = QPen(qcolor_from_theme(line_color), line_width)
                 pen.setCosmetic(True)
                 painter.setPen(pen)
                 painter.drawLine(self.start_point, draw_end_point)
                 
                 # 绘制锚点
-                painter.setBrush(QColor(anchor_color))
+                painter.setBrush(qcolor_from_theme(anchor_color))
                 painter.setPen(Qt.NoPen)
                 pixel_size = 1.0 / self.viewer.transform().m11()
                 scaled_anchor_size = anchor_size * pixel_size
@@ -473,11 +474,11 @@ class MeasurementTool(BaseTool):
                 mid_point = (self.start_point + draw_end_point) / 2
                 text_rect.moveCenter(mid_point.toPoint())
                 
-                painter.setBrush(QColor(bg_color))
+                painter.setBrush(qcolor_from_theme(bg_color))
                 painter.setPen(Qt.NoPen)
                 painter.drawRoundedRect(text_rect, 5, 5)
 
-                painter.setPen(QColor(text_color))
+                painter.setPen(qcolor_from_theme(text_color))
                 painter.drawText(text_rect, Qt.AlignCenter, text)
 
         painter.restore()

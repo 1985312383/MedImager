@@ -69,6 +69,7 @@ class BaseROITool(BaseTool):
                     if roi is not None:
                         model.add_roi(roi)
                         self._place_stats_box(roi)
+                        self.viewer.hovered_roi_index = len(model.rois) - 1
 
             self.viewer.scene.update()
             event.accept()

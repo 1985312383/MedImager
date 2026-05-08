@@ -1,17 +1,21 @@
-name = "radiant"
-border_color = "#FF0F20"      # Yellow
-fill_color = "#FFF180"     # Semi-transparent yellow
-selected_color = "#FF0000"   # Red
-anchor_color = "#FF0000"     # Red
-border_width = 2
-anchor_size = 8 
+name = "RadiAnt"
 
-# 信息板设置
-info_bg_color = "#418426"    # Semi-transparent black
-info_text_color = "#FFEC21" 
-info_border_color = "#418426" 
-info_font_size = 4
+# ROI outline and handles
+border_color = "#00B050"
+fill_color = "#00000000"
+selected_color = "#D6D000"
+anchor_color = "#FF0000"
+border_width = 1
+anchor_size = 8
+
+# Statistics box
+info_style = "radiant"
+info_bg_color = "#4A241E"
+info_selected_bg_color = "#B83A3A"
+info_text_color = "#FFF000"
+info_border_color = "#4A241E"
+info_font_size = 9
 info_radius = 0
-info_padding = 8
-info_precision = 1
-info_auto_hide = true 
+info_padding = 3
+info_precision = 2
+info_auto_hide = false

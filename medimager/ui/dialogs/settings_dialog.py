@@ -6,24 +6,48 @@
 根据设计文档重构的设置界面，包含左侧导航栏和右侧内容区。
 """
 
-import os
 import toml
-import glob
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget, QListWidget, QStackedWidget,
     QLabel, QColorDialog, QPushButton, QSpinBox, QDoubleSpinBox,
     QGroupBox, QFormLayout, QComboBox, QCheckBox, QFrame,
-    QDialogButtonBox, QListWidgetItem, QScrollArea, QMessageBox
+    QDialogButtonBox, QListWidgetItem, QScrollArea
 )
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any
 from medimager.utils.settings import SettingsManager
 from medimager.utils.i18n import get_translation_manager
 from medimager.utils.logger import get_logger
+from medimager.utils.theme_colors import qcolor_from_theme
 
 logger = get_logger(__name__)
+
+
+SIMPLE_SETTING_DEFAULTS = {
+    "display.window_level_strategy": "dicom",
+    "display.smooth_interpolation": True,
+    "display.show_view_title": True,
+    "display.show_view_status": True,
+    "interaction.left_drag_action": "browse",
+    "interaction.middle_drag_action": "window",
+    "interaction.right_drag_action": "zoom",
+    "interaction.wheel_reverse": False,
+    "cine.default_fps": 10,
+    "dicom.recursive_scan": True,
+    "dicom.include_extensionless": True,
+    "dicom.strict_metadata": False,
+    "roi.stats.show_mean": True,
+    "roi.stats.show_std": True,
+    "roi.stats.show_max": True,
+    "roi.stats.show_min": True,
+    "roi.stats.show_area": True,
+    "roi.stats.show_count": True,
+    "roi.stats.area_unit": "auto",
+    "multiview.default_layout": "1x1",
+    "multiview.default_sync_mode": "basic",
+}
 
 
 class ColorButton(QPushButton):
@@ -81,6 +105,7 @@ class SettingsDialog(QDialog):
         self.settings_manager = settings_manager
         self.translation_manager = get_translation_manager()
         self._language_changed = False
+        self._original_ui_theme = self.settings_manager.get_setting('ui_theme', 'dark')
         self.setWindowTitle(self.tr("设置"))
         self.setMinimumSize(900, 700)
         self.setModal(True)
@@ -156,7 +181,11 @@ class SettingsDialog(QDialog):
         
         # 添加页面
         self._add_page(self.tr("通用"), self._create_general_page)
+        self._add_page(self.tr("显示"), self._create_display_page)
+        self._add_page(self.tr("交互"), self._create_interaction_page)
+        self._add_page(self.tr("DICOM"), self._create_dicom_page)
         self._add_page(self.tr("工具"), self._create_tools_page)
+        self._add_page(self.tr("多视图"), self._create_multiview_page)
         self._add_page(self.tr("性能"), self._create_performance_page)
         
         # 移除导航栏的 currentRowChanged 连接，避免不必要的逻辑
@@ -235,7 +264,7 @@ class SettingsDialog(QDialog):
         def on_ui_theme_changed(index):
             theme_name = ui_theme_combo.itemData(index)
             if theme_name:
-                # 立即应用主题变化
+                # 预览主题变化；如果用户取消，会在 reject() 中恢复原主题。
                 main_window = self.parent()
                 if hasattr(main_window, 'theme_manager'):
                     main_window.theme_manager.set_theme(theme_name)
@@ -264,6 +293,162 @@ class SettingsDialog(QDialog):
         measurement_group = self._create_measurement_settings_group()
         layout.addWidget(measurement_group)
         
+        layout.addStretch()
+        return page
+
+    def _create_display_page(self) -> QWidget:
+        """创建显示设置页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        title_label = QLabel(self.tr("显示设置"))
+        title_label.setFont(self._get_title_font())
+        layout.addWidget(title_label)
+        layout.addWidget(self._create_separator())
+
+        image_group = QGroupBox(self.tr("图像显示"))
+        image_layout = QFormLayout(image_group)
+        wl_combo = QComboBox()
+        wl_combo.addItem(self.tr("优先使用 DICOM 标签"), "dicom")
+        wl_combo.addItem(self.tr("按像素范围自动计算"), "auto")
+        wl_combo.addItem(self.tr("固定默认值 400/40"), "fixed")
+        self.setting_widgets["display.window_level_strategy"] = wl_combo
+        image_layout.addRow(self.tr("默认窗宽窗位:"), wl_combo)
+
+        smooth_check = QCheckBox(self.tr("缩放时使用平滑插值"))
+        self.setting_widgets["display.smooth_interpolation"] = smooth_check
+        image_layout.addRow(smooth_check)
+        layout.addWidget(image_group)
+
+        chrome_group = QGroupBox(self.tr("视图信息"))
+        chrome_layout = QFormLayout(chrome_group)
+        title_check = QCheckBox(self.tr("显示视图标题栏"))
+        self.setting_widgets["display.show_view_title"] = title_check
+        chrome_layout.addRow(title_check)
+
+        status_check = QCheckBox(self.tr("显示视图状态栏"))
+        self.setting_widgets["display.show_view_status"] = status_check
+        chrome_layout.addRow(status_check)
+        layout.addWidget(chrome_group)
+
+        layout.addStretch()
+        return page
+
+    def _create_interaction_page(self) -> QWidget:
+        """创建交互设置页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        title_label = QLabel(self.tr("交互设置"))
+        title_label.setFont(self._get_title_font())
+        layout.addWidget(title_label)
+        layout.addWidget(self._create_separator())
+
+        mouse_group = QGroupBox(self.tr("鼠标拖拽"))
+        mouse_layout = QFormLayout(mouse_group)
+        action_items = [
+            (self.tr("浏览切片"), "browse"),
+            (self.tr("窗宽窗位"), "window"),
+            (self.tr("缩放"), "zoom"),
+            (self.tr("平移"), "pan"),
+            (self.tr("无操作"), "none"),
+        ]
+        for key, label in [
+            ("interaction.left_drag_action", self.tr("左键拖拽:")),
+            ("interaction.middle_drag_action", self.tr("中键拖拽:")),
+            ("interaction.right_drag_action", self.tr("右键拖拽:")),
+        ]:
+            combo = QComboBox()
+            for text, value in action_items:
+                combo.addItem(text, value)
+            self.setting_widgets[key] = combo
+            mouse_layout.addRow(label, combo)
+
+        wheel_reverse = QCheckBox(self.tr("反转滚轮切片方向"))
+        self.setting_widgets["interaction.wheel_reverse"] = wheel_reverse
+        mouse_layout.addRow(wheel_reverse)
+        layout.addWidget(mouse_group)
+
+        cine_group = QGroupBox(self.tr("Cine 播放"))
+        cine_layout = QFormLayout(cine_group)
+        fps_spin = QSpinBox()
+        fps_spin.setRange(1, 60)
+        fps_spin.setSuffix(" fps")
+        self.setting_widgets["cine.default_fps"] = fps_spin
+        cine_layout.addRow(self.tr("默认帧率:"), fps_spin)
+        layout.addWidget(cine_group)
+
+        layout.addStretch()
+        return page
+
+    def _create_dicom_page(self) -> QWidget:
+        """创建 DICOM 加载设置页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        title_label = QLabel(self.tr("DICOM 设置"))
+        title_label.setFont(self._get_title_font())
+        layout.addWidget(title_label)
+        layout.addWidget(self._create_separator())
+
+        scan_group = QGroupBox(self.tr("文件夹扫描"))
+        scan_layout = QFormLayout(scan_group)
+        recursive_check = QCheckBox(self.tr("递归扫描子文件夹"))
+        self.setting_widgets["dicom.recursive_scan"] = recursive_check
+        scan_layout.addRow(recursive_check)
+
+        extensionless_check = QCheckBox(self.tr("包含无扩展名文件"))
+        self.setting_widgets["dicom.include_extensionless"] = extensionless_check
+        scan_layout.addRow(extensionless_check)
+
+        strict_check = QCheckBox(self.tr("严格元数据模式（缺失关键标签时提示更明显）"))
+        self.setting_widgets["dicom.strict_metadata"] = strict_check
+        scan_layout.addRow(strict_check)
+        layout.addWidget(scan_group)
+
+        decoder_group = QGroupBox(self.tr("压缩 DICOM 解码能力"))
+        decoder_layout = QVBoxLayout(decoder_group)
+        decoder_layout.addWidget(QLabel(self._get_decoder_status_text()))
+        layout.addWidget(decoder_group)
+
+        layout.addStretch()
+        return page
+
+    def _create_multiview_page(self) -> QWidget:
+        """创建多视图设置页面"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        title_label = QLabel(self.tr("多视图设置"))
+        title_label.setFont(self._get_title_font())
+        layout.addWidget(title_label)
+        layout.addWidget(self._create_separator())
+
+        layout_group = QGroupBox(self.tr("默认布局"))
+        layout_form = QFormLayout(layout_group)
+        default_layout_combo = QComboBox()
+        for text, value in [
+            ("1 x 1", "1x1"),
+            ("1 x 2", "1x2"),
+            ("2 x 1", "2x1"),
+            ("2 x 2", "2x2"),
+        ]:
+            default_layout_combo.addItem(text, value)
+        self.setting_widgets["multiview.default_layout"] = default_layout_combo
+        layout_form.addRow(self.tr("启动布局:"), default_layout_combo)
+        layout.addWidget(layout_group)
+
+        sync_group = QGroupBox(self.tr("默认同步"))
+        sync_form = QFormLayout(sync_group)
+        sync_combo = QComboBox()
+        sync_combo.addItem(self.tr("关闭"), "none")
+        sync_combo.addItem(self.tr("基础：切片 + 窗宽窗位"), "basic")
+        sync_combo.addItem(self.tr("高级：基础 + 缩放平移"), "advanced")
+        sync_combo.addItem(self.tr("完整：高级 + 交叉参考线"), "full")
+        self.setting_widgets["multiview.default_sync_mode"] = sync_combo
+        sync_form.addRow(self.tr("同步模式:"), sync_combo)
+        layout.addWidget(sync_group)
+
         layout.addStretch()
         return page
 
@@ -297,6 +482,14 @@ class SettingsDialog(QDialog):
         thread_count_spin.setSuffix(self.tr(" 个"))
         self.setting_widgets['thread_count'] = thread_count_spin
         performance_layout.addRow(self.tr("线程数量:"), thread_count_spin)
+
+        cache_info = QLabel(self._get_cache_info_text())
+        cache_info.setObjectName("cacheInfoLabel")
+        performance_layout.addRow(self.tr("缓存状态:"), cache_info)
+
+        clear_cache_btn = QPushButton(self.tr("清空显示缓存"))
+        clear_cache_btn.clicked.connect(lambda: self._clear_cache(cache_info))
+        performance_layout.addRow(clear_cache_btn)
         
         layout.addWidget(performance_group)
         layout.addStretch()
@@ -376,6 +569,11 @@ class SettingsDialog(QDialog):
         info_bg_color_btn = ColorButton()
         self.setting_widgets['roi.custom.info_bg_color'] = info_bg_color_btn
         info_appearance_layout.addRow(self.tr("背景颜色:"), info_bg_color_btn)
+
+        # 选中背景颜色
+        info_selected_bg_color_btn = ColorButton()
+        self.setting_widgets['roi.custom.info_selected_bg_color'] = info_selected_bg_color_btn
+        info_appearance_layout.addRow(self.tr("选中背景颜色:"), info_selected_bg_color_btn)
         
         # 文本颜色
         info_text_color_btn = ColorButton()
@@ -424,8 +622,31 @@ class SettingsDialog(QDialog):
         info_auto_hide_check = QCheckBox(self.tr("鼠标离开时自动隐藏"))
         self.setting_widgets['roi.custom.info_auto_hide'] = info_auto_hide_check
         info_display_layout.addRow(info_auto_hide_check)
+
+        stats_fields_group = QGroupBox(self.tr("统计字段"))
+        stats_fields_layout = QFormLayout(stats_fields_group)
+        for key, text in [
+            ("roi.stats.show_mean", self.tr("显示 Mean")),
+            ("roi.stats.show_std", self.tr("显示 SD")),
+            ("roi.stats.show_max", self.tr("显示 Max")),
+            ("roi.stats.show_min", self.tr("显示 Min")),
+            ("roi.stats.show_area", self.tr("显示面积")),
+            ("roi.stats.show_count", self.tr("显示像素数量")),
+        ]:
+            check = QCheckBox(text)
+            self.setting_widgets[key] = check
+            stats_fields_layout.addRow(check)
+
+        area_unit_combo = QComboBox()
+        area_unit_combo.addItem(self.tr("自动"), "auto")
+        area_unit_combo.addItem("mm²", "mm2")
+        area_unit_combo.addItem("cm²", "cm2")
+        area_unit_combo.addItem("px²", "px")
+        self.setting_widgets["roi.stats.area_unit"] = area_unit_combo
+        stats_fields_layout.addRow(self.tr("面积单位:"), area_unit_combo)
         
         info_layout.addWidget(info_display_group)
+        info_layout.addWidget(stats_fields_group)
         custom_layout.addWidget(info_group)
         
         layout.addWidget(custom_group)
@@ -445,7 +666,7 @@ class SettingsDialog(QDialog):
                     if widget_key in self.setting_widgets:
                         widget = self.setting_widgets[widget_key]
                         if isinstance(widget, ColorButton):
-                            widget.setColor(QColor(value))
+                            widget.setColor(qcolor_from_theme(value))
                         elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                             widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
                         elif isinstance(widget, QCheckBox):
@@ -552,7 +773,7 @@ class SettingsDialog(QDialog):
                     if widget_key in self.setting_widgets:
                         widget = self.setting_widgets[widget_key]
                         if isinstance(widget, ColorButton):
-                            color = QColor(value)
+                            color = qcolor_from_theme(value)
                             widget.setColor(color)
                         elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                             widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
@@ -569,6 +790,42 @@ class SettingsDialog(QDialog):
         font.setPointSize(16)
         font.setBold(True)
         return font
+
+    def _get_decoder_status_text(self) -> str:
+        """返回当前 pydicom 像素解码处理器状态。"""
+        try:
+            import pydicom.config
+
+            handlers = []
+            for handler in pydicom.config.pixel_data_handlers:
+                name = getattr(handler, "__name__", handler.__class__.__name__).split(".")[-1]
+                available = handler.is_available() if hasattr(handler, "is_available") else True
+                handlers.append(f"{name}: {'可用' if available else '不可用'}")
+            return "\n".join(handlers) if handlers else self.tr("未检测到像素解码处理器")
+        except Exception as e:
+            return self.tr("解码能力检测失败: ") + str(e)
+
+    def _get_cache_info_text(self) -> str:
+        """返回性能缓存状态文本。"""
+        try:
+            info = self.settings_manager.get_performance_manager().get_cache_info()
+            return self.tr("上限 %1 MB，当前 %2 项，估算 %3 MB").replace(
+                "%1", str(info.get("size_mb", 0))
+            ).replace(
+                "%2", str(info.get("item_count", 0))
+            ).replace(
+                "%3", f"{info.get('estimated_usage_mb', 0):.1f}"
+            )
+        except Exception as e:
+            return self.tr("缓存状态不可用: ") + str(e)
+
+    def _clear_cache(self, label: QLabel) -> None:
+        """清空显示缓存并刷新状态标签。"""
+        try:
+            self.settings_manager.get_performance_manager().clear_cache()
+            label.setText(self._get_cache_info_text())
+        except Exception as e:
+            label.setText(self.tr("清空缓存失败: ") + str(e))
 
     def _create_separator(self) -> QFrame:
         """创建分隔线"""
@@ -651,7 +908,7 @@ class SettingsDialog(QDialog):
             if widget_key in self.setting_widgets:
                 widget = self.setting_widgets[widget_key]
                 if isinstance(widget, ColorButton):
-                    widget.setColor(QColor(value))
+                    widget.setColor(qcolor_from_theme(value))
                 elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                     widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
                 elif isinstance(widget, QCheckBox):
@@ -670,10 +927,12 @@ class SettingsDialog(QDialog):
         # 加载UI主题
         ui_combo = self.setting_widgets.get('ui_theme')
         if ui_combo:
-            saved_theme = self.settings_manager.get_setting('ui_theme', 'light')
+            saved_theme = self.settings_manager.get_setting('ui_theme', 'dark')
             index = ui_combo.findData(saved_theme)
             if index != -1:
+                ui_combo.blockSignals(True)
                 ui_combo.setCurrentIndex(index)
+                ui_combo.blockSignals(False)
         
         # 加载ROI主题
         roi_combo = self.setting_widgets.get('roi_theme')
@@ -709,9 +968,45 @@ class SettingsDialog(QDialog):
         if thread_count_spin:
             saved_thread_count = self.settings_manager.get_setting('thread_count', 4)
             thread_count_spin.setValue(saved_thread_count)
+
+        self._load_simple_settings()
         
         # 加载自定义设置
         self._load_custom_settings()
+
+    def _load_simple_settings(self):
+        """加载通用设置控件。"""
+        for key, default_value in SIMPLE_SETTING_DEFAULTS.items():
+            widget = self.setting_widgets.get(key)
+            if widget is None:
+                continue
+            value = self.settings_manager.get_setting(key, default_value)
+            self._set_widget_value(widget, value)
+
+    def _set_widget_value(self, widget: QWidget, value: Any):
+        if isinstance(widget, QComboBox):
+            index = widget.findData(value)
+            if index != -1:
+                widget.setCurrentIndex(index)
+        elif isinstance(widget, QCheckBox):
+            widget.setChecked(self._to_bool(value))
+        elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            widget.setValue(int(value) if isinstance(widget, QSpinBox) else float(value))
+
+    def _get_widget_value(self, widget: QWidget):
+        if isinstance(widget, QComboBox):
+            return widget.currentData()
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            return widget.value()
+        return None
+
+    @staticmethod
+    def _to_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     def _load_custom_settings(self):
         """加载自定义设置"""
@@ -719,33 +1014,36 @@ class SettingsDialog(QDialog):
             if '.custom.' not in key:
                 continue
             
+            category = key.split('.')[0]
+            theme_combo = self.setting_widgets.get(f'{category}_theme')
+            selected_theme = theme_combo.currentData() if isinstance(theme_combo, QComboBox) else None
+            if selected_theme != 'custom':
+                continue
+
             saved_value = self.settings_manager.get_setting(key)
             
-            # 如果没有保存值，从主题文件获取默认值
+            # 如果没有保存值，从 custom 主题文件获取；再回退到默认主题。
             if saved_value is None:
                 parts = key.split('.')
                 if len(parts) >= 3 and parts[1] == 'custom':
-                    category = parts[0]
                     field_name = parts[2]
                     
-                    # 获取默认主题数据
                     category_themes = self.themes.get(category, {})
-                    if 'default' in category_themes:
-                        default_theme_data = category_themes['default']
-                    elif category_themes:
-                        first_theme_name = list(category_themes.keys())[0]
-                        default_theme_data = category_themes[first_theme_name]
-                    else:
-                        default_theme_data = {}
-                    
-                    saved_value = default_theme_data.get(field_name)
+                    custom_theme_data = category_themes.get('custom', {})
+                    saved_value = custom_theme_data.get(field_name)
+
+                    if saved_value is None:
+                        default_theme_data = category_themes.get('default', {})
+                        saved_value = default_theme_data.get(field_name)
+                        if saved_value is None and field_name == 'info_selected_bg_color':
+                            saved_value = default_theme_data.get('info_bg_color')
             
             if saved_value is None:
                 continue
             
             # 设置控件值
             if isinstance(widget, ColorButton):
-                widget.setColor(QColor(saved_value))
+                widget.setColor(qcolor_from_theme(saved_value))
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 widget.setValue(int(saved_value) if isinstance(widget, QSpinBox) else float(saved_value))
             elif isinstance(widget, QCheckBox):
@@ -790,10 +1088,27 @@ class SettingsDialog(QDialog):
         if thread_count_spin:
             thread_count_spin.setValue(4)
 
+        for key, default_value in SIMPLE_SETTING_DEFAULTS.items():
+            widget = self.setting_widgets.get(key)
+            if widget is not None:
+                self._set_widget_value(widget, default_value)
+
     def accept(self):
         """保存设置并关闭对话框"""
         self._save_settings()
         super().accept()
+
+    def reject(self):
+        """取消设置并恢复对话框内预览过的 UI 主题。"""
+        self._restore_previewed_ui_theme()
+        super().reject()
+
+    def _restore_previewed_ui_theme(self):
+        main_window = self.parent()
+        if hasattr(main_window, 'theme_manager'):
+            current_theme = main_window.theme_manager.get_current_theme()
+            if current_theme != self._original_ui_theme:
+                main_window.theme_manager.set_theme(self._original_ui_theme)
 
     def _save_settings(self):
         """从UI控件收集并保存所有设置"""
@@ -837,6 +1152,11 @@ class SettingsDialog(QDialog):
         thread_count_spin = self.setting_widgets.get('thread_count')
         if thread_count_spin:
             self.settings_manager.set_setting('thread_count', thread_count_spin.value())
+
+        for key in SIMPLE_SETTING_DEFAULTS:
+            widget = self.setting_widgets.get(key)
+            if widget is not None:
+                self.settings_manager.set_setting(key, self._get_widget_value(widget))
         
         self.settings_manager.save_settings()
 
@@ -924,7 +1244,8 @@ class SettingsDialog(QDialog):
         roi_controls = [
             'roi.custom.border_color', 'roi.custom.fill_color', 'roi.custom.selected_color',
             'roi.custom.border_width', 'roi.custom.anchor_color', 'roi.custom.anchor_size',
-            'roi.custom.info_bg_color', 'roi.custom.info_text_color', 'roi.custom.info_border_color',
+            'roi.custom.info_bg_color', 'roi.custom.info_selected_bg_color',
+            'roi.custom.info_text_color', 'roi.custom.info_border_color',
             'roi.custom.info_font_size', 'roi.custom.info_radius', 'roi.custom.info_padding',
             'roi.custom.info_precision', 'roi.custom.info_auto_hide'
         ]

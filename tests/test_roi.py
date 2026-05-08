@@ -4,6 +4,8 @@ import pytest
 from medimager.core.analysis import calculate_roi_statistics
 from medimager.core.image_data_model import ImageDataModel
 from medimager.core.roi import CircleROI, EllipseROI, RectangleROI
+from medimager.ui.widgets.roi_stats_box import get_stats_text
+from medimager.utils.settings import get_settings_manager
 
 
 def make_model(pixel_spacing=None):
@@ -62,3 +64,26 @@ def test_empty_roi_returns_none():
     roi = RectangleROI((0, 0), (1, 1), 5)
 
     assert calculate_roi_statistics(model, roi) is None
+
+
+def test_radiant_roi_stats_text_uses_compact_cm2_format():
+    settings = get_settings_manager()
+    previous_theme = settings.get_setting("roi_theme", "default")
+    settings.set_setting("roi_theme", "radiant")
+
+    try:
+        text = get_stats_text(
+            {
+                "mean": 251.83,
+                "std": 26.06,
+                "max": 319.0,
+                "min": 181.0,
+                "count": 212,
+                "area_px": 212.0,
+                "area_mm2": 120.0,
+            }
+        )
+    finally:
+        settings.set_setting("roi_theme", previous_theme)
+
+    assert text == "Mean=251.83 SD=26.06\nMax=319 Min=181\nArea=1.2 cm² (212 px)"

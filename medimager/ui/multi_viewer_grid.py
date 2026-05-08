@@ -17,6 +17,7 @@ from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition, ViewBinding
 from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
+from medimager.utils.settings import get_settings_manager
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,7 @@ class ViewFrame(QFrame):
         
         # 注册到主题管理器
         self._register_to_theme_manager()
+        self.apply_runtime_settings()
         
         logger.debug(f"[ViewFrame.__init__] 视图框架初始化完成: {view_id}")
     
@@ -275,6 +277,25 @@ class ViewFrame(QFrame):
     def has_bound_model(self) -> bool:
         """检查是否已绑定了图像数据模型"""
         return self._image_model is not None
+
+    def apply_runtime_settings(self) -> None:
+        """应用设置面板中可即时生效的视图显示选项。"""
+        try:
+            settings = get_settings_manager()
+            show_title = self._to_bool(settings.get_setting("display.show_view_title", True))
+            show_status = self._to_bool(settings.get_setting("display.show_view_status", True))
+            self._title_bar.setVisible(show_title)
+            self._status_bar.setVisible(show_status)
+            if hasattr(self._image_viewer, "apply_runtime_settings"):
+                self._image_viewer.apply_runtime_settings()
+        except Exception as e:
+            logger.debug(f"[ViewFrame.apply_runtime_settings] 应用显示设置失败: {e}")
+
+    @staticmethod
+    def _to_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     def bind_series(self, series_id: str, image_model: ImageDataModel, series_info: str) -> None:
         """绑定序列到视图
@@ -1390,6 +1411,12 @@ class MultiViewerGrid(QWidget):
             if view_frame.is_active:
                 return view_frame
         return None
+
+    def apply_runtime_settings(self) -> None:
+        """应用设置面板中可即时生效的多视图显示选项。"""
+        for view_frame in self._view_frames.values():
+            if hasattr(view_frame, "apply_runtime_settings"):
+                view_frame.apply_runtime_settings()
     
     def _fit_all_bound_views_to_window(self) -> None:
         """为所有绑定了序列的视图自适应窗格大小

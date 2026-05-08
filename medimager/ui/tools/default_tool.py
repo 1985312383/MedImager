@@ -1,5 +1,6 @@
 from medimager.ui.tools.base_tool import BaseTool, point_distance, check_measurement_hit
 from medimager.utils.logger import get_logger
+from medimager.utils.settings import get_settings_manager
 from PySide6.QtWidgets import QGraphicsView
 from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor, QKeyEvent
 from PySide6.QtCore import Qt, QPointF, QPoint
@@ -18,6 +19,15 @@ class DragMode(Enum):
     ROI_MOVE = auto()           # 移动ROI
     ROI_RESIZE = auto()         # 调整ROI大小
     INFO_BOX_MOVE = auto()      # 移动信息板
+
+
+DRAG_ACTION_TO_MODE = {
+    "browse": DragMode.BROWSE_IMAGES,
+    "window": DragMode.ADJUST_WINDOW,
+    "zoom": DragMode.ZOOM,
+    "pan": DragMode.PAN,
+    "none": DragMode.NONE,
+}
 
 
 class DefaultTool(BaseTool):
@@ -75,22 +85,34 @@ class DefaultTool(BaseTool):
                     event.accept()
                     return
             
-            # 默认：浏览系列图像
-            self._drag_mode = DragMode.BROWSE_IMAGES
+            self._drag_mode = self._drag_mode_from_setting("interaction.left_drag_action", DragMode.BROWSE_IMAGES)
+            if self._drag_mode == DragMode.PAN:
+                self.viewer.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
 
         # 中键：调整窗口（亮度/对比度）
         if event.button() == Qt.MiddleButton:
-            self._drag_mode = DragMode.ADJUST_WINDOW
+            self._drag_mode = self._drag_mode_from_setting("interaction.middle_drag_action", DragMode.ADJUST_WINDOW)
+            if self._drag_mode == DragMode.PAN:
+                self.viewer.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
 
         # 右键：放大/缩小图像
         if event.button() == Qt.RightButton:
-            self._drag_mode = DragMode.ZOOM
+            self._drag_mode = self._drag_mode_from_setting("interaction.right_drag_action", DragMode.ZOOM)
+            if self._drag_mode == DragMode.PAN:
+                self.viewer.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
+
+    def _drag_mode_from_setting(self, key: str, default: DragMode) -> DragMode:
+        try:
+            action = get_settings_manager().get_setting(key, None)
+            return DRAG_ACTION_TO_MODE.get(str(action), default)
+        except Exception:
+            return default
             
     def _check_measurement_interactions(self, scene_pos: QPointF, modifiers) -> bool:
         """检查测量交互 - DefaultTool只处理选中，不处理拖拽"""
@@ -269,7 +291,10 @@ class DefaultTool(BaseTool):
             event.accept()
         elif modifiers == Qt.NoModifier:
             if self.viewer.model and self.viewer.model.get_slice_count() > 1:
+                reverse = self._bool_setting("interaction.wheel_reverse", False)
                 direction = -1 if angle > 0 else 1
+                if reverse:
+                    direction *= -1
                 self.viewer.model.set_current_slice(self.viewer.model.current_slice_index + direction)
                 self._sync_slice(self.viewer.model.current_slice_index)
 
@@ -279,6 +304,15 @@ class DefaultTool(BaseTool):
                         self.viewer._update_pixel_info(self.viewer.last_mouse_scene_pos)
 
                 event.accept()
+
+    def _bool_setting(self, key: str, default: bool) -> bool:
+        try:
+            value = get_settings_manager().get_setting(key, default)
+            if isinstance(value, str):
+                return value.lower() in ("1", "true", "yes", "on")
+            return bool(value)
+        except Exception:
+            return default
 
     def key_press_event(self, event: QKeyEvent):
         """处理键盘按键事件"""
