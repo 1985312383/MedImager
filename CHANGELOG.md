@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.1 - 2026-05-08
+
+### 特性
+- 研究与教学用途的基础 2D DICOM 查看器
+- 支持 DICOM 文件/文件夹加载、普通图片加载、多视图显示和基础测量
+- 支持 ROI 统计、窗宽窗位、当前视图截图导出和当前切片图像导出
+- Release 构建会在关于对话框中显示版本、项目地址和最近一次 release changelog
+
+### 使用方法
+1. 下载并解压 ZIP 文件
+2. 运行 `MedImager.exe`
+3. 通过菜单打开 DICOM 文件、DICOM 文件夹或普通图片
+4. 使用窗宽窗位、ROI、测量和导出工具完成基础查看与分析
+
+### 本次 Release Commit 记录
+从 v1.2.0 到 v1.2.1
+
+- a21eead Merge branch 'main' of https://github.com/1985312383/MedImager (柯慕灵)
+- 9249f23 Update release.yml (柯慕灵)
+- 99708ff docs: update changelog for v1.2.0 (github-actions[bot])
+- 0a6eb3f Delete build-release.yml (柯慕灵)
+
 ## 1.2.0 - 2026-05-08
 
 ### 特性
