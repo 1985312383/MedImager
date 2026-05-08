@@ -300,15 +300,6 @@ class ViewFrame(QFrame):
             # 绑定图像数据
             self._image_viewer.set_model(image_model)
 
-            # 先断开该模型上可能存在的旧连接，防止重复绑定时信号叠加
-            try:
-                image_model.data_changed.disconnect(self._update_status_info)
-                image_model.data_changed.disconnect(self._update_image_display)
-                image_model.slice_changed.disconnect(self._update_slice_info)
-                image_model.slice_changed.disconnect(self._update_image_display)
-            except (RuntimeError, TypeError):
-                pass  # 没有已连接的信号，忽略
-
             # 连接信号以更新状态信息和图像显示
             image_model.data_changed.connect(self._update_status_info)
             image_model.data_changed.connect(self._update_image_display)
@@ -1316,6 +1307,7 @@ class MultiViewerGrid(QWidget):
     def _on_view_frame_drop_requested(self, view_id: str, series_id: str) -> None:
         """处理视图框架的拖拽请求"""
         logger.debug(f"[MultiViewerGrid._on_view_frame_drop_requested] 视图框架拖拽请求: view_id={view_id}, series_id={series_id}")
+        self._series_manager.set_active_view(view_id)
         self.binding_requested.emit(view_id, series_id)
     
     # 查询方法

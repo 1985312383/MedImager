@@ -1425,11 +1425,7 @@ class MainWindow(QMainWindow):
         # 如果绑定的是活动视图，更新DICOM标签面板
         active_view_id = self.series_manager.get_active_view_id()
         if view_id == active_view_id and series_id:
-            image_model = self.series_manager.get_series_model(series_id)
-            if image_model and image_model.has_image() and image_model.is_dicom():
-                # 获取当前切片的DICOM数据
-                dicom_dataset = image_model.get_dicom_file(image_model.current_slice_index)
-                self.dicom_tag_panel.update_tags(dicom_dataset)
+            self._on_view_activated(view_id)
         
         # 当新视图绑定序列时，传播工具到该视图
         if series_id:  # 绑定了序列

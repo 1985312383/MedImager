@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QCheckBox, QSpinBox,
     QProgressBar, QTabWidget, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QMimeData
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QMimeData, QSignalBlocker
 from PySide6.QtGui import QAction, QPixmap, QIcon, QFont, QColor, QPalette, QDrag, QPainter, QBrush, QPen, QFontMetrics
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo, ViewPosition
@@ -924,6 +924,7 @@ class SeriesPanel(QWidget):
         # 序列管理器信号 - 监听切片变化
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)
         self._series_manager.series_loaded.connect(self._on_series_loaded_for_sync)
+        self._series_manager.binding_changed.connect(self._on_binding_changed_for_sync)
         
         # 绑定组件信号
         self._binding_widget.binding_requested.connect(self.binding_requested)
@@ -1063,6 +1064,24 @@ class SeriesPanel(QWidget):
             
         except Exception as e:
             logger.error(f"[SeriesPanel._connect_slice_change_signal] 连接信号失败: {e}", exc_info=True)
+
+    def _on_binding_changed_for_sync(self, view_id: str, series_id: str) -> None:
+        """绑定变化后连接新序列的切片同步，并同步活动视图当前切片。"""
+        if not series_id:
+            return
+
+        try:
+            image_model = self._series_manager.get_series_model(series_id)
+            if not image_model or not image_model.has_image():
+                return
+
+            self._connect_slice_change_signal(series_id, image_model)
+
+            if view_id == self._series_manager.get_active_view_id():
+                self._info_widget.show_series_info(series_id)
+                self.sync_slice_selection(series_id, image_model.current_slice_index)
+        except Exception as e:
+            logger.error(f"[SeriesPanel._on_binding_changed_for_sync] 处理绑定变化失败: {e}", exc_info=True)
     
     def sync_slice_selection(self, series_id: str, slice_index: int) -> None:
         """同步序列面板中的切片选择"""
@@ -1091,20 +1110,19 @@ class SeriesPanel(QWidget):
                         try:
                             item_slice_index = int(item_slice_index_str)
                             if item_series_id == series_id and item_slice_index == slice_index:
-                                # 找到了对应的切片项目，暂时断开信号以避免循环
-                                self._series_list._tree_widget.itemSelectionChanged.disconnect(self._series_list._on_selection_changed)
-                                
-                                # 选中切片项目
-                                self._series_list._tree_widget.setCurrentItem(slice_item)
+                                tree_widget = self._series_list._tree_widget
+                                blocker = QSignalBlocker(tree_widget)
+                                try:
+                                    # 选中切片项目
+                                    tree_widget.setCurrentItem(slice_item)
 
-                                # 确保父项目展开
-                                series_item.setExpanded(True)
+                                    # 确保父项目展开
+                                    series_item.setExpanded(True)
 
-                                # 滚动到选中项目，确保可见
-                                self._series_list._tree_widget.scrollToItem(slice_item)
-
-                                # 重新连接信号
-                                self._series_list._tree_widget.itemSelectionChanged.connect(self._series_list._on_selection_changed)
+                                    # 滚动到选中项目，确保可见
+                                    tree_widget.scrollToItem(slice_item)
+                                finally:
+                                    del blocker
                                 
                                 logger.debug(f"[SeriesPanel._sync_slice_selection] 选中切片项目: {slice_index}")
                                 break
