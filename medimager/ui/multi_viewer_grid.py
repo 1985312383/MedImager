@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, 
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPixmap
 
 from medimager.ui.image_viewer import ImageViewer
+from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition, ViewBinding
 from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
@@ -390,13 +391,10 @@ class ViewFrame(QFrame):
 
                 if display_slice is not None:
                     # 转换为QImage
-                    from PySide6.QtGui import QImage
-                    height, width = display_slice.shape
-                    bytes_per_line = width
+                    q_image = qimage_from_display_data(display_slice)
 
                     # 创建QImage - 必须保持numpy数组引用，防止GC回收导致悬空指针
-                    image_data = display_slice.copy()
-                    q_image = QImage(image_data.data, width, height, bytes_per_line, QImage.Format_Grayscale8)
+                    # q_image was copied from the numpy buffer by qimage_from_display_data.
 
                     # 显示图像
                     self._image_viewer.display_qimage(q_image)

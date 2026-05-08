@@ -43,12 +43,20 @@ def get_stats_text(stats: Dict[str, float]) -> str:
     """将统计数据格式化为显示字符串。"""
     settings = _get_stats_box_settings()
     precision = settings['precision']
+
+    if 'area_mm2' in stats:
+        area_text = f"Area: {stats['area_mm2']:.{precision}f} mm²"
+    elif 'area_px' in stats:
+        area_text = f"Area: {stats['area_px']:.0f} px²"
+    else:
+        area_text = f"Count: {stats['count']:.0f}"
     
     return (
         f"Max: {stats['max']:.{precision}f}\n"
         f"Min: {stats['min']:.{precision}f}\n"
         f"Mean: {stats['mean']:.{precision}f}\n"
-        f"Std: {stats['std']:.{precision}f}"
+        f"Std: {stats['std']:.{precision}f}\n"
+        f"{area_text}"
     )
 
 def calculate_stats_box_size_rect(stats_text: str, font: QFont) -> QRect:

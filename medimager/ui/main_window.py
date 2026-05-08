@@ -25,6 +25,7 @@ from medimager.core.series_view_binding import SeriesViewBindingManager, Binding
 from medimager.core.image_data_model import ImageDataModel
 from medimager.core.dicom_parser import DicomParser
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
+from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
 from medimager.ui.dialogs.custom_wl_dialog import CustomWLDialog
@@ -354,6 +355,12 @@ class MainWindow(QMainWindow):
         export_action.setStatusTip(self.tr("将当前视图导出为图像文件"))
         export_action.triggered.connect(self._export_current_view)
         file_menu.addAction(export_action)
+
+        export_slice_action = QAction(self.tr("导出当前切片图像(&S)"), self)
+        export_slice_action.setShortcut("Ctrl+Shift+E")
+        export_slice_action.setStatusTip(self.tr("导出当前切片图像，不包含视口边框和工具栏"))
+        export_slice_action.triggered.connect(self._export_current_slice_image)
+        file_menu.addAction(export_slice_action)
 
         # 复制视图到剪贴板
         copy_view_action = QAction(self.tr("复制视图到剪贴板(&C)"), self)
@@ -1052,6 +1059,8 @@ class MainWindow(QMainWindow):
                 try:
                     from PIL import Image
                     img = Image.open(file_path)
+                    if img.mode not in ("L", "I", "F", "RGB", "RGBA"):
+                        img = img.convert("RGB")
                     data = np.array(img)
                     success = image_model.load_single_image(data)
                 except ImportError:
@@ -1171,7 +1180,7 @@ class MainWindow(QMainWindow):
             method()
 
     def _export_current_view(self) -> None:
-        """导出当前视图为图像文件"""
+        """导出当前视图截图，包含覆盖层和视口边框。"""
         active_frame = self.multi_viewer_grid.get_active_view_frame()
         if not active_frame:
             QMessageBox.warning(self, self.tr("警告"), self.tr("没有活动的视图"))
@@ -1183,7 +1192,7 @@ class MainWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            self.tr("导出视图"),
+            self.tr("导出当前视图截图"),
             QDir.homePath() + "/MedImager_export.png",
             self.tr("PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;BMP图像 (*.bmp)")
         )
@@ -1192,9 +1201,36 @@ class MainWindow(QMainWindow):
 
         pixmap = viewer.viewport().grab()
         if pixmap.save(file_path):
-            self.statusBar().showMessage(self.tr("视图已导出: ") + file_path, 5000)
+            self.statusBar().showMessage(self.tr("当前视图截图已导出: ") + file_path, 5000)
         else:
             QMessageBox.critical(self, self.tr("错误"), self.tr("导出失败"))
+
+    def _export_current_slice_image(self) -> None:
+        """Export the active slice image without viewport chrome."""
+        model = self._get_active_image_model()
+        if not model or not model.has_image():
+            QMessageBox.warning(self, self.tr("警告"), self.tr("没有可导出的当前切片图像"))
+            return
+
+        display_slice = model.get_display_slice()
+        if display_slice is None:
+            QMessageBox.warning(self, self.tr("警告"), self.tr("当前切片图像为空"))
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("导出当前切片图像"),
+            QDir.homePath() + "/MedImager_slice.png",
+            self.tr("PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;BMP图像 (*.bmp)")
+        )
+        if not file_path:
+            return
+
+        q_image = qimage_from_display_data(display_slice)
+        if q_image.save(file_path):
+            self.statusBar().showMessage(self.tr("当前切片图像已导出: ") + file_path, 5000)
+        else:
+            QMessageBox.critical(self, self.tr("错误"), self.tr("导出当前切片图像失败"))
 
     def _copy_view_to_clipboard(self) -> None:
         """复制当前视图到剪贴板"""

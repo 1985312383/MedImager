@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager is a powerful, user-friendly, and research-oriented open-source medical image viewer. It aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and advanced analysis features for academic and clinical workflows.
+MedImager is a user-friendly, research- and education-oriented open-source basic 2D medical image viewer. It aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and common analysis features for prototyping, academic research, and teaching scenarios.
 
 ## 1. Project Vision
 
-Create a powerful, user-friendly, and research-oriented open-source medical image viewer. MedImager aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and advanced analysis features for academic and clinical workflows, aspiring to be an open-source alternative to RadiAnt.
+Create a user-friendly, research- and education-oriented open-source basic 2D medical image viewer. MedImager aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and common analysis features for research prototypes, teaching demos, and non-diagnostic workflows.
 
 <div align="center">
 
@@ -73,11 +73,11 @@ Create a powerful, user-friendly, and research-oriented open-source medical imag
 
 ## 3. Tech Stack
 
-* **Language:** Python 3.9+
+* **Language:** Python 3.11+
 * **GUI Framework:** PySide6 (LGPL)
 * **DICOM Parsing:** pydicom
 * **Numerical/Image Processing:** NumPy
-* **2D/3D Visualization:** Qt Graphics View Framework (2D), VTK 9+ (3D)
+* **2D Visualization:** Qt Graphics View Framework
 * **Packaging:** PyInstaller
 * **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)
 

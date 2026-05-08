@@ -74,6 +74,7 @@ class ImageDataModel(QObject):
         self.parser.data_loaded.connect(self._on_dicom_data_loaded)
         
         self.pixel_array: Optional[np.ndarray] = None
+        self.image_mode: str = "grayscale_volume"
         self.dicom_header: Dict[str, Any] = {}
         self.dicom_files: List[pydicom.FileDataset] = []
         
@@ -95,6 +96,7 @@ class ImageDataModel(QObject):
         """Clears all data and resets the model to its initial state."""
         self.logger.info("Clearing all image data.")
         self.pixel_array = None
+        self.image_mode = "grayscale_volume"
         self.dicom_header.clear()
         self.dicom_files.clear()
         self.current_slice_index = 0
@@ -128,6 +130,7 @@ class ImageDataModel(QObject):
         self.logger.info("Received data from DicomParser. Populating model.")
         
         self.pixel_array = self.parser.get_pixel_array()
+        self.image_mode = "grayscale_volume"
         self.dicom_files = self.parser.get_datasets()
         self.dicom_header = self.parser.get_metadata()
         
@@ -148,8 +151,13 @@ class ImageDataModel(QObject):
             self.clear_all_data()
             
             if image_data.ndim == 2:
+                self.image_mode = "grayscale_volume"
+                self.pixel_array = image_data[np.newaxis, ...]
+            elif image_data.ndim == 3 and image_data.shape[-1] in (3, 4):
+                self.image_mode = "rgb_image"
                 self.pixel_array = image_data[np.newaxis, ...]
             elif image_data.ndim == 3:
+                self.image_mode = "grayscale_volume"
                 self.pixel_array = image_data
             else:
                 self.logger.error(f"Unsupported image dimension: {image_data.ndim}")
@@ -171,6 +179,10 @@ class ImageDataModel(QObject):
 
     def _set_default_window_level(self) -> None:
         """Sets the default window width and level."""
+        if self.image_mode == "rgb_image":
+            self.set_window(255, 127)
+            return
+
         # Try to get from DICOM metadata first
         if "WindowWidth" in self.dicom_header and "WindowCenter" in self.dicom_header:
             ww = self.dicom_header.get("WindowWidth")
@@ -279,6 +291,9 @@ class ImageDataModel(QObject):
                 normalized_data = ((windowed_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
             else:
                 normalized_data = np.zeros_like(windowed_data, dtype=np.uint8)
+
+            if self._is_monochrome1():
+                normalized_data = 255 - normalized_data
                 
             return normalized_data
         except Exception as e:
@@ -289,7 +304,9 @@ class ImageDataModel(QObject):
         """Gets the raw pixel value at a specific coordinate for the current slice."""
         slice_data = self.get_current_slice_data()
         if slice_data is not None and 0 <= y < slice_data.shape[0] and 0 <= x < slice_data.shape[1]:
-            return float(slice_data[y, x])
+            value = slice_data[y, x]
+            if np.isscalar(value):
+                return float(value)
         return None
 
     def get_dicom_file(self, slice_index: int) -> Optional[pydicom.FileDataset]:
@@ -326,8 +343,11 @@ class ImageDataModel(QObject):
         if slice_data is None:
             return None
 
+        if self.image_mode == "rgb_image":
+            return self._as_uint8_rgb(slice_data)
+
         # 构建缓存键：模型ID + 切片索引 + 窗宽窗位
-        cache_key = f"display_{id(self)}_{slice_index}_{self.window_width}_{self.window_level}"
+        cache_key = f"display_{id(self)}_{self.image_mode}_{slice_index}_{self.window_width}_{self.window_level}_{self._is_monochrome1()}"
 
         try:
             perf = get_performance_manager()
@@ -346,6 +366,29 @@ class ImageDataModel(QObject):
             pass
 
         return result
+
+    def _as_uint8_rgb(self, slice_data: np.ndarray) -> np.ndarray:
+        """Return an RGB/RGBA slice as uint8 display data."""
+        if slice_data.dtype == np.uint8:
+            return slice_data
+
+        data = slice_data.astype(np.float32)
+        if data.size == 0:
+            return data.astype(np.uint8)
+
+        min_val = float(np.nanmin(data))
+        max_val = float(np.nanmax(data))
+        if max_val > min_val:
+            data = (data - min_val) / (max_val - min_val) * 255.0
+        else:
+            data = np.zeros_like(data)
+        return np.clip(data, 0, 255).astype(np.uint8)
+
+    def _is_monochrome1(self) -> bool:
+        photometric = self.dicom_header.get("PhotometricInterpretation")
+        if photometric is None:
+            photometric = self.dicom_header.get("Photometric Interpretation")
+        return str(photometric).upper() == "MONOCHROME1"
 
     def has_image(self) -> bool:
         """Check if any image data is loaded."""

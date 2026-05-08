@@ -39,7 +39,9 @@ class DicomParser(QObject):
         try:
             dataset = pydicom.dcmread(file_path)
             self._datasets = [dataset]
-            self._pixel_array = dataset.pixel_array
+            self._pixel_array = self._extract_pixel_data(self._datasets)
+            if self._pixel_array is None:
+                return False
             self.data_loaded.emit()
             return True
         except Exception as e:
@@ -95,17 +97,25 @@ class DicomParser(QObject):
             return False
 
     def _sort_dicom_slices(self, dicom_datasets: List[pydicom.FileDataset]) -> List[pydicom.FileDataset]:
-        """Sorts a list of pydicom datasets based on slice position."""
+        """Sort DICOM slices using patient-space geometry when available."""
         try:
-            # Try to sort by ImagePositionPatient Z coordinate
-            if all(hasattr(ds, 'ImagePositionPatient') and ds.ImagePositionPatient for ds in dicom_datasets):
-                dicom_datasets.sort(key=lambda ds: float(ds.ImagePositionPatient[2]))
-                self.logger.debug("Sorted slices by ImagePositionPatient (Z-axis).")
-            # Fallback to SliceLocation
-            elif all(hasattr(ds, 'SliceLocation') and ds.SliceLocation is not None for ds in dicom_datasets):
+            geometries = [(ds, self._slice_geometry(ds)) for ds in dicom_datasets]
+            if geometries and all(geometry is not None for _, geometry in geometries):
+                valid_geometries = [
+                    (ds, geometry) for ds, geometry in geometries if geometry is not None
+                ]
+                reference_normal = valid_geometries[0][1][1]
+                self._log_geometry_consistency(valid_geometries, reference_normal)
+                valid_geometries.sort(
+                    key=lambda item: float(np.dot(item[1][0], reference_normal))
+                )
+                dicom_datasets[:] = [ds for ds, _ in valid_geometries]
+                self.logger.debug("Sorted slices by ImageOrientationPatient/ImagePositionPatient.")
+                return dicom_datasets
+
+            if all(hasattr(ds, 'SliceLocation') and ds.SliceLocation is not None for ds in dicom_datasets):
                 dicom_datasets.sort(key=lambda ds: float(ds.SliceLocation))
                 self.logger.debug("Sorted slices by SliceLocation.")
-            # Fallback to InstanceNumber
             elif all(hasattr(ds, 'InstanceNumber') and ds.InstanceNumber for ds in dicom_datasets):
                 dicom_datasets.sort(key=lambda ds: int(ds.InstanceNumber))
                 self.logger.debug("Sorted slices by InstanceNumber.")
@@ -116,18 +126,84 @@ class DicomParser(QObject):
             
         return dicom_datasets
 
+    def _can_sort_by_patient_position(self, datasets: List[pydicom.FileDataset]) -> bool:
+        return all(self._slice_geometry(ds) is not None for ds in datasets)
+
+    def _image_position(self, dataset: pydicom.FileDataset) -> np.ndarray:
+        position = self._numeric_tag_sequence(dataset, 'ImagePositionPatient', 3)
+        if position is None:
+            raise ValueError("Missing or invalid ImagePositionPatient")
+        return position
+
+    def _slice_normal(self, dataset: pydicom.FileDataset) -> Optional[np.ndarray]:
+        orientation = self._numeric_tag_sequence(dataset, 'ImageOrientationPatient', 6)
+        if orientation is None:
+            return None
+        return self._normal_from_orientation(orientation)
+
+    def _slice_geometry(self, dataset: pydicom.FileDataset) -> Optional[tuple[np.ndarray, np.ndarray]]:
+        position = self._numeric_tag_sequence(dataset, 'ImagePositionPatient', 3)
+        orientation = self._numeric_tag_sequence(dataset, 'ImageOrientationPatient', 6)
+        if position is None or orientation is None:
+            return None
+
+        normal = self._normal_from_orientation(orientation)
+        if normal is None:
+            return None
+        return position, normal
+
+    def _numeric_tag_sequence(
+        self,
+        dataset: pydicom.FileDataset,
+        tag_name: str,
+        minimum_length: int,
+    ) -> Optional[np.ndarray]:
+        value = getattr(dataset, tag_name, None)
+        try:
+            if value is None or len(value) < minimum_length:
+                return None
+            return np.asarray([float(v) for v in value[:minimum_length]], dtype=np.float64)
+        except (TypeError, ValueError):
+            self.logger.warning(f"Invalid {tag_name}; falling back to secondary slice sorting tags.")
+            return None
+
+    def _normal_from_orientation(self, orientation: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            row = orientation[:3]
+            col = orientation[3:]
+            normal = np.cross(row, col)
+            norm = np.linalg.norm(normal)
+            if norm == 0:
+                self.logger.warning("Invalid ImageOrientationPatient: zero slice normal.")
+                return None
+            return normal / norm
+        except Exception as e:
+            self.logger.warning(f"Could not calculate DICOM slice normal: {e}")
+            return None
+
+    def _log_geometry_consistency(
+        self,
+        geometries: List[tuple[pydicom.FileDataset, tuple[np.ndarray, np.ndarray]]],
+        reference_normal: np.ndarray,
+    ) -> None:
+        for _, (_, normal) in geometries[1:]:
+            if not np.allclose(normal, reference_normal, atol=1e-4):
+                self.logger.warning("Inconsistent ImageOrientationPatient found within one series.")
+                break
+
+        projections = [float(np.dot(position, reference_normal)) for _, (position, _) in geometries]
+        if len(projections) >= 3:
+            spacings = np.diff(sorted(projections))
+            positive_spacings = spacings[np.abs(spacings) > 1e-6]
+            if positive_spacings.size and np.ptp(positive_spacings) > 1e-3:
+                self.logger.warning("Non-uniform slice spacing detected in DICOM series.")
+
     def _extract_pixel_data(self, datasets: List[pydicom.FileDataset]) -> Optional[np.ndarray]:
         """Extracts pixel data from a list of sorted datasets."""
         pixel_arrays = []
         try:
             for i, ds in enumerate(datasets):
-                pixel_array = ds.pixel_array.astype(np.float32)
-                
-                # Apply rescale slope and intercept if they exist
-                if hasattr(ds, 'RescaleSlope') and hasattr(ds, 'RescaleIntercept'):
-                    slope = float(ds.RescaleSlope)
-                    intercept = float(ds.RescaleIntercept)
-                    pixel_array = pixel_array * slope + intercept
+                pixel_array = self._apply_modality_transform(ds.pixel_array.astype(np.float32), ds)
                     
                 pixel_arrays.append(pixel_array)
             
@@ -138,6 +214,12 @@ class DicomParser(QObject):
         except Exception as e:
             self.logger.error(f"Failed to extract pixel data from slice {i}: {e}", exc_info=True)
             return None
+
+    def _apply_modality_transform(self, pixel_array: np.ndarray, dataset: pydicom.FileDataset) -> np.ndarray:
+        """Apply the minimal modality transform used by the 1.0 display path."""
+        slope = float(getattr(dataset, 'RescaleSlope', 1.0))
+        intercept = float(getattr(dataset, 'RescaleIntercept', 0.0))
+        return pixel_array * slope + intercept
 
     def get_pixel_array(self) -> Optional[np.ndarray]:
         """Returns the loaded 3D pixel data array."""

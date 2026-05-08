@@ -1,7 +1,7 @@
 # 处理统计计算 (HU 值统计等) 
 
 import numpy as np
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, Any
 
 # These imports will be conditionally available due to the project structure.
 # We expect them to be available when run from the main application.
@@ -34,7 +34,7 @@ def calculate_roi_statistics(model: 'ImageDataModel', roi: 'BaseROI') -> Optiona
     if slice_data is None:
         return None
 
-    height, width = slice_data.shape
+    height, width = slice_data.shape[:2]
     mask = roi.get_mask(height, width)
 
     # Check if the mask covers any pixels
@@ -42,12 +42,36 @@ def calculate_roi_statistics(model: 'ImageDataModel', roi: 'BaseROI') -> Optiona
         return None
 
     pixels_in_roi = slice_data[mask]
+    if pixels_in_roi.ndim > 1:
+        pixels_in_roi = pixels_in_roi.mean(axis=-1)
+
+    pixel_count = int(np.sum(mask))
 
     stats = {
         "max": float(np.max(pixels_in_roi)),
         "min": float(np.min(pixels_in_roi)),
         "mean": float(np.mean(pixels_in_roi)),
         "std": float(np.std(pixels_in_roi)),
-        "count": int(np.sum(mask))
+        "count": pixel_count,
+        "area_px": float(pixel_count),
     }
+
+    pixel_spacing = _get_pixel_spacing(model.dicom_header)
+    if pixel_spacing:
+        row_spacing, col_spacing = pixel_spacing
+        stats["area_mm2"] = float(pixel_count * row_spacing * col_spacing)
+
     return stats 
+
+
+def _get_pixel_spacing(metadata: Dict[str, Any]) -> Optional[tuple[float, float]]:
+    for key in ("PixelSpacing", "Pixel Spacing", "ImagerPixelSpacing", "Imager Pixel Spacing"):
+        value = metadata.get(key)
+        if value is None:
+            continue
+        try:
+            if len(value) >= 2:
+                return float(value[0]), float(value[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return None
