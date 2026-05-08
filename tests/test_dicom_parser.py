@@ -4,6 +4,7 @@ from pydicom.dataset import Dataset, FileMetaDataset
 
 from medimager.core.dicom_parser import DicomParser
 from medimager.core.image_data_model import ImageDataModel
+from tests.dicom_fixtures import make_dicom_dataset
 
 
 def make_ct_dataset(
@@ -21,8 +22,6 @@ def make_ct_dataset(
     file_meta = FileMetaDataset()
     file_meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
     ds.file_meta = file_meta
-    ds.is_little_endian = True
-    ds.is_implicit_VR = False
 
     ds.Rows = 2
     ds.Columns = 2
@@ -93,6 +92,31 @@ def test_sort_falls_back_when_patient_geometry_tags_are_empty():
     sorted_sets = parser._sort_dicom_slices(datasets)
 
     assert [int(ds.pixel_array[0, 0]) for ds in sorted_sets] == [0, 10, 20]
+
+
+def test_sort_handles_reverse_file_order_with_non_axial_orientation():
+    parser = DicomParser()
+    orientation = [0, 1, 0, 0, 0, 1]  # normal points along patient X
+    datasets = [
+        make_ct_dataset(20, orientation=orientation, position=[2, 0, 0]),
+        make_ct_dataset(10, orientation=orientation, position=[1, 0, 0]),
+        make_ct_dataset(0, orientation=orientation, position=[0, 0, 0]),
+    ]
+
+    sorted_sets = parser._sort_dicom_slices(datasets)
+
+    assert [int(ds.pixel_array[0, 0]) for ds in sorted_sets] == [0, 10, 20]
+
+
+def test_extract_pixel_data_expands_single_dataset_multiframe_grayscale():
+    parser = DicomParser()
+    frames = np.arange(12, dtype=np.int16).reshape(3, 2, 2)
+    ds = make_dicom_dataset(frames)
+
+    pixel_data = parser._extract_pixel_data([ds])
+
+    assert pixel_data.shape == (3, 2, 2)
+    assert np.array_equal(pixel_data, frames.astype(np.float32))
 
 
 def test_extract_pixel_data_applies_rescale_slope_and_intercept():

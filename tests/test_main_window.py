@@ -14,7 +14,6 @@ sys.path.insert(0, str(project_root))
 
 try:
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import QTimer
     
     from medimager.ui.main_window import MainWindow
     from medimager.utils.logger import get_logger
@@ -27,52 +26,37 @@ except ImportError as e:
     sys.exit(1)
 
 
-def test_main_window():
+def _run_main_window_smoke(app: QApplication) -> None:
     """测试增强主窗口的基本功能"""
     logger.info("[test_main_window] 开始测试增强主窗口")
-    
-    try:
-        # 创建应用程序
-        app = QApplication(sys.argv)
-        
-        # 创建增强主窗口
-        main_window = MainWindow()
-        logger.info("[test_main_window] 增强主窗口创建成功")
-        
-        # 验证核心组件
-        assert hasattr(main_window, 'series_manager'), "应有多序列管理器"
-        assert hasattr(main_window, 'binding_manager'), "应有绑定管理器"
-        assert hasattr(main_window, 'enhanced_series_panel'), "应有增强序列面板"
-        assert hasattr(main_window, 'multi_viewer_grid'), "应有多视图网格"
-        
-        # 验证初始状态
-        assert main_window.series_manager.get_series_count() == 0, "初始序列数量应为0"
-        assert main_window.series_manager.get_current_layout() == (1, 1), "初始布局应为1x1"
-        
-        # 显示主窗口
-        main_window.show()
-        logger.info("[test_main_window] 主窗口显示成功")
-        
-        # 测试布局变更
-        logger.debug("[test_main_window] 测试布局变更")
-        main_window._set_layout(2, 2)
-        assert main_window.series_manager.get_current_layout() == (2, 2), "布局应变更为2x2"
-        
-        # 设置定时器自动关闭
-        timer = QTimer()
-        timer.timeout.connect(main_window.close)
-        timer.start(3000)  # 3秒后自动关闭
-        
-        logger.info("[test_main_window] 增强主窗口测试通过")
-        
-        # 运行事件循环
-        app.exec_()
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"[test_main_window] 测试失败: {e}", exc_info=True)
-        return False
+
+    main_window = MainWindow()
+    logger.info("[test_main_window] 增强主窗口创建成功")
+
+    assert hasattr(main_window, 'series_manager'), "应有多序列管理器"
+    assert hasattr(main_window, 'binding_manager'), "应有绑定管理器"
+    assert hasattr(main_window, 'series_panel'), "应有序列面板"
+    assert hasattr(main_window, 'multi_viewer_grid'), "应有多视图网格"
+
+    assert main_window.series_manager.get_series_count() == 0, "初始序列数量应为0"
+    assert main_window.series_manager.get_current_layout() == (1, 1), "初始布局应为1x1"
+
+    main_window.show()
+    app.processEvents()
+    logger.info("[test_main_window] 主窗口显示成功")
+
+    logger.debug("[test_main_window] 测试布局变更")
+    main_window._set_layout((2, 2))
+    assert main_window.series_manager.get_current_layout() == (2, 2), "布局应变更为2x2"
+
+    main_window.close()
+    app.processEvents()
+    logger.info("[test_main_window] 增强主窗口测试通过")
+
+
+def test_main_window(qapp):
+    """测试增强主窗口的基本功能"""
+    _run_main_window_smoke(qapp)
 
 
 def main():
@@ -83,17 +67,14 @@ def main():
     
     try:
         print("\n1. 测试增强主窗口基本功能...")
-        success = test_main_window()
+        app = QApplication.instance() or QApplication(sys.argv)
+        _run_main_window_smoke(app)
         
-        if success:
-            print("✅ 增强主窗口测试通过")
-            print("\n" + "="*60)
-            print("测试完成！✓")
-            print("="*60)
-            return 0
-        else:
-            print("❌ 增强主窗口测试失败")
-            return 1
+        print("✅ 增强主窗口测试通过")
+        print("\n" + "="*60)
+        print("测试完成！✓")
+        print("="*60)
+        return 0
             
     except Exception as e:
         print(f"\n❌ 测试失败: {e}")

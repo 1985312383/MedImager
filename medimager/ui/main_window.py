@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication # Added for QApplication.processEvent
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.annotation_persistence import import_annotations, save_annotations
 from medimager.core.dicom_parser import DicomParser
 from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
@@ -362,6 +363,18 @@ class MainWindow(QMainWindow):
         export_slice_action.setStatusTip(self.tr("导出当前切片图像，不包含视口边框和工具栏"))
         export_slice_action.triggered.connect(self._export_current_slice_image)
         file_menu.addAction(export_slice_action)
+
+        file_menu.addSeparator()
+
+        import_annotations_action = QAction(self.tr("导入标注(&A)"), self)
+        import_annotations_action.setStatusTip(self.tr("从 MedImager 标注 JSON 文件导入 ROI 和测量"))
+        import_annotations_action.triggered.connect(self._import_annotations)
+        file_menu.addAction(import_annotations_action)
+
+        export_annotations_action = QAction(self.tr("导出标注(&N)"), self)
+        export_annotations_action.setStatusTip(self.tr("将当前序列的 ROI 和测量导出为 JSON 文件"))
+        export_annotations_action.triggered.connect(self._export_annotations)
+        file_menu.addAction(export_annotations_action)
 
         # 复制视图到剪贴板
         copy_view_action = QAction(self.tr("复制视图到剪贴板(&C)"), self)
@@ -1232,6 +1245,57 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self.tr("当前切片图像已导出: ") + file_path, 5000)
         else:
             QMessageBox.critical(self, self.tr("错误"), self.tr("导出当前切片图像失败"))
+
+    def _export_annotations(self) -> None:
+        """Export ROI and measurement annotations for the active series."""
+        model = self._get_active_image_model()
+        if not model or not model.has_image():
+            QMessageBox.warning(self, self.tr("警告"), self.tr("没有可导出标注的当前序列"))
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            self.tr("导出标注"),
+            QDir.homePath() + "/MedImager_annotations.json",
+            self.tr("MedImager 标注 (*.json)")
+        )
+        if not file_path:
+            return
+
+        try:
+            save_annotations(model, file_path)
+        except Exception as e:
+            logger.error(f"Failed to export annotations: {e}", exc_info=True)
+            QMessageBox.critical(self, self.tr("错误"), self.tr("导出标注失败: ") + str(e))
+            return
+
+        self.statusBar().showMessage(self.tr("标注已导出: ") + file_path, 5000)
+
+    def _import_annotations(self) -> None:
+        """Import ROI and measurement annotations into the active series."""
+        model = self._get_active_image_model()
+        if not model or not model.has_image():
+            QMessageBox.warning(self, self.tr("警告"), self.tr("请先加载并激活一个序列"))
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("导入标注"),
+            QDir.homePath(),
+            self.tr("MedImager 标注 (*.json)")
+        )
+        if not file_path:
+            return
+
+        try:
+            counts = import_annotations(model, file_path, replace=True)
+        except Exception as e:
+            logger.error(f"Failed to import annotations: {e}", exc_info=True)
+            QMessageBox.critical(self, self.tr("错误"), self.tr("导入标注失败: ") + str(e))
+            return
+
+        total = counts["rois"] + counts["measurements"] + counts["angle_measurements"]
+        self.statusBar().showMessage(self.tr("标注已导入: ") + str(total), 5000)
 
     def _copy_view_to_clipboard(self) -> None:
         """复制当前视图到剪贴板"""

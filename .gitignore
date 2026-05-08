@@ -49,6 +49,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+performance_baseline*.json
 
 # Translations
 *.mo

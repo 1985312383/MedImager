@@ -10,7 +10,7 @@ from pathlib import Path
 APP_NAME = "MedImager"
 AUTHOR = "1985312383 / MedImager contributors"
 PROJECT_URL = "https://github.com/1985312383/MedImager"
-DESCRIPTION = "研究与教学用途的基础 2D DICOM 查看器与医学图像分析工具"
+DESCRIPTION = "面向 RadiAnt 级工作流演进的开源 DICOM 查看器与医学图像分析工具"
 LICENSE_NAME = "GPL-3.0-or-later"
 
 

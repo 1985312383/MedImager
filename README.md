@@ -10,7 +10,7 @@
 **A Modern, Cross-Platform DICOM Viewer & Image Analysis Tool**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python Version](https://img.shields.io/badge/Python-3.9+-brightgreen.svg)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/Python-3.11+-brightgreen.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/UI-PySide6-informational.svg)](https://www.qt.io/qt-for-python)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager is a user-friendly, research- and education-oriented open-source basic 2D medical image viewer. It aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and common analysis features for prototyping, academic research, and teaching scenarios.
+MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. The current 1.x line focuses on a reliable 2D DICOM foundation, professional test coverage, annotation persistence, and performance baselines before expanding into MPR, DICOMDIR/PACS, hanging protocols, and advanced workflow features.
 
 ## 1. Project Vision
 
-Create a user-friendly, research- and education-oriented open-source basic 2D medical image viewer. MedImager aims to provide smooth image interaction, multi-format support (DICOM, PNG, etc.), and common analysis features for research prototypes, teaching demos, and non-diagnostic workflows.
+Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager currently prioritizes DICOM correctness, reproducible testing, 2D interaction quality, measurement reliability, annotation persistence, and performance work as the foundation for later MPR, DICOMDIR/PACS, hanging protocols, and advanced clinical-style workflows.
 
 <div align="center">
 
@@ -64,11 +64,18 @@ Create a user-friendly, research- and education-oriented open-source basic 2D me
     - [x] Unified toolbar with theme-adaptive icons.
     - [x] Dockable panel layout.
 
+### V1.x - DICOM Correctness and Test Baseline
+- [x] **Professional synthetic DICOM test set:** CT/MR/CR/US/PET, missing tags, reverse ordering, oblique geometry, multi-frame data, compressed transfer syntaxes, and PixelSpacing variants.
+- [x] **Parser robustness:** Explicit behavior for decoder dependencies, multi-frame grayscale expansion, inconsistent geometry warnings, and unsupported DICOM variants.
+- [x] **Performance baseline:** Large-series loading, window/level display, cache-hit display, and QImage conversion benchmarks.
+
 ### V2.0 - Advanced Features
 - [ ] **Multi-Planar Reconstruction (MPR):** View axial, sagittal, and coronal planes from 3D volume data.
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
-- [ ] **Annotation Persistence:** Save and reload annotations (ROIs, measurements) across sessions.
+- [x] **Annotation Persistence:** Save and reload ROI, distance measurement, and angle measurement annotations as versioned JSON.
+- [ ] **DICOMDIR / PACS:** Local media browsing and DICOM network query/retrieve after the 2D parser baseline is stable.
+- [ ] **Hanging Protocols:** Save and restore practical reading layouts for repeated study review.
 - [ ] **Plugin System:** Allow users to extend features via custom Python scripts for research.
 
 ## 3. Tech Stack
@@ -187,6 +194,18 @@ First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an
     # Then you can run commands directly:
     python medimager/main.py
     ```
+
+4.  **Run the performance baseline (developers):**
+    ```bash
+    uv run python -m medimager.performance.baseline \
+      --slices 300 \
+      --rows 512 \
+      --cols 512 \
+      --repeats 3 \
+      --display-samples 64 \
+      --output performance_baseline.json
+    ```
+    This creates a synthetic de-identified DICOM series and records series loading, window/level display, cache-hit display, and QImage conversion timings. Unit tests intentionally do not enforce hard performance thresholds to avoid machine-specific failures; save the JSON before releases for cross-version comparison.
 
 ---
 

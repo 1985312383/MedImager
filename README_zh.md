@@ -10,7 +10,7 @@
 **一款现代化的、跨平台的 DICOM 查看器与图像分析工具**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python Version](https://img.shields.io/badge/Python-3.9+-brightgreen.svg)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/Python-3.11+-brightgreen.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/UI-PySide6-informational.svg)](https://www.qt.io/qt-for-python)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
@@ -19,7 +19,7 @@
 
 </div>
 
-MedImager 是一款用户友好、支持学术研究和教学的开源基础 2D 医学图像查看器。它旨在通过提供流畅的图像交互、多格式支持（DICOM, PNG 等）以及常用分析功能，服务于研究原型、教学演示和非诊断场景。
+MedImager 是一款开源医学影像查看与分析工具，长期目标是逐步接近 RadiAnt 级阅片工作流。当前 1.x 阶段优先夯实可靠的 2D DICOM 基础、专业测试覆盖、标注持久化和性能基线，再继续推进 MPR、DICOMDIR/PACS、挂片布局等高级工作流能力。
 
 <div align="center">
 
@@ -29,7 +29,7 @@ MedImager 是一款用户友好、支持学术研究和教学的开源基础 2D 
 
 ## 1. 项目愿景
 
-创建一款用户友好、支持学术研究和教学的开源基础 2D 医学图像查看器。本项目旨在通过提供流畅的图像交互、多格式支持（DICOM, PNG 等）以及常用分析功能，服务于研究原型、教学演示和非诊断场景。
+创建一款可逐步成长到 RadiAnt 级工作流的开源医学影像查看器。当前版本优先投入 DICOM 正确性、可复现测试、2D 交互质量、测量可靠性、标注持久化和性能优化，为后续 MPR、DICOMDIR/PACS、挂片布局和更完整的阅片工作流打基础。
 
 ## 2. 核心功能 (开发路线图)
 
@@ -64,11 +64,18 @@ MedImager 是一款用户友好、支持学术研究和教学的开源基础 2D 
     - [x] 统一的工具栏，支持主题自适应图标。
     - [x] 可停靠的面板布局。
 
+### V1.x - DICOM 正确性与测试基线
+- [x] **专业合成 DICOM 测试集**: 覆盖 CT/MR/CR/US/PET、缺失标签、反向排序、非轴位几何、多 frame、压缩传输语法和 PixelSpacing 差异。
+- [x] **解析器稳健性**: 明确解码插件依赖、多 frame 灰度展开、不一致几何 warning、以及不支持 DICOM 变体的错误提示。
+- [x] **性能基线**: 建立大序列加载、窗宽窗位显示、缓存命中和 QImage 转换性能基准。
+
 ### V2.0 - 高级功能
 - [ ] **多平面重建 (MPR)**: 从 3D 容积数据中查看轴状面、矢状面和冠状面。
 - [ ] **3D 容积渲染**: 对 DICOM 序列进行基本的 3D 可视化。
 - [ ] **图像融合**: 叠加两个不同的序列 (例如 PET/CT)。
-- [ ] **标注持久化**: 保存和重新加载标注信息 (ROI、测量结果)。
+- [x] **标注持久化**: 以版本化 JSON 保存和重新加载 ROI、距离测量和角度测量。
+- [ ] **DICOMDIR / PACS**: 在 2D 解析基线稳定后，支持本地介质浏览和 DICOM 网络查询/取回。
+- [ ] **挂片布局**: 保存和恢复面向重复阅片流程的实用布局。
 - [ ] **插件系统**: 允许用户通过自定义 Python 脚本扩展功能，以促进学术研究。
 
 ## 3. 技术栈
@@ -187,6 +194,18 @@ medimager/
     # 之后就可以直接运行命令:
     python medimager/main.py
     ```
+
+4.  **运行性能基准（开发者）:**
+    ```bash
+    uv run python -m medimager.performance.baseline \
+      --slices 300 \
+      --rows 512 \
+      --cols 512 \
+      --repeats 3 \
+      --display-samples 64 \
+      --output performance_baseline.json
+    ```
+    该命令会生成合成去标识 DICOM 大序列，并记录序列加载、窗宽窗位显示、缓存命中显示和 QImage 转换耗时。默认不在单元测试中设置硬性性能阈值，避免不同机器产生误报；release 前可保存 JSON 结果用于跨版本对比。
 
 ---
 

@@ -198,14 +198,39 @@ class DicomParser(QObject):
             if positive_spacings.size and np.ptp(positive_spacings) > 1e-3:
                 self.logger.warning("Non-uniform slice spacing detected in DICOM series.")
 
+        reference_spacing = self._pixel_spacing(geometries[0][0])
+        if reference_spacing is not None:
+            for ds, _ in geometries[1:]:
+                spacing = self._pixel_spacing(ds)
+                if spacing is not None and not np.allclose(spacing, reference_spacing, atol=1e-6):
+                    self.logger.warning("Inconsistent PixelSpacing found within one DICOM series.")
+                    break
+
+    def _pixel_spacing(self, dataset: pydicom.FileDataset) -> Optional[np.ndarray]:
+        value = getattr(dataset, "PixelSpacing", None)
+        try:
+            if value is None or len(value) < 2:
+                return None
+            return np.asarray([float(value[0]), float(value[1])], dtype=np.float64)
+        except (TypeError, ValueError):
+            return None
+
     def _extract_pixel_data(self, datasets: List[pydicom.FileDataset]) -> Optional[np.ndarray]:
         """Extracts pixel data from a list of sorted datasets."""
         pixel_arrays = []
+        i = -1
         try:
             for i, ds in enumerate(datasets):
-                pixel_array = self._apply_modality_transform(ds.pixel_array.astype(np.float32), ds)
-                    
-                pixel_arrays.append(pixel_array)
+                pixel_array = self._read_pixel_array(ds, i)
+                if pixel_array is None:
+                    return None
+
+                pixel_array = self._apply_modality_transform(pixel_array.astype(np.float32), ds)
+                frames = self._normalize_pixel_array_frames(pixel_array, ds, i)
+                if frames is None:
+                    return None
+
+                pixel_arrays.extend(frames)
             
             if not pixel_arrays:
                 return None
@@ -214,6 +239,51 @@ class DicomParser(QObject):
         except Exception as e:
             self.logger.error(f"Failed to extract pixel data from slice {i}: {e}", exc_info=True)
             return None
+
+    def _read_pixel_array(self, dataset: pydicom.FileDataset, slice_index: int) -> Optional[np.ndarray]:
+        try:
+            return dataset.pixel_array
+        except Exception as e:
+            transfer_syntax = getattr(getattr(dataset, "file_meta", None), "TransferSyntaxUID", None)
+            if transfer_syntax is not None and getattr(transfer_syntax, "is_compressed", False):
+                self.logger.error(
+                    "Failed to decode compressed DICOM pixel data for slice "
+                    f"{slice_index}. TransferSyntaxUID={transfer_syntax} "
+                    f"({transfer_syntax.name}). Install a compatible pydicom pixel data "
+                    "decoder such as pylibjpeg plugins or gdcm.",
+                    exc_info=True,
+                )
+            else:
+                self.logger.error(
+                    f"Failed to decode DICOM pixel data for slice {slice_index}: {e}",
+                    exc_info=True,
+                )
+            return None
+
+    def _normalize_pixel_array_frames(
+        self,
+        pixel_array: np.ndarray,
+        dataset: pydicom.FileDataset,
+        slice_index: int,
+    ) -> Optional[List[np.ndarray]]:
+        if pixel_array.ndim == 2:
+            return [pixel_array]
+
+        samples_per_pixel = int(getattr(dataset, "SamplesPerPixel", 1))
+        number_of_frames = int(getattr(dataset, "NumberOfFrames", 1))
+
+        if pixel_array.ndim == 3 and samples_per_pixel == 1 and number_of_frames > 1:
+            self.logger.info(
+                f"Expanding multi-frame DICOM slice {slice_index}: {number_of_frames} frames."
+            )
+            return [pixel_array[frame_index] for frame_index in range(pixel_array.shape[0])]
+
+        self.logger.error(
+            "Unsupported DICOM pixel array shape "
+            f"{pixel_array.shape} for slice {slice_index}. "
+            "Only 2D grayscale slices and single-file multi-frame grayscale data are supported."
+        )
+        return None
 
     def _apply_modality_transform(self, pixel_array: np.ndarray, dataset: pydicom.FileDataset) -> np.ndarray:
         """Apply the minimal modality transform used by the 1.0 display path."""
