@@ -322,15 +322,28 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._preset_buttons = []
+        self._action_buttons = []
+        parent_theme_manager = None
+        if parent is not None and hasattr(parent, 'theme_manager'):
+            parent_theme_manager = parent.theme_manager
+            self._theme_manager = parent_theme_manager
         self._colors = _load_ui_colors(self._theme_manager)
         self._setup_ui()
         self._setup_style()
-        self._register_to_theme_manager()
+        if parent_theme_manager is not None:
+            parent_theme_manager.register_component(self)
+        else:
+            self._register_to_theme_manager()
 
     def update_theme(self, theme_name: str) -> None:
         self._colors = _load_ui_colors(self._theme_manager)
         self._update_styles()
+        for button in getattr(self, '_preset_buttons', []):
+            button._theme_manager = self._theme_manager
+            button.update_theme(theme_name)
         if hasattr(self, 'dynamic_selector'):
+            self.dynamic_selector._theme_manager = self._theme_manager
             self.dynamic_selector.update_theme(theme_name)
 
     def _update_styles(self) -> None:
@@ -343,6 +356,8 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
             self.separator1.setStyleSheet(f"color: {c['border_color']};")
         if hasattr(self, 'separator2'):
             self.separator2.setStyleSheet(f"color: {c['border_color']};")
+        for button in getattr(self, '_action_buttons', []):
+            button.setStyleSheet("")
         self._setup_style()
 
     def _setup_ui(self) -> None:
@@ -368,6 +383,7 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         ]
         for i, (config, name) in enumerate(presets):
             preset_btn = LayoutPresetButton(config, name)
+            self._preset_buttons.append(preset_btn)
             preset_btn.layout_selected.connect(self._on_preset_selected)
             preset_grid.addWidget(preset_btn, i // 4, i % 4)
         layout.addLayout(preset_grid)
@@ -399,10 +415,12 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         auto_assign_btn = QPushButton(self.tr("自动分配"))
         auto_assign_btn.setToolTip(self.tr("自动将序列分配到可用视图"))
         auto_assign_btn.clicked.connect(self._on_auto_assign)
+        self._action_buttons.append(auto_assign_btn)
         action_layout.addWidget(auto_assign_btn)
         clear_bindings_btn = QPushButton(self.tr("清除绑定"))
         clear_bindings_btn.setToolTip(self.tr("清除所有序列绑定"))
         clear_bindings_btn.clicked.connect(self._on_clear_bindings)
+        self._action_buttons.append(clear_bindings_btn)
         action_layout.addWidget(clear_bindings_btn)
         layout.addLayout(action_layout)
 
@@ -456,6 +474,8 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
     def show_at_position(self, global_pos: QPoint) -> None:
         if self._theme_manager is None:
             self._register_to_theme_manager()
+        if self._theme_manager is not None:
+            self.update_theme(self._theme_manager.get_current_theme())
 
         self.adjustSize()
         screen = QApplication.primaryScreen().geometry()

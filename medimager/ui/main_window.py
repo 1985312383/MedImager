@@ -717,9 +717,10 @@ class MainWindow(QMainWindow):
                 # 阻止信号触发重复重建
                 self.multi_viewer_grid._rebuilding = True
 
-                # 先通知序列管理器等效网格大小
+                # 先按特殊布局的实际槽位更新序列管理器，避免绑定表显示不存在的视图。
                 equivalent = self.multi_viewer_grid._get_equivalent_layout(layout_config)
-                self.series_manager.set_layout(equivalent[0], equivalent[1])
+                positions = self.multi_viewer_grid._get_special_view_positions(layout_config)
+                self.series_manager.set_custom_layout(positions, equivalent)
 
                 # 使用多视图网格的特殊布局功能
                 grid_success = self.multi_viewer_grid.set_special_layout(layout_config)

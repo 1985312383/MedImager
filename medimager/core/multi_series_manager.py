@@ -360,10 +360,46 @@ class MultiSeriesManager(QObject):
         except Exception as e:
             logger.error(f"[MultiSeriesManager.set_layout] 设置布局失败: {e}", exc_info=True)
             return False
+
+    def set_custom_layout(self, positions: List[ViewPosition], layout_value: Tuple[int, int]) -> bool:
+        """按实际视图槽位设置非规则布局。
+
+        Args:
+            positions: 实际存在的视图位置列表，顺序决定视图显示和绑定表顺序。
+            layout_value: 对外显示/兼容用的布局尺寸。
+
+        Returns:
+            是否成功设置
+        """
+        logger.debug(f"[MultiSeriesManager.set_custom_layout] 设置自定义布局: {positions}")
+
+        try:
+            if not positions:
+                logger.error("[MultiSeriesManager.set_custom_layout] 自定义布局不能为空")
+                return False
+
+            old_layout = self._current_layout
+            self._current_layout = layout_value
+            self._reconfigure_view_positions(positions)
+
+            logger.info(f"[MultiSeriesManager.set_custom_layout] 自定义布局设置成功: "
+                       f"{old_layout} -> {self._current_layout}, views={len(positions)}")
+            self.layout_changed.emit(self._current_layout)
+            return True
+
+        except Exception as e:
+            logger.error(f"[MultiSeriesManager.set_custom_layout] 设置自定义布局失败: {e}", exc_info=True)
+            return False
     
     def _reconfigure_views(self, rows: int, cols: int) -> None:
         """重新配置视图"""
         logger.debug(f"[MultiSeriesManager._reconfigure_views] 开始重新配置视图: rows={rows}, cols={cols}")
+        positions = [ViewPosition((r, c)) for r in range(rows) for c in range(cols)]
+        self._reconfigure_view_positions(positions)
+
+    def _reconfigure_view_positions(self, positions: List[ViewPosition]) -> None:
+        """按给定位置列表重新配置视图。"""
+        logger.debug(f"[MultiSeriesManager._reconfigure_view_positions] 开始重新配置视图: positions={positions}")
         
         # 保存现有绑定
         existing_bindings = {}
@@ -373,9 +409,10 @@ class MultiSeriesManager(QObject):
         
         # 清空现有视图
         self._view_bindings.clear()
+        for series_views in self._series_to_views.values():
+            series_views.clear()
         
         # 创建新视图配置
-        positions = [ViewPosition((r, c)) for r in range(rows) for c in range(cols)]
         new_active_view = None
         
         for i, position in enumerate(positions):
@@ -408,7 +445,7 @@ class MultiSeriesManager(QObject):
             self._active_view_id = new_active_view
             self.active_view_changed.emit(new_active_view)
         
-        logger.debug(f"[MultiSeriesManager._reconfigure_views] 视图重新配置完成: "
+        logger.debug(f"[MultiSeriesManager._reconfigure_view_positions] 视图重新配置完成: "
                     f"创建了{len(positions)}个视图")
     
     def set_active_view(self, view_id: str) -> bool:

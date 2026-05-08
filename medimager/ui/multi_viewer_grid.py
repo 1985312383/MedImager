@@ -814,16 +814,15 @@ class MultiViewerGrid(QWidget):
         try:
             layout_type = layout_config.get('type', '')
 
-            # 根据布局类型确定等效网格大小
-            equivalent_layout = self._get_equivalent_layout(layout_config)
-
-            # 先创建等效的网格布局（会创建视图框架）
-            rows, cols = equivalent_layout
-            if not self.set_layout(rows, cols):
+            positions = self._get_special_view_positions(layout_config)
+            if not positions:
+                logger.error(f"[MultiViewerGrid.set_special_layout] 特殊布局没有有效视图槽位: {layout_type}")
                 return False
 
-            # 确保 _rebuilding 仍为 True（set_layout 内部会重置它）
-            self._rebuilding = True
+            old_layout = self._current_layout
+            self._current_layout = layout_config
+            self._clear_grid()
+            self._create_view_frames_for_positions(positions)
 
             # 等待视图创建完成
             QApplication.processEvents()
@@ -832,10 +831,9 @@ class MultiViewerGrid(QWidget):
             success = self._arrange_special_layout(layout_config)
 
             if success:
-                self._current_layout = layout_config  # 保存特殊布局配置
                 # 特殊布局重新排列了widget，需要再次延迟自适应
                 self._fit_all_bound_views_to_window()
-                logger.info(f"[MultiViewerGrid.set_special_layout] 特殊布局设置成功: {layout_type}")
+                logger.info(f"[MultiViewerGrid.set_special_layout] 特殊布局设置成功: {old_layout} -> {layout_type}")
                 return True
             else:
                 logger.error(f"[MultiViewerGrid.set_special_layout] 特殊布局排列失败: {layout_type}")
@@ -867,6 +865,30 @@ class MultiViewerGrid(QWidget):
             return (2, 3)  # 左+中上+中下+右上+右下
         else:
             return (2, 2)  # 默认
+
+    def _get_special_view_positions(self, layout_config: dict) -> List[ViewPosition]:
+        """获取特殊布局实际存在的视图槽位。"""
+        layout_type = layout_config.get('type', '')
+
+        if layout_type == 'vertical_split':
+            if layout_config.get('bottom_split', False):
+                return [ViewPosition.TOP_LEFT, ViewPosition.MIDDLE_LEFT, ViewPosition.MIDDLE_CENTER]
+            return [ViewPosition.TOP_LEFT, ViewPosition.MIDDLE_LEFT]
+        if layout_type == 'horizontal_split':
+            if layout_config.get('right_split', False):
+                return [ViewPosition.TOP_LEFT, ViewPosition.TOP_CENTER, ViewPosition.MIDDLE_CENTER]
+            return [ViewPosition.TOP_LEFT, ViewPosition.TOP_CENTER]
+        if layout_type == 'triple_column_right_split':
+            return [ViewPosition.TOP_LEFT, ViewPosition.TOP_CENTER, ViewPosition.TOP_RIGHT, ViewPosition.MIDDLE_RIGHT]
+        if layout_type == 'triple_column_middle_right_split':
+            return [
+                ViewPosition.TOP_LEFT,
+                ViewPosition.TOP_CENTER,
+                ViewPosition.MIDDLE_CENTER,
+                ViewPosition.TOP_RIGHT,
+                ViewPosition.MIDDLE_RIGHT,
+            ]
+        return []
     
     def _arrange_special_layout(self, layout_config: dict) -> bool:
         """排列特殊布局"""
@@ -1195,6 +1217,44 @@ class MultiViewerGrid(QWidget):
         
         logger.debug(f"[MultiViewerGrid._create_view_frames] "
                     f"视图框架创建完成: {len(self._view_frames)}个")
+
+    def _create_view_frames_for_positions(self, positions: List[ViewPosition]) -> None:
+        """按实际槽位创建视图框架，用于非规则预设布局。"""
+        logger.debug(f"[MultiViewerGrid._create_view_frames_for_positions] 创建视图框架: {positions}")
+
+        view_ids = self._series_manager.get_all_view_ids()
+        for index, position in enumerate(positions):
+            if index < len(view_ids):
+                view_id = view_ids[index]
+            else:
+                view_id = f"view_{position.value[0]}_{position.value[1]}"
+
+            view_frame = ViewFrame(view_id, position, self)
+
+            if self._sync_manager and view_frame.image_viewer:
+                view_frame.image_viewer.sync_manager = self._sync_manager
+
+            view_frame.view_activated.connect(self._on_view_frame_activated)
+            view_frame.view_clicked.connect(self._on_view_frame_clicked)
+            view_frame.drop_requested.connect(self._on_view_frame_drop_requested)
+
+            self._grid_layout.addWidget(view_frame, position.value[0], position.value[1])
+            self._view_frames[view_id] = view_frame
+
+            binding = self._series_manager.get_view_binding(view_id)
+            if binding:
+                view_frame.set_active(binding.is_active)
+                if binding.series_id:
+                    self._bind_series_to_view_frame(view_frame, binding.series_id)
+            elif index == 0:
+                view_frame.set_active(True)
+                self._series_manager.set_active_view(view_id)
+
+            logger.debug(f"[MultiViewerGrid._create_view_frames_for_positions] "
+                         f"创建视图框架: {view_id} at {position.value}")
+
+        logger.debug(f"[MultiViewerGrid._create_view_frames_for_positions] "
+                     f"视图框架创建完成: {len(self._view_frames)}个")
     
     def _bind_series_to_view_frame(self, view_frame: ViewFrame, series_id: str) -> None:
         """将序列绑定到视图框架
