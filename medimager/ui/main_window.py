@@ -24,6 +24,7 @@ from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
 from medimager.core.image_data_model import ImageDataModel
 from medimager.core.dicom_parser import DicomParser
+from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.ui.panels.series_panel import SeriesPanel
@@ -1335,12 +1336,8 @@ class MainWindow(QMainWindow):
         """显示关于对话框"""
         QMessageBox.about(
             self,
-            self.tr("关于 MedImager Pro"),
-            self.tr("""<h3>MedImager Pro</h3>
-            <p>多序列DICOM查看器与图像分析工具</p>
-            <p>版本: 2.0.0</p>
-            <p>支持多序列加载、多视图布局和高级图像分析功能。</p>
-            """)
+            self.tr("关于 ") + APP_NAME,
+            get_about_html()
         )
     
     # 信号处理方法

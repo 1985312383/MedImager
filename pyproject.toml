@@ -4,6 +4,9 @@ version = "1.0.1"
 description = "A modern, cross-platform open-source DICOM viewer and medical image analysis tool"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+    { name = "1985312383 / MedImager contributors" }
+]
 dependencies = [
     "numpy>=2.3.1",
     "pillow>=10.0.0",
@@ -11,6 +14,11 @@ dependencies = [
     "pyside6>=6.9.1",
     "toml>=0.10.2"
 ]
+
+[project.urls]
+Homepage = "https://github.com/1985312383/MedImager"
+Repository = "https://github.com/1985312383/MedImager"
+Issues = "https://github.com/1985312383/MedImager/issues"
 
 [dependency-groups]
 dev = [

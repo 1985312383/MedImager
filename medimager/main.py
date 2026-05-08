@@ -30,6 +30,7 @@ if __name__ == "__main__" and __package__ is None:
 from medimager.utils.logger import setup_logger, get_logger
 from medimager.utils.settings import SettingsManager, get_settings_manager
 from medimager.utils.i18n import TranslationManager, get_translation_manager
+from medimager.app_info import APP_NAME, get_version
 
 from medimager.ui.main_window import MainWindow
 
@@ -282,6 +283,8 @@ class MedImagerApplication:
 def main() -> int:
     """应用程序主入口点"""
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(get_version())
     try:
         medimager_app = MedImagerApplication(app)
         return medimager_app.run()
@@ -350,7 +353,7 @@ if __name__ == "__main__":
             QApplication.setOrganizationName("MedImager")
             QApplication.setOrganizationDomain("medimager.org")
             QApplication.setApplicationName("MedImager")
-            QApplication.setApplicationVersion("1.0")
+            QApplication.setApplicationVersion(get_version())
             
             # 设置Linux下的高DPI支持
             os.environ.setdefault('QT_AUTO_SCREEN_SCALE_FACTOR', '1')

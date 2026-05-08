@@ -1,9 +1,6 @@
 name: Build and Release MedImager
 
-on:
-  push:
-    tags:
-      - 'v*.*.*'
+"on":
   workflow_dispatch:
     inputs:
       version:

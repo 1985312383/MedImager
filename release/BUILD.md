@@ -177,24 +177,29 @@ uv run pyinstaller \
 #### 方式一：标签触发
 ```bash
 # 创建并推送版本标签
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 #### 方式二：手动触发
 1. 在 GitHub 仓库页面点击 "Actions" 标签
-2. 选择 "Build and Release MedImager" 工作流
+2. 选择 "Release MedImager" 工作流（`.github/workflows/release.yml`）
 3. 点击 "Run workflow"
-4. 输入版本号（如 v1.0.0）
+4. 输入版本号（如 v1.0.1）
 5. 选择是否标记为预览版本
 
 工作流将自动完成：
 - 设置 Python 3.11 环境
 - 安装 uv 和项目依赖
-- 下载 UPX 工具
+- 将版本号同步到 `pyproject.toml`
+- 自动生成本次 release notes
+- 将本次 release entry 累加到 `CHANGELOG.md` 顶部，并去重避免重复 release 时重复写入
+- 生成构建时版本信息；关于对话框在打包版本中显示本次 release notes，本地源码运行时回退读取 `CHANGELOG.md` 最新条目
 - 构建单文件应用程序（无控制台）
 - 创建发布包和 GitHub Release
-- 自动标记为 Preview Release
+- Release notes 中列出特性、使用方法和本次 release 的 commit 记录
+
+> 说明：`release.yml` 会尝试把自动更新后的 `CHANGELOG.md` 提交回默认分支。若默认分支受保护导致自动 push 失败，Release 本身仍会继续完成，发布包和关于对话框仍会包含本次生成的 release notes。
 
 ### 本地快速发布
 
@@ -223,11 +228,14 @@ uv run python release/build_release.py
 
 脚本将自动完成：
 1. 清理旧的构建文件
-2. 交互式 UPX 配置（如未预设）
-3. 使用 PyInstaller 打包单文件应用程序（无控制台）
-4. 智能 UPX 压缩（可选）
-5. 创建发布目录和 ZIP 包
-6. 生成版本信息文件
+2. 根据当前 git 历史生成本次 release notes
+3. 将本次 release entry 累加到 `CHANGELOG.md` 顶部
+4. 生成构建时版本和 release notes 信息
+5. 交互式 UPX 配置（如未预设）
+6. 使用 PyInstaller 打包单文件应用程序（无控制台）
+7. 智能 UPX 压缩（可选）
+8. 创建发布目录和 ZIP 包
+9. 生成版本信息文件
 
 ### 发布包内容
 

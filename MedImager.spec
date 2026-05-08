@@ -5,7 +5,11 @@ a = Analysis(
     ['medimager\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[('medimager', 'medimager/')],
+    datas=[
+        ('medimager', 'medimager/'),
+        ('pyproject.toml', '.'),
+        ('CHANGELOG.md', '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
