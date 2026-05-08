@@ -7,9 +7,9 @@ name: Release MedImager
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., v1.0.1)'
+        description: 'Release version (e.g., v2.0.0)'
         required: true
-        default: 'v1.0.1'
+        default: 'v2.0.0'
       prerelease:
         description: 'Mark as pre-release'
         required: false
@@ -78,9 +78,10 @@ jobs:
           $releaseType = if ($prerelease -eq "true") { "Preview Release" } else { "Stable Release" }
           $releaseDate = Get-Date -Format "yyyy-MM-dd"
           $features = @(
-            "- 研究与教学用途的基础 2D DICOM 查看器",
-            "- 支持 DICOM 文件/文件夹加载、普通图片加载、多视图显示和基础测量",
-            "- 支持 ROI 统计、窗宽窗位、当前视图截图导出和当前切片图像导出",
+            "- 2.0 合并 1.0 与 1.x 成果，形成稳定的 2D DICOM 基线版本",
+            "- 支持 DICOM 文件/文件夹加载、普通图片加载、多序列管理、多视图显示和基础测量",
+            "- 支持 ROI 统计、窗宽窗位、当前视图截图导出、当前切片图像导出和标注持久化",
+            "- 内置专业合成 DICOM 测试覆盖与大序列加载/显示性能基准",
             "- Release 构建会在关于对话框中显示版本、项目地址和最近一次 release changelog"
           ) -join "`n"
 

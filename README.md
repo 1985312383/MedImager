@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. The current 1.x line focuses on a reliable 2D DICOM foundation, professional test coverage, annotation persistence, and performance baselines before expanding into MPR, DICOMDIR/PACS, hanging protocols, and advanced workflow features.
+MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.0 consolidates the completed 1.0 and 1.x work into a reliable 2D DICOM foundation: multi-series viewing, measurement and ROI analysis, professional synthetic DICOM coverage, annotation persistence, and repeatable performance baselines.
 
 ## 1. Project Vision
 
-Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager currently prioritizes DICOM correctness, reproducible testing, 2D interaction quality, measurement reliability, annotation persistence, and performance work as the foundation for later MPR, DICOMDIR/PACS, hanging protocols, and advanced clinical-style workflows.
+Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.0 is ready as the stable 2D foundation release; later versions should build on that base with MPR, DICOMDIR/PACS, hanging protocols, and advanced clinical-style workflows.
 
 <div align="center">
 
@@ -31,9 +31,9 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 
 </div>
 
-## 2. Core Features (Roadmap)
+## 2. Core Features
 
-### ✅ V1.0 - Core Features (COMPLETED)
+### ✅ V2.0 - 2D DICOM Foundation (READY)
 - [x] **File Handling:**
     - [x] Open and parse DICOM series from folders.
     - [x] Open single image files (PNG, JPG, BMP).
@@ -63,17 +63,16 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
     - [x] Complete settings system with tool appearance customization.
     - [x] Unified toolbar with theme-adaptive icons.
     - [x] Dockable panel layout.
+- [x] **DICOM Correctness and Quality Baseline:**
+    - [x] Professional synthetic DICOM test set covering CT/MR/CR/US/PET, missing tags, reverse ordering, oblique geometry, multi-frame data, compressed transfer syntaxes, and PixelSpacing variants.
+    - [x] Parser robustness for decoder dependencies, multi-frame grayscale expansion, inconsistent geometry warnings, and unsupported DICOM variants.
+    - [x] Large-series loading, window/level display, cache-hit display, and QImage conversion performance baselines.
+    - [x] Versioned JSON annotation persistence for ROI, distance measurement, and angle measurement annotations.
 
-### V1.x - DICOM Correctness and Test Baseline
-- [x] **Professional synthetic DICOM test set:** CT/MR/CR/US/PET, missing tags, reverse ordering, oblique geometry, multi-frame data, compressed transfer syntaxes, and PixelSpacing variants.
-- [x] **Parser robustness:** Explicit behavior for decoder dependencies, multi-frame grayscale expansion, inconsistent geometry warnings, and unsupported DICOM variants.
-- [x] **Performance baseline:** Large-series loading, window/level display, cache-hit display, and QImage conversion benchmarks.
-
-### V2.0 - Advanced Features
+### Next Roadmap - RadiAnt-Class Workflow
 - [ ] **Multi-Planar Reconstruction (MPR):** View axial, sagittal, and coronal planes from 3D volume data.
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
-- [x] **Annotation Persistence:** Save and reload ROI, distance measurement, and angle measurement annotations as versioned JSON.
 - [ ] **DICOMDIR / PACS:** Local media browsing and DICOM network query/retrieve after the 2D parser baseline is stable.
 - [ ] **Hanging Protocols:** Save and restore practical reading layouts for repeated study review.
 - [ ] **Plugin System:** Allow users to extend features via custom Python scripts for research.

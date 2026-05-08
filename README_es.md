@@ -10,7 +10,7 @@
 **Un Visor DICOM y Herramienta de Análisis de Imágenes Moderno y Multiplataforma**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python Version](https://img.shields.io/badge/Python-3.9+-brightgreen.svg)](https://www.python.org/)
+[![Python Version](https://img.shields.io/badge/Python-3.11+-brightgreen.svg)](https://www.python.org/)
 [![PySide6](https://img.shields.io/badge/UI-PySide6-informational.svg)](https://www.qt.io/qt-for-python)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![GitHub stars](https://img.shields.io/github/stars/1985312383/MedImager.svg?style=social&label=Star)](https://github.com/1985312383/MedImager)
@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager es un visor de imágenes médicas de código abierto potente, fácil de usar y orientado a la investigación. Su objetivo es proporcionar interacción fluida con imágenes, soporte multi-formato (DICOM, PNG, etc.) y funciones de análisis avanzadas para flujos de trabajo académicos y clínicos.
+MedImager es un visor de imágenes médicas y herramienta de análisis de código abierto con el objetivo a largo plazo de acercarse a flujos de trabajo de lectura tipo RadiAnt. La versión 2.0 consolida el trabajo completado de 1.0 y 1.x en una base DICOM 2D fiable: visualización multi-serie, medición y análisis ROI, cobertura DICOM sintética profesional, persistencia de anotaciones y benchmarks de rendimiento repetibles.
 
 ## 1. Visión del Proyecto
 
-Crear un visor de imágenes médicas de código abierto potente, fácil de usar y orientado a la investigación. MedImager tiene como objetivo proporcionar interacción fluida con imágenes, soporte multi-formato (DICOM, PNG, etc.) y funciones de análisis avanzadas para flujos de trabajo académicos y clínicos, aspirando a ser una alternativa de código abierto a RadiAnt.
+Crear un visor de código abierto pragmático que pueda crecer hacia flujos de trabajo tipo RadiAnt. MedImager 2.0 está listo como versión base 2D estable; las versiones posteriores deben construir sobre esta base MPR, DICOMDIR/PACS, protocolos de colgado y flujos de trabajo clínicos más completos.
 
 <div align="center">
 
@@ -31,9 +31,9 @@ Crear un visor de imágenes médicas de código abierto potente, fácil de usar 
 
 </div>
 
-## 2. Características Principales (Hoja de Ruta)
+## 2. Características Principales
 
-### ✅ V1.0 - Características Principales (COMPLETADO)
+### ✅ V2.0 - Base DICOM 2D (LISTA)
 - [x] **Manejo de Archivos:**
     - [x] Abrir y analizar series DICOM desde carpetas.
     - [x] Abrir archivos de imagen individuales (PNG, JPG, BMP).
@@ -63,21 +63,27 @@ Crear un visor de imágenes médicas de código abierto potente, fácil de usar 
     - [x] Sistema de configuración completo con personalización de apariencia de herramientas.
     - [x] Barra de herramientas unificada con iconos adaptativos al tema.
     - [x] Diseño de panel acoplable.
+- [x] **Corrección DICOM y base de calidad:**
+    - [x] Conjunto de pruebas DICOM sintéticas profesionales para CT/MR/CR/US/PET, etiquetas faltantes, orden inverso, geometría oblicua, datos multi-frame, sintaxis de transferencia comprimidas y variantes de PixelSpacing.
+    - [x] Parser robusto con dependencias de decodificador explícitas, expansión multi-frame en escala de grises, warnings de geometría inconsistente y errores claros para variantes no soportadas.
+    - [x] Benchmarks de carga de series grandes, visualización window/level, aciertos de caché y conversión QImage.
+    - [x] Persistencia JSON versionada para anotaciones ROI, mediciones de distancia y mediciones de ángulo.
 
-### V2.0 - Características Avanzadas
+### Próxima Hoja de Ruta - Flujo Tipo RadiAnt
 - [ ] **Reconstrucción Multi-Planar (MPR):** Ver planos axial, sagital y coronal desde datos de volumen 3D.
 - [ ] **Renderizado de Volumen 3D:** Visualización 3D básica de series DICOM.
 - [ ] **Fusión de Imágenes:** Superponer dos series diferentes (ej. PET/CT).
-- [ ] **Persistencia de Anotaciones:** Guardar y recargar anotaciones (ROIs, mediciones) entre sesiones.
+- [ ] **DICOMDIR / PACS:** Navegación de medios locales y consulta/recuperación DICOM en red después de estabilizar la base 2D.
+- [ ] **Protocolos de Colgado:** Guardar y restaurar diseños prácticos para revisión repetida de estudios.
 - [ ] **Sistema de Plugins:** Permitir a los usuarios extender funciones mediante scripts Python personalizados para investigación.
 
 ## 3. Stack Tecnológico
 
-* **Lenguaje:** Python 3.9+
+* **Lenguaje:** Python 3.11+
 * **Framework GUI:** PySide6 (LGPL)
 * **Análisis DICOM:** pydicom
 * **Procesamiento Numérico/Imágenes:** NumPy
-* **Visualización 2D/3D:** Qt Graphics View Framework (2D), VTK 9+ (3D)
+* **Visualización 2D:** Qt Graphics View Framework
 * **Empaquetado:** PyInstaller
 * **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)
 
@@ -185,6 +191,18 @@ Primero, asegúrese de tener [uv](https://github.com/astral-sh/uv) instalado. Es
     # Entonces puede ejecutar comandos directamente:
     python medimager/main.py
     ```
+
+4.  **Ejecutar el benchmark de rendimiento (desarrolladores):**
+    ```bash
+    uv run python -m medimager.performance.baseline \
+      --slices 300 \
+      --rows 512 \
+      --cols 512 \
+      --repeats 3 \
+      --display-samples 64 \
+      --output performance_baseline.json
+    ```
+    Este comando genera una serie DICOM grande sintética y desidentificada, y mide carga de series, visualización window/level, visualización con caché y conversión QImage. Las pruebas unitarias no imponen umbrales rígidos de rendimiento; guarde el JSON antes de los releases para comparar versiones.
 
 ---
 

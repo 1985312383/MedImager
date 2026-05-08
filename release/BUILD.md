@@ -177,15 +177,15 @@ uv run pyinstaller \
 #### 方式一：标签触发
 ```bash
 # 创建并推送版本标签
-git tag v1.0.1
-git push origin v1.0.1
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 #### 方式二：手动触发
 1. 在 GitHub 仓库页面点击 "Actions" 标签
 2. 选择 "Release MedImager" 工作流（`.github/workflows/release.yml`）
 3. 点击 "Run workflow"
-4. 输入版本号（如 v1.0.1）
+4. 输入版本号（如 v2.0.0）
 5. 选择是否标记为预览版本
 
 工作流将自动完成：

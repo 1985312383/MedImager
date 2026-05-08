@@ -2,7 +2,7 @@ from medimager import app_info
 
 
 def test_version_falls_back_to_pyproject():
-    assert app_info.get_version() == "1.0.1"
+    assert app_info.get_version() == "2.0.0"
 
 
 def test_latest_changelog_and_about_include_release_metadata():
