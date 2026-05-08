@@ -61,8 +61,8 @@ jobs:
           $allTags = git tag --sort=-creatordate
           $previousTag = $allTags | Where-Object { $_ -ne $tag } | Select-Object -First 1
           if ($previousTag) {
-            $commitRange = "$previousTag..HEAD"
-            $commitHeader = "从 `$previousTag` 到 `$tag`"
+            $commitRange = "${previousTag}..HEAD"
+            $commitHeader = "从 $previousTag 到 $tag"
           } else {
             $commitRange = "HEAD"
             $commitHeader = "当前历史记录"
