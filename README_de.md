@@ -85,7 +85,7 @@ Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen 
 * **Numerische/Bildverarbeitung:** NumPy
 * **2D-Visualisierung:** Qt Graphics View Framework
 * **Verpackung:** PyInstaller
-* **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)
+* **i18n:** YAML-Quellkataloge, kompiliert zu JSON-Laufzeitkatalogen
 
 ## 4. Projektstruktur
 
@@ -95,7 +95,7 @@ Das Projekt folgt einem MVC-ähnlichen Muster zur Trennung von Datenlogik, UI un
 medimager/
 ├── main.py                 # Anwendungseinstiegspunkt
 ├── icons/                  # UI-Symbole und SVG-Ressourcen
-├── translations/           # Übersetzungsdateien (.ts, .qm)
+├── i18n/                   # YAML-Quellkataloge und JSON-Laufzeitkataloge
 ├── themes/                 # Theme-Konfigurationsdateien
 │   ├── ui/                 # UI-Themes (dark.toml, light.toml)
 │   ├── roi/                # ROI-Erscheinungsthemes

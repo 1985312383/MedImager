@@ -40,6 +40,7 @@ from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
 from medimager.ui.tools.measurement_tool import MeasurementTool
 from medimager.ui.main_toolbar import create_main_toolbar
+from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
@@ -204,7 +205,7 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._init_ui] 初始化主窗口UI")
         
         self.setGeometry(100, 100, 1800, 1000)
-        self.setWindowTitle(self.tr("MedImager Pro - 多序列DICOM查看器与分析工具"))
+        self.setWindowTitle(t("mainwindow.medimager_pro_multi_sequence_dicom_viewer_and_analysis"))
         
         # 中央组件
         central_widget = QWidget()
@@ -231,7 +232,7 @@ class MainWindow(QMainWindow):
 
         # 左侧切换条（序列面板默认可见）
         self.left_toggle_strip = PanelToggleStrip(
-            side='left', tooltip=self.tr("展开/收起序列面板"), parent=self)
+            side='left', tooltip=t("mainwindow.toggle_series_panel"), parent=self)
         self.left_toggle_strip.toggled.connect(self._on_left_toggle_strip_clicked)
         content_layout.addWidget(self.left_toggle_strip)
 
@@ -241,7 +242,7 @@ class MainWindow(QMainWindow):
 
         # 右侧切换条（信息面板默认隐藏）
         self.panel_toggle_strip = PanelToggleStrip(
-            side='right', tooltip=self.tr("展开/收起信息面板 (F2)"), parent=self)
+            side='right', tooltip=t("mainwindow.toggle_info_panel_f2"), parent=self)
         self.panel_toggle_strip.toggled.connect(self._on_toggle_strip_clicked)
         content_layout.addWidget(self.panel_toggle_strip)
 
@@ -352,93 +353,93 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         
         # 文件菜单
-        file_menu = menubar.addMenu(self.tr("文件(&F)"))
+        file_menu = menubar.addMenu(t("mainwindow.file_f"))
         
         # 打开多个DICOM文件夹
-        open_multiple_folders_action = QAction(self.tr("打开多个DICOM文件夹(&M)"), self)
+        open_multiple_folders_action = QAction(t("mainwindow.open_multiple_dicom_folders_m"), self)
         open_multiple_folders_action.setShortcut("Ctrl+Shift+O")
-        open_multiple_folders_action.setStatusTip(self.tr("同时打开多个包含DICOM序列的文件夹"))
+        open_multiple_folders_action.setStatusTip(t("mainwindow.open_multiple_folders_containing_dicom_sequences_at_the"))
         open_multiple_folders_action.triggered.connect(self._open_multiple_dicom_folders)
         file_menu.addAction(open_multiple_folders_action)
         
         # 打开DICOM文件夹
-        open_folder_action = QAction(self.tr("打开DICOM文件夹(&D)"), self)
+        open_folder_action = QAction(t("mainwindow.open_dicom_folder_d"), self)
         open_folder_action.setShortcut(QKeySequence.Open)
-        open_folder_action.setStatusTip(self.tr("打开包含DICOM序列的文件夹"))
+        open_folder_action.setStatusTip(t("mainwindow.open_the_folder_containing_the_dicom_sequence"))
         open_folder_action.triggered.connect(self._open_dicom_folder)
         file_menu.addAction(open_folder_action)
         
         # 打开图像文件
-        open_image_action = QAction(self.tr("打开图像文件(&I)"), self)
+        open_image_action = QAction(t("mainwindow.open_image_file_i"), self)
         open_image_action.setShortcut("Ctrl+O")
-        open_image_action.setStatusTip(self.tr("打开单张图像文件"))
+        open_image_action.setStatusTip(t("mainwindow.open_a_single_image_file"))
         open_image_action.triggered.connect(self._open_image_file)
         file_menu.addAction(open_image_action)
         
         file_menu.addSeparator()
         
         # 导入测试数据
-        test_menu = file_menu.addMenu(self.tr("测试数据"))
+        test_menu = file_menu.addMenu(t("mainwindow.test_data"))
         
-        load_test_series_action = QAction(self.tr("加载测试序列"), self)
+        load_test_series_action = QAction(t("mainwindow.load_test_sequence"), self)
         load_test_series_action.triggered.connect(self._load_test_series)
         test_menu.addAction(load_test_series_action)
 
         file_menu.addSeparator()
 
         # 导出当前视图
-        export_action = QAction(self.tr("导出当前视图(&E)"), self)
+        export_action = QAction(t("mainwindow.export_current_view_e"), self)
         export_action.setShortcut("Ctrl+E")
-        export_action.setStatusTip(self.tr("将当前视图导出为图像文件"))
+        export_action.setStatusTip(t("mainwindow.export_current_view_as_image"))
         export_action.triggered.connect(self._export_current_view)
         file_menu.addAction(export_action)
 
-        export_slice_action = QAction(self.tr("导出当前切片图像(&S)"), self)
+        export_slice_action = QAction(t("mainwindow.export_current_slice_image_s"), self)
         export_slice_action.setShortcut("Ctrl+Shift+E")
-        export_slice_action.setStatusTip(self.tr("导出当前切片图像，不包含视口边框和工具栏"))
+        export_slice_action.setStatusTip(t("mainwindow.export_current_slice_image_without_chrome"))
         export_slice_action.triggered.connect(self._export_current_slice_image)
         file_menu.addAction(export_slice_action)
 
         file_menu.addSeparator()
 
-        import_annotations_action = QAction(self.tr("导入标注(&A)"), self)
-        import_annotations_action.setStatusTip(self.tr("从 MedImager 标注 JSON 文件导入 ROI 和测量"))
+        import_annotations_action = QAction(t("mainwindow.import_annotations_a"), self)
+        import_annotations_action.setStatusTip(t("mainwindow.import_roi_measurements_from_json"))
         import_annotations_action.triggered.connect(self._import_annotations)
         file_menu.addAction(import_annotations_action)
 
-        export_annotations_action = QAction(self.tr("导出标注(&N)"), self)
-        export_annotations_action.setStatusTip(self.tr("将当前序列的 ROI 和测量导出为 JSON 文件"))
+        export_annotations_action = QAction(t("mainwindow.export_annotations_n"), self)
+        export_annotations_action.setStatusTip(t("mainwindow.export_roi_measurements_to_json"))
         export_annotations_action.triggered.connect(self._export_annotations)
         file_menu.addAction(export_annotations_action)
 
         # 复制视图到剪贴板
-        copy_view_action = QAction(self.tr("复制视图到剪贴板(&C)"), self)
+        copy_view_action = QAction(t("mainwindow.copy_view_to_clipboard_c"), self)
         copy_view_action.setShortcut("Ctrl+Shift+C")
-        copy_view_action.setStatusTip(self.tr("将当前视图复制到剪贴板"))
+        copy_view_action.setStatusTip(t("mainwindow.copy_current_view_to_clipboard"))
         copy_view_action.triggered.connect(self._copy_view_to_clipboard)
         file_menu.addAction(copy_view_action)
 
         file_menu.addSeparator()
 
         # 退出
-        exit_action = QAction(self.tr("退出(&X)"), self)
+        exit_action = QAction(t("mainwindow.exit_x"), self)
         exit_action.setShortcut(QKeySequence.Quit)
-        exit_action.setStatusTip(self.tr("退出应用程序"))
+        exit_action.setStatusTip(t("mainwindow.exit_the_application"))
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
         # 查看菜单
-        view_menu = menubar.addMenu(self.tr("查看(&V)"))
+        view_menu = menubar.addMenu(t("mainwindow.view"))
         
         # 显示/隐藏面板
-        self.toggle_series_panel_action = QAction(self.tr("显示/隐藏序列面板"), self)
+        self.toggle_series_panel_action = QAction(t("mainwindow.show_hide_sequence_panel"), self)
         self.toggle_series_panel_action.setShortcut("F1")
         self.toggle_series_panel_action.setCheckable(True)
         self.toggle_series_panel_action.setChecked(True)
         self.toggle_series_panel_action.toggled.connect(self._toggle_series_panel)
         view_menu.addAction(self.toggle_series_panel_action)
         
-        self.toggle_info_panel_action = QAction(self.tr("显示/隐藏信息面板"), self)
+        self.toggle_info_panel_action = QAction(t("mainwindow.show_hide_information_panel"), self)
         self.toggle_info_panel_action.setShortcut("F2")
         self.toggle_info_panel_action.setCheckable(True)
         self.toggle_info_panel_action.setChecked(False)
@@ -446,17 +447,17 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.toggle_info_panel_action)
         
         # 序列菜单
-        series_menu = menubar.addMenu(self.tr("序列(&S)"))
+        series_menu = menubar.addMenu(t("mainwindow.sequence_s"))
         
         # 绑定策略
-        binding_strategy_menu = series_menu.addMenu(self.tr("绑定策略"))
+        binding_strategy_menu = series_menu.addMenu(t("mainwindow.binding_strategy"))
         
         self._binding_strategy_group = QActionGroup(self)
         strategy_actions = [
-            (self.tr("自动分配"), BindingStrategy.AUTO_ASSIGN),
-            (self.tr("保持现有"), BindingStrategy.PRESERVE_EXISTING),
-            (self.tr("替换最旧"), BindingStrategy.REPLACE_OLDEST),
-            (self.tr("询问用户"), BindingStrategy.ASK_USER)
+            (t("mainwindow.automatic_assignment"), BindingStrategy.AUTO_ASSIGN),
+            (t("mainwindow.keep_existing"), BindingStrategy.PRESERVE_EXISTING),
+            (t("mainwindow.replace_the_oldest"), BindingStrategy.REPLACE_OLDEST),
+            (t("mainwindow.ask_the_user"), BindingStrategy.ASK_USER)
         ]
         
         for strategy_name, strategy in strategy_actions:
@@ -471,32 +472,32 @@ class MainWindow(QMainWindow):
         series_menu.addSeparator()
         
         # 自动分配序列
-        auto_assign_action = QAction(self.tr("自动分配所有序列"), self)
+        auto_assign_action = QAction(t("mainwindow.automatically_assign_all_sequences"), self)
         auto_assign_action.setShortcut("Ctrl+A")
         auto_assign_action.triggered.connect(self._auto_assign_all_series)
         series_menu.addAction(auto_assign_action)
         
         # 清除所有绑定
-        clear_bindings_action = QAction(self.tr("清除所有绑定"), self)
+        clear_bindings_action = QAction(t("mainwindow.clear_all_bindings"), self)
         clear_bindings_action.triggered.connect(self._clear_all_bindings)
         series_menu.addAction(clear_bindings_action)
         
         # 窗位菜单
-        wl_menu = menubar.addMenu(self.tr("窗位(&W)"))
+        wl_menu = menubar.addMenu(t("mainwindow.window_position_w"))
         
         # 预设窗位
         presets: List[Tuple[str, Tuple[int, int]]] = [
-            (self.tr("自动"), (-1, -1)),
-            (self.tr("腹部"), (400, 50)),
-            (self.tr("脑窗"), (80, 40)),
-            (self.tr("骨窗"), (2000, 600)),
-            (self.tr("肺窗"), (1500, -600)),
-            (self.tr("纵隔"), (350, 50)),
+            (t("mainwindow.auto"), (-1, -1)),
+            (t("mainwindow.abdomen"), (400, 50)),
+            (t("mainwindow.brain_window"), (80, 40)),
+            (t("mainwindow.bone_window"), (2000, 600)),
+            (t("mainwindow.lung_window"), (1500, -600)),
+            (t("mainwindow.mediastinum"), (350, 50)),
         ]
         
         for name, (width, level) in presets:
             action = QAction(name, self)
-            action.setStatusTip(self.tr("设置为 %1: W:%2 L:%3").replace("%1", name).replace("%2", str(width)).replace("%3", str(level)))
+            action.setStatusTip(t("mainwindow.set_window_level_for_value").replace("%1", name).replace("%2", str(width)).replace("%3", str(level)))
             action.triggered.connect(
                 lambda checked=False, w=width, l=level: self._set_window_level_preset(w, l)
             )
@@ -504,27 +505,27 @@ class MainWindow(QMainWindow):
         
         wl_menu.addSeparator()
         
-        custom_wl_action = QAction(self.tr("自定义"), self)
-        custom_wl_action.setStatusTip(self.tr("手动设置窗宽和窗位"))
+        custom_wl_action = QAction(t("mainwindow.custom"), self)
+        custom_wl_action.setStatusTip(t("mainwindow.manually_set_the_window_width_and_window_position"))
         custom_wl_action.triggered.connect(self._open_custom_wl_dialog)
         wl_menu.addAction(custom_wl_action)
         
 
         
         # 工具菜单
-        tools_menu = menubar.addMenu(self.tr("工具(&T)"))
+        tools_menu = menubar.addMenu(t("mainwindow.tools_t"))
         
         # 设置
-        settings_action = QAction(self.tr("设置(&S)"), self)
+        settings_action = QAction(t("mainwindow.settings_s"), self)
         settings_action.setShortcut("Ctrl+,")
-        settings_action.setStatusTip(self.tr("打开设置对话框"))
+        settings_action.setStatusTip(t("mainwindow.open_the_settings_dialog_box"))
         settings_action.triggered.connect(self._open_settings_dialog)
         tools_menu.addAction(settings_action)
         
         # 帮助菜单
-        help_menu = menubar.addMenu(self.tr("帮助(&H)"))
+        help_menu = menubar.addMenu(t("mainwindow.help_h"))
         
-        about_action = QAction(self.tr("关于"), self)
+        about_action = QAction(t("mainwindow.about"), self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
         
@@ -648,15 +649,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         
         # 序列计数标签
-        self.series_count_label = QLabel(self.tr("序列: 0"))
+        self.series_count_label = QLabel(t("mainwindow.sequence_0"))
         self.status_bar.addWidget(self.series_count_label)
         
         # 视图信息标签
-        self.view_info_label = QLabel(self.tr("布局: 1×1"))
+        self.view_info_label = QLabel(t("mainwindow.layout_1_1"))
         self.status_bar.addWidget(self.view_info_label)
         
         # 活动视图标签
-        self.active_view_label = QLabel(self.tr("活动视图: --"))
+        self.active_view_label = QLabel(t("mainwindow.event_view"))
         self.status_bar.addWidget(self.active_view_label)
         
         # 加载进度条
@@ -665,7 +666,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.loading_progress)
         
         # 准备状态
-        self.status_bar.showMessage(self.tr("准备就绪"))
+        self.status_bar.showMessage(t("mainwindow.ready"))
         
         logger.debug("[MainWindow._init_statusbar] 主窗口状态栏初始化完成")
     
@@ -675,8 +676,8 @@ class MainWindow(QMainWindow):
         layout = self.series_manager.get_current_layout()
         
         # 更新状态栏
-        self.series_count_label.setText(self.tr("序列: %1").replace("%1", str(series_count)))
-        self.view_info_label.setText(self.tr("布局: %1×%2").replace("%1", str(layout[0])).replace("%2", str(layout[1])))
+        self.series_count_label.setText(t("mainwindow.sequence_value").replace("%1", str(series_count)))
+        self.view_info_label.setText(t("mainwindow.layout_size").replace("%1", str(layout[0])).replace("%2", str(layout[1])))
         
         # 更新菜单和工具栏状态
         has_series = series_count > 0
@@ -797,7 +798,7 @@ class MainWindow(QMainWindow):
         
         assigned_count = self.binding_manager.auto_assign_series_to_views()
         
-        self.status_bar.showMessage(self.tr("自动分配完成：分配了 %1 个序列").replace("%1", str(assigned_count)), 3000)
+        self.status_bar.showMessage(t("mainwindow.auto_assignment_complete_value_sequences_assigned").replace("%1", str(assigned_count)), 3000)
         logger.info(f"[MainWindow._auto_assign_all_series] 自动分配完成: {assigned_count}个序列")
     
     def _clear_all_bindings(self) -> None:
@@ -811,14 +812,14 @@ class MainWindow(QMainWindow):
             if self.series_manager.unbind_series_from_view(view_id):
                 cleared_count += 1
         
-        self.status_bar.showMessage(self.tr("清除绑定完成：清除了 %1 个绑定").replace("%1", str(cleared_count)), 3000)
+        self.status_bar.showMessage(t("mainwindow.unbinding_completed_value_bindings_removed").replace("%1", str(cleared_count)), 3000)
         logger.info(f"[MainWindow._clear_all_bindings] 清除绑定完成: {cleared_count}个绑定")
     
     def _set_sync_mode(self, mode) -> None:
         """设置同步模式"""
         logger.debug(f"[MainWindow._set_sync_mode] 设置同步模式: {mode}")
         self.sync_manager.set_sync_mode(mode)
-        self.status_bar.showMessage(self.tr("同步模式已设置: %1").replace("%1", mode.name), 2000)
+        self.status_bar.showMessage(t("mainwindow.sync_mode_set_value").replace("%1", mode.name), 2000)
         logger.info(f"[MainWindow._set_sync_mode] 同步模式设置完成: {mode}")
     
     def _set_sync_group(self, group) -> None:
@@ -826,7 +827,7 @@ class MainWindow(QMainWindow):
         logger.debug(f"[MainWindow._set_sync_group] 设置同步分组: {group}")
         self.sync_manager.set_sync_group(group)
         self.statusBar().showMessage(
-            self.tr(f"已设置同步分组"), 2000
+            t("mainwindow.synchronization_grouping_has_been_set"), 2000
         )
 
     def _on_sync_position_changed(self, mode: str) -> None:
@@ -840,14 +841,14 @@ class MainWindow(QMainWindow):
         if mode == "auto":
             new_mode = current_mode | SyncMode.SLICE
             new_mode = new_mode & ~SyncMode.CROSS_REFERENCE
-            status_msg = self.tr("已开启自动位置同步")
+            status_msg = t("mainwindow.automatic_location_synchronization_is_enabled")
         elif mode == "manual":
             new_mode = current_mode | SyncMode.CROSS_REFERENCE
             new_mode = new_mode & ~SyncMode.SLICE
-            status_msg = self.tr("已开启手动位置同步")
+            status_msg = t("mainwindow.manual_position_synchronization_is_enabled")
         else:  # "none"
             new_mode = current_mode & ~(SyncMode.SLICE | SyncMode.CROSS_REFERENCE)
-            status_msg = self.tr("已关闭位置同步")
+            status_msg = t("mainwindow.location_sync_is_off")
         
         self.sync_manager.set_sync_mode(new_mode)
         self.statusBar().showMessage(status_msg, 2000)
@@ -866,7 +867,7 @@ class MainWindow(QMainWindow):
             new_mode = current_mode & ~SyncMode.ZOOM_PAN
         
         self.sync_manager.set_sync_mode(new_mode)
-        status_msg = self.tr("已开启平移同步") if checked else self.tr("已关闭平移同步")
+        status_msg = t("mainwindow.pan_sync_enabled") if checked else t("mainwindow.translation_sync_disabled")
         self.statusBar().showMessage(status_msg, 2000)
         logger.debug(f"[MainWindow._on_sync_pan_changed] 同步模式更新: {new_mode}")
 
@@ -883,7 +884,7 @@ class MainWindow(QMainWindow):
             new_mode = current_mode & ~SyncMode.ZOOM_PAN
         
         self.sync_manager.set_sync_mode(new_mode)
-        status_msg = self.tr("已开启缩放同步") if checked else self.tr("已关闭缩放同步")
+        status_msg = t("mainwindow.zoom_sync_enabled") if checked else t("mainwindow.zoom_sync_disabled")
         self.statusBar().showMessage(status_msg, 2000)
         logger.debug(f"[MainWindow._on_sync_zoom_changed] 同步模式更新: {new_mode}")
 
@@ -900,7 +901,7 @@ class MainWindow(QMainWindow):
             new_mode = current_mode & ~SyncMode.WINDOW_LEVEL
         
         self.sync_manager.set_sync_mode(new_mode)
-        status_msg = self.tr("已开启窗宽窗位同步") if checked else self.tr("已关闭窗宽窗位同步")
+        status_msg = t("mainwindow.window_width_and_position_synchronization_is_enabled") if checked else t("mainwindow.window_width_synchronization_is_turned_off")
         self.statusBar().showMessage(status_msg, 2000)
         logger.debug(f"[MainWindow._on_sync_window_level_changed] 同步模式更新: {new_mode}")
 
@@ -952,7 +953,7 @@ class MainWindow(QMainWindow):
         
         folder = QFileDialog.getExistingDirectory(
             self,
-            self.tr("选择DICOM文件夹"),
+            t("mainwindow.select_dicom_folder"),
             QDir.homePath()
         )
         
@@ -980,7 +981,7 @@ class MainWindow(QMainWindow):
                     dicom_files.append(str(file_path))
             
             if not dicom_files:
-                QMessageBox.warning(self, self.tr("警告"), self.tr("文件夹中没有找到DICOM文件"))
+                QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.dicom_file_not_found_in_folder"))
                 return
             
             # 使用DicomParser解析文件获取序列信息
@@ -1028,7 +1029,7 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"[MainWindow._load_dicom_folder_as_series] 加载文件夹失败: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr("加载DICOM文件夹失败: %1").replace("%1", str(e)))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.failed_to_load_dicom_folder_value").replace("%1", str(e)))
 
     def _warn_if_strict_metadata_incomplete(self, dataset, file_path: str) -> None:
         """在严格元数据模式下记录缺失关键标签。"""
@@ -1069,7 +1070,7 @@ class MainWindow(QMainWindow):
 
         # 显示加载进度
         self.loading_progress.setVisible(True)
-        self.status_bar.showMessage(self.tr("正在加载序列: %1").replace("%1", series_info.series_description or series_id))
+        self.status_bar.showMessage(t("mainwindow.loading_sequence_value").replace("%1", series_info.series_description or series_id))
 
     def _on_series_loading_finished(self, series_id: str, future) -> None:
         """处理序列加载完成（在主线程中执行）"""
@@ -1095,7 +1096,7 @@ class MainWindow(QMainWindow):
             # 如果没有正在加载的序列，隐藏进度条
             if not self._loading_futures:
                 self.loading_progress.setVisible(False)
-                self.status_bar.showMessage(self.tr("加载完成"), 2000)
+                self.status_bar.showMessage(t("mainwindow.loading_complete"), 2000)
 
         except Exception as e:
             logger.error(f"[MainWindow._on_series_loading_finished] 处理加载完成失败: {e}", exc_info=True)
@@ -1107,9 +1108,9 @@ class MainWindow(QMainWindow):
         
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            self.tr("打开图像文件"),
+            t("mainwindow.open_image_file"),
             QDir.homePath(),
-            self.tr("所有支持的文件 (*.dcm *.dicom *.png *.jpg *.jpeg *.bmp *.npy);;DICOM文件 (*.dcm *.dicom);;图像文件 (*.png *.jpg *.jpeg *.bmp);;NumPy文件 (*.npy)")
+            t("mainwindow.all_supported_files_filter")
         )
         
         if file_path:
@@ -1148,7 +1149,7 @@ class MainWindow(QMainWindow):
                 # 创建序列信息
                 series_info = SeriesInfo(
                     series_id=str(uuid.uuid4()),
-                    patient_name=self.tr("Single Image"),
+                    patient_name=t("mainwindow.single_image"),
                     series_description=path.name,
                     modality="IMG",
                     series_number="1",
@@ -1163,11 +1164,11 @@ class MainWindow(QMainWindow):
                 logger.info(f"[MainWindow._load_single_image_file] 图像文件加载成功: {file_path}")
             else:
                 logger.error(f"[MainWindow._load_single_image_file] 图像文件加载失败: {file_path}")
-                QMessageBox.critical(self, self.tr("错误"), self.tr("无法加载图像文件"))
+                QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.unable_to_load_image_file"))
                 
         except Exception as e:
             logger.error(f"[MainWindow._load_single_image_file] 加载图像文件异常: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr("加载图像文件失败: %1").replace("%1", str(e)))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.failed_to_load_image_file_value").replace("%1", str(e)))
     
     def _load_test_series(self) -> None:
         """加载测试序列"""
@@ -1179,7 +1180,7 @@ class MainWindow(QMainWindow):
             # 检查测试数据是否存在
             test_data_path = Path(get_test_data_path("dcm"))
             if not verify_resource_exists(str(test_data_path)):
-                QMessageBox.information(self, self.tr("信息"), self.tr("测试数据不存在"))
+                QMessageBox.information(self, t("mainwindow.information"), t("mainwindow.test_data_does_not_exist"))
                 return
             
             # 加载所有测试序列
@@ -1260,67 +1261,67 @@ class MainWindow(QMainWindow):
         """导出当前视图截图，包含覆盖层和视口边框。"""
         active_frame = self.multi_viewer_grid.get_active_view_frame()
         if not active_frame:
-            QMessageBox.warning(self, self.tr("警告"), self.tr("没有活动的视图"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_active_view"))
             return
         viewer = active_frame._image_viewer
         if not viewer or not viewer.image_item or viewer.image_item.pixmap().isNull():
-            QMessageBox.warning(self, self.tr("警告"), self.tr("当前视图没有图像"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.current_view_has_no_image"))
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            self.tr("导出当前视图截图"),
+            t("mainwindow.export_current_view_screenshot"),
             QDir.homePath() + "/MedImager_export.png",
-            self.tr("PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;BMP图像 (*.bmp)")
+            t("mainwindow.image_files_filter")
         )
         if not file_path:
             return
 
         pixmap = viewer.viewport().grab()
         if pixmap.save(file_path):
-            self.statusBar().showMessage(self.tr("当前视图截图已导出: ") + file_path, 5000)
+            self.statusBar().showMessage(t("mainwindow.current_view_screenshot_exported_prefix") + file_path, 5000)
         else:
-            QMessageBox.critical(self, self.tr("错误"), self.tr("导出失败"))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.export_failed"))
 
     def _export_current_slice_image(self) -> None:
         """Export the active slice image without viewport chrome."""
         model = self._get_active_image_model()
         if not model or not model.has_image():
-            QMessageBox.warning(self, self.tr("警告"), self.tr("没有可导出的当前切片图像"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_current_slice_image_to_export"))
             return
 
         display_slice = model.get_display_slice()
         if display_slice is None:
-            QMessageBox.warning(self, self.tr("警告"), self.tr("当前切片图像为空"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.current_slice_image_empty"))
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            self.tr("导出当前切片图像"),
+            t("mainwindow.export_current_slice_image"),
             QDir.homePath() + "/MedImager_slice.png",
-            self.tr("PNG图像 (*.png);;JPEG图像 (*.jpg *.jpeg);;BMP图像 (*.bmp)")
+            t("mainwindow.image_files_filter")
         )
         if not file_path:
             return
 
         q_image = qimage_from_display_data(display_slice)
         if q_image.save(file_path):
-            self.statusBar().showMessage(self.tr("当前切片图像已导出: ") + file_path, 5000)
+            self.statusBar().showMessage(t("mainwindow.current_slice_image_exported_prefix") + file_path, 5000)
         else:
-            QMessageBox.critical(self, self.tr("错误"), self.tr("导出当前切片图像失败"))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.export_current_slice_image_failed"))
 
     def _export_annotations(self) -> None:
         """Export ROI and measurement annotations for the active series."""
         model = self._get_active_image_model()
         if not model or not model.has_image():
-            QMessageBox.warning(self, self.tr("警告"), self.tr("没有可导出标注的当前序列"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_annotations_to_export_for_current_series"))
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            self.tr("导出标注"),
+            t("mainwindow.export_annotations"),
             QDir.homePath() + "/MedImager_annotations.json",
-            self.tr("MedImager 标注 (*.json)")
+            t("mainwindow.annotation_json_filter")
         )
         if not file_path:
             return
@@ -1329,23 +1330,23 @@ class MainWindow(QMainWindow):
             save_annotations(model, file_path)
         except Exception as e:
             logger.error(f"Failed to export annotations: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr("导出标注失败: ") + str(e))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.export_annotations_failed_prefix") + str(e))
             return
 
-        self.statusBar().showMessage(self.tr("标注已导出: ") + file_path, 5000)
+        self.statusBar().showMessage(t("mainwindow.annotations_exported_prefix") + file_path, 5000)
 
     def _import_annotations(self) -> None:
         """Import ROI and measurement annotations into the active series."""
         model = self._get_active_image_model()
         if not model or not model.has_image():
-            QMessageBox.warning(self, self.tr("警告"), self.tr("请先加载并激活一个序列"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.load_and_activate_series_first"))
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            self.tr("导入标注"),
+            t("mainwindow.import_annotations"),
             QDir.homePath(),
-            self.tr("MedImager 标注 (*.json)")
+            t("mainwindow.annotation_json_filter")
         )
         if not file_path:
             return
@@ -1354,26 +1355,26 @@ class MainWindow(QMainWindow):
             counts = import_annotations(model, file_path, replace=True)
         except Exception as e:
             logger.error(f"Failed to import annotations: {e}", exc_info=True)
-            QMessageBox.critical(self, self.tr("错误"), self.tr("导入标注失败: ") + str(e))
+            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.import_annotations_failed_prefix") + str(e))
             return
 
         total = counts["rois"] + counts["measurements"] + counts["angle_measurements"]
-        self.statusBar().showMessage(self.tr("标注已导入: ") + str(total), 5000)
+        self.statusBar().showMessage(t("mainwindow.annotations_imported_prefix") + str(total), 5000)
 
     def _copy_view_to_clipboard(self) -> None:
         """复制当前视图到剪贴板"""
         active_frame = self.multi_viewer_grid.get_active_view_frame()
         if not active_frame:
-            QMessageBox.warning(self, self.tr("警告"), self.tr("没有活动的视图"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_active_view"))
             return
         viewer = active_frame._image_viewer
         if not viewer or not viewer.image_item or viewer.image_item.pixmap().isNull():
-            QMessageBox.warning(self, self.tr("警告"), self.tr("当前视图没有图像"))
+            QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.current_view_has_no_image"))
             return
 
         pixmap = viewer.viewport().grab()
         QApplication.clipboard().setPixmap(pixmap)
-        self.statusBar().showMessage(self.tr("视图已复制到剪贴板"), 3000)
+        self.statusBar().showMessage(t("mainwindow.view_copied_to_clipboard"), 3000)
 
     def _cine_toggle_play(self):
         """切换 Cine 播放/暂停"""
@@ -1454,8 +1455,8 @@ class MainWindow(QMainWindow):
             if getattr(dialog, '_language_changed', False):
                 QMessageBox.information(
                     self,
-                    self.tr("语言设置"),
-                    self.tr("语言已切换。部分界面文本将在重启后完全更新。")
+                    t("mainwindow.language_settings"),
+                    t("mainwindow.language_changed_restart_notice")
                 )
 
             logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
@@ -1473,7 +1474,7 @@ class MainWindow(QMainWindow):
         """显示关于对话框"""
         QMessageBox.about(
             self,
-            self.tr("关于 ") + APP_NAME,
+            t("mainwindow.about_prefix") + APP_NAME,
             get_about_html()
         )
     
@@ -1520,7 +1521,7 @@ class MainWindow(QMainWindow):
     def _on_auto_assignment_completed(self, assigned_count: int) -> None:
         """处理自动分配完成事件"""
         logger.debug(f"[MainWindow._on_auto_assignment_completed] 自动分配完成: {assigned_count}")
-        self.status_bar.showMessage(self.tr("自动分配完成：分配了 %1 个序列").replace("%1", str(assigned_count)), 3000)
+        self.status_bar.showMessage(t("mainwindow.auto_assignment_complete_value_sequences_assigned").replace("%1", str(assigned_count)), 3000)
         
         # 激活第一个有绑定的视图，确保切片信号正确连接
         if assigned_count > 0:
@@ -1571,7 +1572,7 @@ class MainWindow(QMainWindow):
         binding = self.series_manager.get_view_binding(view_id)
         if binding:
             pos_text = f"{binding.position.value[0]+1}-{binding.position.value[1]+1}"
-            self.active_view_label.setText(self.tr("活动视图: %1").replace("%1", pos_text))
+            self.active_view_label.setText(t("mainwindow.event_view_value").replace("%1", pos_text))
         
         # 断开之前的连接（如果有的话）
         if hasattr(self, '_current_active_model'):

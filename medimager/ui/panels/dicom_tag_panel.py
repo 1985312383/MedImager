@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt
 from typing import Optional
 import pydicom
 
+from medimager.utils.i18n import t
+
 class DicomTagPanel(QWidget):
     """
     右侧的 DICOM 标签面板，以一个按字母排序的列表显示元数据。
@@ -17,7 +19,7 @@ class DicomTagPanel(QWidget):
         
         self.tree_widget = QTreeWidget()
         # 1. 移除 "Tag" 列，只保留 "Name" 和 "Value"
-        self.tree_widget.setHeaderLabels([self.tr("Name"), self.tr("Value")])
+        self.tree_widget.setHeaderLabels([t("dicomtagpanel.name"), t("dicomtagpanel.value")])
         self.tree_widget.setColumnWidth(0, 200)
         # 自动拉伸第二列以填充剩余空间
         self.tree_widget.header().setStretchLastSection(True)

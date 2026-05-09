@@ -15,10 +15,9 @@ MedImager - 现代化的 DICOM 查看器与图像分析工具
 import sys
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 from PySide6.QtWidgets import QApplication, QMessageBox
-from PySide6.QtCore import Qt, QTranslator, QLocale
 from PySide6.QtGui import QIcon
 
 # 兼容直接 python main.py 运行
@@ -29,7 +28,7 @@ if __name__ == "__main__" and __package__ is None:
 # 导入项目模块
 from medimager.utils.logger import setup_logger, get_logger
 from medimager.utils.settings import SettingsManager, get_settings_manager
-from medimager.utils.i18n import TranslationManager, get_translation_manager
+from medimager.utils.i18n import get_translation_manager
 from medimager.app_info import APP_NAME, get_version
 
 from medimager.ui.main_window import MainWindow
@@ -114,7 +113,7 @@ class MedImagerApplication:
 
             # 设置默认值
             default_settings = {
-                'language': 'zh_CN',
+                'language': 'en_US',
                 'ui_theme': 'dark',  # 改为深色主题
                 'window_geometry': None,
                 'window_state': None,
@@ -178,17 +177,11 @@ class MedImagerApplication:
         try:
             self.translation_manager = get_translation_manager()
 
-            # 获取语言设置，确保默认为中文
-            language = self.settings_manager.get_setting('language', 'zh_CN')
-
-            # 只在非中文时加载翻译文件，中文是源语言不需要翻译
-            if language != 'zh_CN':
-                if self.translation_manager.load_translation(language):
-                    self.logger.info(f"翻译文件加载完成: {language}")
-                else:
-                    self.logger.warning(f"翻译文件加载失败，使用默认语言: {language}")
+            language = self.settings_manager.get_setting('language', 'en_US')
+            if self.translation_manager.load_translation(language):
+                self.logger.info(f"Translation catalog loaded: {language}")
             else:
-                self.logger.info(f"使用默认语言: {language}")
+                self.logger.warning(f"Translation catalog failed, using default language: {language}")
 
             return True
 

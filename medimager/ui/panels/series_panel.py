@@ -19,6 +19,7 @@ from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo, 
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy, SortOrder
 from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
+from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
@@ -145,7 +146,7 @@ class SeriesListWidget(QWidget):
         # 标题和控制栏
         header_layout = QHBoxLayout()
         
-        title_label = QLabel(self.tr("序列列表"))
+        title_label = QLabel(t("serieslistwidget.sequence_listing"))
         title_label.setFont(QFont("", 10, QFont.Bold))
         header_layout.addWidget(title_label)
         
@@ -154,10 +155,10 @@ class SeriesListWidget(QWidget):
         # 分组选项
         self._group_combo = QComboBox()
         self._group_combo.addItems([
-            self.tr("按患者分组"),
-            self.tr("按研究分组"),
-            self.tr("按模态分组"),
-            self.tr("不分组")
+            t("serieslistwidget.group_by_patient"),
+            t("serieslistwidget.group_by_study"),
+            t("serieslistwidget.group_by_modal"),
+            t("serieslistwidget.no_grouping")
         ])
         self._group_combo.setCurrentIndex(3) # 设置默认选项为"不分组"
         self._group_combo.currentTextChanged.connect(self._on_group_changed)
@@ -168,9 +169,9 @@ class SeriesListWidget(QWidget):
         # 序列树形列表
         self._tree_widget = DraggableTreeWidget()
         self._tree_widget.setHeaderLabels([
-            self.tr("序列"),
-            self.tr("状态"),
-            self.tr("视图")
+            t("serieslistwidget.series"),
+            t("serieslistwidget.status"),
+            t("serieslistwidget.view")
         ])
         
         # 设置列宽
@@ -189,7 +190,7 @@ class SeriesListWidget(QWidget):
         layout.addWidget(self._tree_widget)
         
         # 统计信息
-        self._stats_label = QLabel(self.tr("共 0 个序列"))
+        self._stats_label = QLabel(t("serieslistwidget.total_0_sequences"))
         self._stats_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._stats_label)
         
@@ -226,7 +227,7 @@ class SeriesListWidget(QWidget):
                 self._add_series_grouped(series_ids, group_mode)
             
             # 更新统计信息
-            self._stats_label.setText(self.tr("共 %1 个序列").replace("%1", str(len(series_ids))))
+            self._stats_label.setText(t("serieslistwidget.total_value_sequences").replace("%1", str(len(series_ids))))
             
             # 展开所有分组
             self._tree_widget.expandAll()
@@ -252,13 +253,13 @@ class SeriesListWidget(QWidget):
             
             # 确定分组键
             if group_mode == 0:  # 按患者分组
-                group_key = series_info.patient_name or self.tr("未知患者")
+                group_key = series_info.patient_name or t("serieslistwidget.unknown_patient")
             elif group_mode == 1:  # 按研究分组
-                group_key = series_info.study_description or self.tr("未知研究")
+                group_key = series_info.study_description or t("serieslistwidget.unknown_research")
             elif group_mode == 2:  # 按模态分组
-                group_key = series_info.modality or self.tr("未知模态")
+                group_key = series_info.modality or t("serieslistwidget.unknown_modal")
             else:
-                group_key = self.tr("其他")
+                group_key = t("serieslistwidget.other")
             
             if group_key not in groups:
                 groups[group_key] = []
@@ -291,15 +292,15 @@ class SeriesListWidget(QWidget):
             item.setData(0, Qt.UserRole, series_id)
             
             # 设置状态
-            status_text = self.tr("已加载") if series_info.is_loaded else self.tr("未加载")
+            status_text = t("serieslistwidget.loaded") if series_info.is_loaded else t("seriesinfowidget.not_loaded")
             item.setText(1, status_text)
             
             # 设置绑定视图信息
             bound_views = self._series_manager.get_bound_views_for_series(series_id)
             if bound_views:
-                view_text = self.tr("%1个视图").replace("%1", str(len(bound_views)))
+                view_text = t("serieslistwidget.view_count").replace("%1", str(len(bound_views)))
             else:
-                view_text = self.tr("未绑定")
+                view_text = t("seriesinfowidget.unbound")
             item.setText(2, view_text)
             
             # 添加切片子项目
@@ -330,7 +331,7 @@ class SeriesListWidget(QWidget):
             # 为每个切片创建子项目
             for slice_index in range(slice_count):
                 slice_item = QTreeWidgetItem(series_item)
-                slice_item.setText(0, self.tr("切片 %1").replace("%1", str(slice_index + 1)))
+                slice_item.setText(0, t("serieslistwidget.slice_value").replace("%1", str(slice_index + 1)))
                 slice_item.setData(0, Qt.UserRole, f"{series_id}:{slice_index}")  # 存储序列ID和切片索引
                 
                 # 设置切片状态（如果需要）
@@ -350,9 +351,9 @@ class SeriesListWidget(QWidget):
         if series_info.series_description:
             return f"{series_info.series_description}"
         elif series_info.modality:
-            return f"{series_info.modality} - {self.tr('序列')}{series_info.series_number}"
+            return f"{series_info.modality} - {t('serieslistwidget.series')}{series_info.series_number}"
         else:
-            return self.tr("序列 %1").replace("%1", str(series_info.series_number))
+            return t("viewbindingwidget.sequence_value").replace("%1", str(series_info.series_number))
     
     def _on_selection_changed(self) -> None:
         """处理选择变更"""
@@ -432,7 +433,7 @@ class SeriesListWidget(QWidget):
         # 更新对应项目的状态
         if series_id in self._series_items:
             item = self._series_items[series_id]
-            item.setText(1, self.tr("已加载"))
+            item.setText(1, t("serieslistwidget.loaded"))
             
             # 添加切片子项目
             self._add_slice_items(item, series_id)
@@ -449,9 +450,9 @@ class SeriesListWidget(QWidget):
             bound_views = self._series_manager.get_bound_views_for_series(sid)
             item = self._series_items[sid]
             if bound_views:
-                item.setText(2, self.tr("%1个视图").replace("%1", str(len(bound_views))))
+                item.setText(2, t("serieslistwidget.view_count").replace("%1", str(len(bound_views))))
             else:
-                item.setText(2, self.tr("未绑定"))
+                item.setText(2, t("seriesinfowidget.unbound"))
 
 
 class ViewBindingWidget(QWidget):
@@ -493,7 +494,7 @@ class ViewBindingWidget(QWidget):
         layout.setSpacing(4)
         
         # 标题
-        title_label = QLabel(self.tr("视图绑定"))
+        title_label = QLabel(t("viewbindingwidget.view_binding"))
         title_label.setFont(QFont("", 10, QFont.Bold))
         layout.addWidget(title_label)
         
@@ -501,9 +502,9 @@ class ViewBindingWidget(QWidget):
         self._binding_table = QTableWidget()
         self._binding_table.setColumnCount(3)
         self._binding_table.setHorizontalHeaderLabels([
-            self.tr("视图位置"),
-            self.tr("绑定序列"),
-            self.tr("操作")
+            t("viewbindingwidget.view_position"),
+            t("viewbindingwidget.binding_sequence"),
+            t("viewbindingwidget.actions")
         ])
         
         # 设置表格属性
@@ -555,14 +556,14 @@ class ViewBindingWidget(QWidget):
                     else:
                         series_text = binding.series_id
                 else:
-                    series_text = self.tr("未绑定")
+                    series_text = t("seriesinfowidget.unbound")
                 
                 series_item = QTableWidgetItem(series_text)
                 self._binding_table.setItem(row, 1, series_item)
                 
                 # 操作列 - 创建解绑按钮
                 if binding.series_id:
-                    unbind_btn = QPushButton(self.tr("解绑"))
+                    unbind_btn = QPushButton(t("viewbindingwidget.unbind"))
                     unbind_btn.clicked.connect(lambda checked, vid=view_id: self._on_unbind_clicked(vid))
                     self._binding_table.setCellWidget(row, 2, unbind_btn)
                 else:
@@ -577,7 +578,7 @@ class ViewBindingWidget(QWidget):
         """格式化序列文本"""
         if series_info.series_description:
             return f"{series_info.series_description}"
-        return self.tr("序列 %1").replace("%1", str(series_info.series_number))
+        return t("viewbindingwidget.sequence_value").replace("%1", str(series_info.series_number))
     
     def _on_unbind_clicked(self, view_id: str) -> None:
         """处理解绑点击"""
@@ -638,7 +639,7 @@ class SeriesInfoWidget(QWidget):
         layout.setSpacing(4)
         
         # 标题
-        title_label = QLabel(self.tr("序列信息"))
+        title_label = QLabel(t("seriesinfowidget.sequence_information"))
         title_label.setFont(QFont("", 10, QFont.Bold))
         layout.addWidget(title_label)
         
@@ -653,15 +654,15 @@ class SeriesInfoWidget(QWidget):
         self._info_layout.setSpacing(8)
         
         # 基本信息组
-        self._basic_group = self._create_info_group(self.tr("基本信息"))
+        self._basic_group = self._create_info_group(t("seriesinfowidget.basic_information"))
         self._info_layout.addWidget(self._basic_group)
         
         # 技术参数组
-        self._tech_group = self._create_info_group(self.tr("技术参数"))
+        self._tech_group = self._create_info_group(t("seriesinfowidget.technical_parameters"))
         self._info_layout.addWidget(self._tech_group)
         
         # 状态信息组
-        self._status_group = self._create_info_group(self.tr("状态信息"))
+        self._status_group = self._create_info_group(t("seriesinfowidget.status_information"))
         self._info_layout.addWidget(self._status_group)
         
         self._info_layout.addStretch()
@@ -689,7 +690,7 @@ class SeriesInfoWidget(QWidget):
         
         # 显示提示
         if not hasattr(self, '_empty_label'):
-            self._empty_label = QLabel(self.tr("请选择一个序列查看详细信息"))
+            self._empty_label = QLabel(t("seriesinfowidget.please_select_a_sequence_to_view_details"))
             self._empty_label.setAlignment(Qt.AlignCenter)
             self._empty_label.setStyleSheet("color: gray; font-style: italic;")
             self._info_layout.addWidget(self._empty_label)
@@ -749,12 +750,12 @@ class SeriesInfoWidget(QWidget):
         layout.setSpacing(4)
         
         # 添加信息项
-        self._add_info_item(layout, self.tr("患者姓名"), series_info.patient_name)
-        self._add_info_item(layout, self.tr("患者ID"), series_info.patient_id)
-        self._add_info_item(layout, self.tr("研究描述"), series_info.study_description)
-        self._add_info_item(layout, self.tr("序列描述"), series_info.series_description)
-        self._add_info_item(layout, self.tr("检查模态"), series_info.modality)
-        self._add_info_item(layout, self.tr("序列号"), series_info.series_number)
+        self._add_info_item(layout, t("seriesinfowidget.patient_name"), series_info.patient_name)
+        self._add_info_item(layout, t("seriesinfowidget.patient_id"), series_info.patient_id)
+        self._add_info_item(layout, t("seriesinfowidget.study_description"), series_info.study_description)
+        self._add_info_item(layout, t("seriesinfowidget.sequence_description"), series_info.series_description)
+        self._add_info_item(layout, t("seriesinfowidget.inspection_mode"), series_info.modality)
+        self._add_info_item(layout, t("seriesinfowidget.serial_no"), series_info.series_number)
     
     def _fill_tech_info(self, series_info: SeriesInfo) -> None:
         """填充技术参数"""
@@ -769,19 +770,19 @@ class SeriesInfoWidget(QWidget):
         layout.setSpacing(4)
         
         # 添加技术参数
-        self._add_info_item(layout, self.tr("切片数量"), str(series_info.slice_count))
-        self._add_info_item(layout, self.tr("获取日期"), series_info.acquisition_date)
-        self._add_info_item(layout, self.tr("获取时间"), series_info.acquisition_time)
+        self._add_info_item(layout, t("seriesinfowidget.number_of_slices"), str(series_info.slice_count))
+        self._add_info_item(layout, t("seriesinfowidget.date_of_acquisition"), series_info.acquisition_date)
+        self._add_info_item(layout, t("seriesinfowidget.time_of_acquisition"), series_info.acquisition_time)
         
         # 如果有图像数据模型，显示更多信息
         image_model = self._series_manager.get_series_model(series_info.series_id)
         if image_model and image_model.has_image():
             shape = image_model.get_image_shape()
             if shape:
-                self._add_info_item(layout, self.tr("图像尺寸"), f"{shape[1]} × {shape[2]}")
+                self._add_info_item(layout, t("seriesinfowidget.image_size"), f"{shape[1]} × {shape[2]}")
             
-            self._add_info_item(layout, self.tr("窗宽"), str(image_model.window_width))
-            self._add_info_item(layout, self.tr("窗位"), str(image_model.window_level))
+            self._add_info_item(layout, t("seriesinfowidget.window_width"), str(image_model.window_width))
+            self._add_info_item(layout, t("seriesinfowidget.window_level"), str(image_model.window_level))
     
     def _fill_status_info(self, series_info: SeriesInfo) -> None:
         """填充状态信息"""
@@ -796,19 +797,19 @@ class SeriesInfoWidget(QWidget):
         layout.setSpacing(4)
         
         # 状态信息
-        status = self.tr("已加载") if series_info.is_loaded else self.tr("未加载")
-        self._add_info_item(layout, self.tr("加载状态"), status)
+        status = t("serieslistwidget.loaded") if series_info.is_loaded else t("seriesinfowidget.not_loaded")
+        self._add_info_item(layout, t("seriesinfowidget.loading_status"), status)
         
         # 绑定视图信息
         bound_views = self._series_manager.get_bound_views_for_series(series_info.series_id)
         view_count = len(bound_views)
-        view_info = self.tr("%1个视图").replace("%1", str(view_count)) if view_count > 0 else self.tr("未绑定")
-        self._add_info_item(layout, self.tr("绑定视图"), view_info)
+        view_info = t("serieslistwidget.view_count").replace("%1", str(view_count)) if view_count > 0 else t("seriesinfowidget.unbound")
+        self._add_info_item(layout, t("seriesinfowidget.bind_view"), view_info)
         
         # 文件路径信息
         if series_info.file_paths:
             file_count = len(series_info.file_paths)
-            self._add_info_item(layout, self.tr("文件数量"), str(file_count))
+            self._add_info_item(layout, t("seriesinfowidget.number_of_documents"), str(file_count))
     
     def _clear_group_layout(self, group: QGroupBox) -> None:
         """清除分组的布局"""
@@ -821,7 +822,7 @@ class SeriesInfoWidget(QWidget):
     def _add_info_item(self, layout: QVBoxLayout, label: str, value: str) -> None:
         """添加信息项"""
         if not value:
-            value = self.tr("未知")
+            value = t("seriesinfowidget.unknown")
 
         item_layout = QHBoxLayout()
         item_layout.setContentsMargins(0, 0, 0, 0)
@@ -958,15 +959,15 @@ class SeriesPanel(QWidget):
         menu = QMenu(self)
         
         # 添加菜单项
-        bind_action = menu.addAction(self.tr("绑定到活动视图"))
+        bind_action = menu.addAction(t("seriespanel.bind_to_active_view"))
         bind_action.triggered.connect(lambda: self._bind_to_active_view(series_id))
         
-        unbind_action = menu.addAction(self.tr("解除所有绑定"))
+        unbind_action = menu.addAction(t("seriespanel.unbind_all"))
         unbind_action.triggered.connect(lambda: self._unbind_all_views(series_id))
         
         menu.addSeparator()
         
-        remove_action = menu.addAction(self.tr("移除序列"))
+        remove_action = menu.addAction(t("seriespanel.remove_sequence"))
         remove_action.triggered.connect(lambda: self._remove_series(series_id))
         
         menu.exec_(position)

@@ -10,8 +10,12 @@ from pathlib import Path
 APP_NAME = "MedImager"
 AUTHOR = "1985312383 / MedImager contributors"
 PROJECT_URL = "https://github.com/1985312383/MedImager"
-DESCRIPTION = "面向 RadiAnt 级工作流演进的开源 DICOM 查看器与医学图像分析工具"
+DESCRIPTION = (
+    "An open-source DICOM viewer and medical image analysis tool evolving "
+    "toward RadiAnt-class workflows"
+)
 LICENSE_NAME = "GPL-3.0-or-later"
+NO_CHANGELOG_TEXT = "No release changelog is available."
 
 
 def get_version() -> str:
@@ -40,22 +44,22 @@ def get_latest_release_changelog() -> str:
 
     changelog_path = _project_root() / "CHANGELOG.md"
     if not changelog_path.exists():
-        return "暂无 release changelog。"
+        return NO_CHANGELOG_TEXT
 
     return _extract_latest_changelog(changelog_path.read_text(encoding="utf-8"))
 
 
 def get_about_html() -> str:
     """Return rich text for the About dialog."""
-    changelog_html = _markdown_changelog_to_html(get_latest_release_changelog())
+    changelog_html = "<p>See CHANGELOG.md for release notes.</p>"
     return f"""
     <h3>{escape(APP_NAME)}</h3>
     <p>{escape(DESCRIPTION)}</p>
-    <p><b>版本:</b> {escape(get_version())}</p>
-    <p><b>作者:</b> {escape(AUTHOR)}</p>
-    <p><b>项目地址:</b> <a href="{escape(PROJECT_URL)}">{escape(PROJECT_URL)}</a></p>
-    <p><b>许可证:</b> {escape(LICENSE_NAME)}</p>
-    <h4>最近一次 Release Changelog</h4>
+    <p><b>Version:</b> {escape(get_version())}</p>
+    <p><b>Author:</b> {escape(AUTHOR)}</p>
+    <p><b>Project URL:</b> <a href="{escape(PROJECT_URL)}">{escape(PROJECT_URL)}</a></p>
+    <p><b>License:</b> {escape(LICENSE_NAME)}</p>
+    <h4>Latest Release Changelog</h4>
     {changelog_html}
     """
 
@@ -100,7 +104,7 @@ def _extract_latest_changelog(changelog_text: str) -> str:
             break
 
     if start is None:
-        return changelog_text.strip() or "暂无 release changelog。"
+        return changelog_text.strip() or NO_CHANGELOG_TEXT
 
     end = len(lines)
     for index in range(start + 1, len(lines)):
@@ -109,7 +113,7 @@ def _extract_latest_changelog(changelog_text: str) -> str:
             break
 
     latest = "\n".join(lines[start:end]).strip()
-    return latest or "暂无 release changelog。"
+    return latest or NO_CHANGELOG_TEXT
 
 
 def _markdown_changelog_to_html(changelog_text: str) -> str:
@@ -148,4 +152,4 @@ def _markdown_changelog_to_html(changelog_text: str) -> str:
     if in_list:
         html_lines.append("</ul>")
 
-    return "\n".join(html_lines) or "<p>暂无 release changelog。</p>"
+    return "\n".join(html_lines) or f"<p>{NO_CHANGELOG_TEXT}</p>"

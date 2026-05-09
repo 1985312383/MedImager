@@ -85,7 +85,7 @@ MedImager 是一款开源医学影像查看与分析工具，长期目标是逐�
 * **数值与图像处理**: NumPy
 * **2D 可视化**: Qt Graphics View Framework
 * **打包工具**: PyInstaller
-* **多语言支持**: Qt Linguist (`pylupdate6`, `lrelease`)
+* **多语言支持**: YAML 源翻译文件，编译为 JSON 运行时 catalog
 
 ## 4. 项目架构
 
@@ -95,7 +95,7 @@ MedImager 是一款开源医学影像查看与分析工具，长期目标是逐�
 medimager/
 ├── main.py                     # 应用程序入口点
 ├── icons/                      # 存放 UI 图标
-├── translations/               # 存放翻译文件 (.ts, .qm)
+├── i18n/                       # YAML 源翻译文件与 JSON 运行时 catalog
 ├── themes/                     # 主题配置文件
 │   ├── ui/                     # UI 主题 (亮色/暗色)
 │   ├── roi/                    # ROI 主题
@@ -205,6 +205,13 @@ medimager/
       --output performance_baseline.json
     ```
     该命令会生成合成去标识 DICOM 大序列，并记录序列加载、窗宽窗位显示、缓存命中显示和 QImage 转换耗时。默认不在单元测试中设置硬性性能阈值，避免不同机器产生误报；release 前可保存 JSON 结果用于跨版本对比。
+
+5.  **更新翻译（开发者）:**
+    ```bash
+    # 先编辑 medimager/i18n/locales/*.yml，再重新生成运行时 catalog。
+    python translation_tools/main.py
+    ```
+    UI 代码应通过 `t("...")` 使用稳定 key。旧的 Qt `.ts/.qm` 链路不再使用。
 
 ---
 

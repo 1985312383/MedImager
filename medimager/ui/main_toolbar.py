@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QPoint, QSize, Signal
 
 from medimager.utils.logger import get_logger
 from medimager.utils.resource_path import get_icon_path
+from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     Returns:
         配置好的QToolBar实例。
     """
-    toolbar = QToolBar(main_window.tr("主工具"), main_window)
+    toolbar = QToolBar(t("mainwindow.main_toolbar"), main_window)
     toolbar.setObjectName("MainToolBar")
     toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
     toolbar.setIconSize(_ICON_SIZE)
@@ -69,8 +70,8 @@ def create_main_toolbar(main_window) -> QToolBar:
     click_icon_path = get_icon_path("click.svg")
     default_icon = main_window.theme_manager.create_themed_icon(click_icon_path)
 
-    action = QAction(default_icon, main_window.tr("指针"), main_window)
-    action.setStatusTip(main_window.tr("激活默认的指针、平移、缩放、窗位工具"))
+    action = QAction(default_icon, t("mainwindow.pointer"), main_window)
+    action.setStatusTip(t("mainwindow.activate_default_pointer_tool"))
     action.setCheckable(True)
     action.setChecked(True)
     action.triggered.connect(lambda: main_window._on_tool_selected("default"))
@@ -88,14 +89,14 @@ def create_main_toolbar(main_window) -> QToolBar:
     ellipse_icon_path = get_icon_path("ellipse.svg")
     ellipse_icon = main_window.theme_manager.create_themed_icon(ellipse_icon_path)
     roi_button.setIcon(ellipse_icon)
-    roi_button.setToolTip(main_window.tr("选择ROI工具类型"))
+    roi_button.setToolTip(t("mainwindow.select_roi_tool_type"))
     roi_button._icon_path = ellipse_icon_path
 
     roi_menu = QMenu(main_window)
     roi_action_group = QActionGroup(main_window)
     roi_action_group.setExclusive(True)
 
-    ellipse_action = QAction(ellipse_icon, main_window.tr("椭圆"), main_window)
+    ellipse_action = QAction(ellipse_icon, t("mainwindow.ellipse"), main_window)
     ellipse_action.setCheckable(True)
     ellipse_action.setChecked(True)
     ellipse_action.triggered.connect(lambda: _on_roi_tool_selected(main_window, roi_button, ellipse_action, "ellipse_roi"))
@@ -105,7 +106,7 @@ def create_main_toolbar(main_window) -> QToolBar:
 
     rect_icon_path = get_icon_path("rectangle.svg")
     rect_icon = main_window.theme_manager.create_themed_icon(rect_icon_path)
-    rect_action = QAction(rect_icon, main_window.tr("矩形"), main_window)
+    rect_action = QAction(rect_icon, t("mainwindow.rectangle"), main_window)
     rect_action.setCheckable(True)
     rect_action.triggered.connect(lambda: _on_roi_tool_selected(main_window, roi_button, rect_action, "rectangle_roi"))
     rect_action._icon_path = rect_icon_path
@@ -114,7 +115,7 @@ def create_main_toolbar(main_window) -> QToolBar:
 
     circle_icon_path = get_icon_path("circle.svg")
     circle_icon = main_window.theme_manager.create_themed_icon(circle_icon_path)
-    circle_action = QAction(circle_icon, main_window.tr("圆形"), main_window)
+    circle_action = QAction(circle_icon, t("mainwindow.circle"), main_window)
     circle_action.setCheckable(True)
     circle_action.triggered.connect(lambda: _on_roi_tool_selected(main_window, roi_button, circle_action, "circle_roi"))
     circle_action._icon_path = circle_icon_path
@@ -145,14 +146,14 @@ def create_main_toolbar(main_window) -> QToolBar:
     ruler_icon_path = get_icon_path("ruler.svg")
     ruler_icon = main_window.theme_manager.create_themed_icon(ruler_icon_path)
     measure_button.setIcon(ruler_icon)
-    measure_button.setToolTip(main_window.tr("测量工具"))
+    measure_button.setToolTip(t("mainwindow.measurement_tool"))
     measure_button._icon_path = ruler_icon_path
 
     measure_menu = QMenu(main_window)
     measure_action_group = QActionGroup(main_window)
     measure_action_group.setExclusive(True)
 
-    ruler_action = QAction(ruler_icon, main_window.tr("直线测量"), main_window)
+    ruler_action = QAction(ruler_icon, t("mainwindow.line_measurement"), main_window)
     ruler_action.setCheckable(True)
     ruler_action.setChecked(True)
     ruler_action.triggered.connect(lambda: _on_measure_tool_selected(main_window, measure_button, ruler_action, "measurement"))
@@ -162,7 +163,7 @@ def create_main_toolbar(main_window) -> QToolBar:
 
     angle_icon_path = get_icon_path("angle.svg")
     angle_icon = main_window.theme_manager.create_themed_icon(angle_icon_path)
-    angle_action = QAction(angle_icon, main_window.tr("角度测量"), main_window)
+    angle_action = QAction(angle_icon, t("mainwindow.angle_measurement"), main_window)
     angle_action.setCheckable(True)
     angle_action.triggered.connect(lambda: _on_measure_tool_selected(main_window, measure_button, angle_action, "angle"))
     angle_action._icon_path = angle_icon_path
@@ -251,7 +252,7 @@ def _on_measure_tool_selected(main_window, measure_button, action, tool_name):
 def create_wl_preset_button(main_window) -> QToolButton:
     """创建窗宽窗位预设按钮"""
     wl_button = QToolButton(main_window)
-    wl_button.setToolTip(main_window.tr("窗宽窗位预设"))
+    wl_button.setToolTip(t("mainwindow.window_level_presets"))
     _setup_menu_button(wl_button)
 
     icon_path = get_icon_path("contrast.svg")
@@ -260,12 +261,12 @@ def create_wl_preset_button(main_window) -> QToolButton:
 
     wl_menu = QMenu(main_window)
     presets = [
-        (main_window.tr("自动"), -1, -1),
-        (main_window.tr("腹部"), 400, 50),
-        (main_window.tr("脑窗"), 80, 40),
-        (main_window.tr("骨窗"), 2000, 600),
-        (main_window.tr("肺窗"), 1500, -600),
-        (main_window.tr("纵隔"), 350, 50),
+        (t("mainwindow.auto"), -1, -1),
+        (t("mainwindow.abdomen"), 400, 50),
+        (t("mainwindow.brain_window"), 80, 40),
+        (t("mainwindow.bone_window"), 2000, 600),
+        (t("mainwindow.lung_window"), 1500, -600),
+        (t("mainwindow.mediastinum"), 350, 50),
     ]
     for name, w, l in presets:
         action = QAction(name, main_window)
@@ -275,7 +276,7 @@ def create_wl_preset_button(main_window) -> QToolButton:
         wl_menu.addAction(action)
 
     wl_menu.addSeparator()
-    custom_action = QAction(main_window.tr("自定义..."), main_window)
+    custom_action = QAction(t("mainwindow.custom_ellipsis"), main_window)
     custom_action.triggered.connect(main_window._open_custom_wl_dialog)
     wl_menu.addAction(custom_action)
 
@@ -292,7 +293,7 @@ def create_wl_preset_button(main_window) -> QToolButton:
 def create_transform_button(main_window) -> QToolButton:
     """创建图像变换按钮（翻转/旋转/反色）"""
     btn = QToolButton(main_window)
-    btn.setToolTip(main_window.tr("图像变换"))
+    btn.setToolTip(t("mainwindow.image_transform"))
     _setup_menu_button(btn)
 
     icon_path = get_icon_path("transform.svg")
@@ -301,11 +302,11 @@ def create_transform_button(main_window) -> QToolButton:
 
     menu = QMenu(main_window)
     transforms = [
-        (main_window.tr("水平翻转"), "flip_h"),
-        (main_window.tr("垂直翻转"), "flip_v"),
-        (main_window.tr("左旋90°"), "rotate_left"),
-        (main_window.tr("右旋90°"), "rotate_right"),
-        (main_window.tr("反色"), "invert"),
+        (t("mainwindow.flip_horizontal"), "flip_h"),
+        (t("mainwindow.flip_vertical"), "flip_v"),
+        (t("mainwindow.rotate_left_90"), "rotate_left"),
+        (t("mainwindow.rotate_right_90"), "rotate_right"),
+        (t("mainwindow.invert"), "invert"),
     ]
     for name, key in transforms:
         action = QAction(name, main_window)
@@ -315,7 +316,7 @@ def create_transform_button(main_window) -> QToolButton:
         menu.addAction(action)
 
     menu.addSeparator()
-    reset_action = QAction(main_window.tr("重置"), main_window)
+    reset_action = QAction(t("mainwindow.reset"), main_window)
     reset_action.triggered.connect(
         lambda: main_window._apply_viewer_transform("reset")
     )
@@ -342,7 +343,7 @@ def create_cine_controls(main_window) -> QWidget:
     play_btn = QToolButton(main_window)
     play_icon_path = get_icon_path("play.svg")
     play_btn.setIcon(main_window.theme_manager.create_themed_icon(play_icon_path))
-    play_btn.setToolTip(main_window.tr("Cine 播放/暂停"))
+    play_btn.setToolTip(t("mainwindow.cine_play_pause"))
     play_btn._icon_path = play_icon_path
     play_btn.setCheckable(True)
     _setup_button(play_btn)
@@ -381,7 +382,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
     layout_icon_path = get_icon_path("layout.svg")
     layout_icon = main_window.theme_manager.create_themed_icon(layout_icon_path)
     layout_button.setIcon(layout_icon)
-    layout_button.setToolTip(main_window.tr("选择视图布局"))
+    layout_button.setToolTip(t("mainwindow.select_view_layout"))
     layout_button._icon_path = layout_icon_path
     
     def on_layout_button_clicked():
@@ -407,9 +408,11 @@ def create_layout_selector_button(main_window) -> QToolButton:
         """设置当前布局显示"""
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            layout_button.setToolTip(main_window.tr(f"当前布局: {rows}×{cols}"))
+            layout_button.setToolTip(
+                t("layoutselectorbutton.current_layout_size").replace("%1", str(rows)).replace("%2", str(cols))
+            )
         else:
-            layout_button.setToolTip(main_window.tr("当前布局: 特殊布局"))
+            layout_button.setToolTip(t("layoutselectorbutton.current_layout_special_layout"))
     
     layout_button.set_current_layout = set_current_layout
     
@@ -427,7 +430,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
 def create_sync_button(main_window) -> QToolButton:
     """创建同步按钮"""
     sync_button = QToolButton(main_window)
-    sync_button.setToolTip(main_window.tr("同步功能设置"))
+    sync_button.setToolTip(t("mainwindow.sync_settings"))
     _setup_menu_button(sync_button)
     
     chain_icon_path = get_icon_path("chain.svg")
@@ -519,17 +522,17 @@ class SyncDropdownWidget(QWidget):
         layout.addWidget(line1)
         
         # 同步平移
-        self._pan_checkbox = QCheckBox(self.tr("同步平移"))
+        self._pan_checkbox = QCheckBox(t("syncdropdownwidget.synchronized_translation"))
         self._pan_checkbox.setFont(font)
         layout.addWidget(self._pan_checkbox)
         
         # 同步缩放
-        self._zoom_checkbox = QCheckBox(self.tr("同步缩放"))
+        self._zoom_checkbox = QCheckBox(t("syncdropdownwidget.synchronized_zoom"))
         self._zoom_checkbox.setFont(font)
         layout.addWidget(self._zoom_checkbox)
         
         # 同步窗宽窗位
-        self._window_level_checkbox = QCheckBox(self.tr("同步窗宽窗位"))
+        self._window_level_checkbox = QCheckBox(t("syncdropdownwidget.synchronize_window_width_and_window_position"))
         self._window_level_checkbox.setFont(font)
         layout.addWidget(self._window_level_checkbox)
         
@@ -544,7 +547,7 @@ class SyncDropdownWidget(QWidget):
         layout.setSpacing(4)
         
         # 标题
-        title_label = QLabel(self.tr("同步位置"))
+        title_label = QLabel(t("syncdropdownwidget.sync_location"))
         font = QFont()
         font.setPointSize(9)
         font.setBold(True)
@@ -558,9 +561,9 @@ class SyncDropdownWidget(QWidget):
         
         self._position_button_group = QButtonGroup(self)
         
-        self._position_none_radio = QRadioButton(self.tr("否"))
-        self._position_auto_radio = QRadioButton(self.tr("自动"))
-        self._position_manual_radio = QRadioButton(self.tr("手动"))
+        self._position_none_radio = QRadioButton(t("syncdropdownwidget.no"))
+        self._position_auto_radio = QRadioButton(t("syncdropdownwidget.auto"))
+        self._position_manual_radio = QRadioButton(t("syncdropdownwidget.manual"))
         
         # 设置字体
         radio_font = QFont()

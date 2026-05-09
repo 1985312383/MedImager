@@ -92,18 +92,6 @@ def get_theme_path(theme_file: str) -> str:
     return get_resource_path(f"medimager/themes/{theme_file}")
 
 
-def get_translation_path(translation_file: str) -> str:
-    """获取翻译文件路径
-    
-    Args:
-        translation_file: 翻译文件名，如 'zh_CN.qm'
-        
-    Returns:
-        翻译文件的绝对路径
-    """
-    return get_resource_path(f"medimager/translations/{translation_file}")
-
-
 def verify_resource_exists(resource_path: str) -> bool:
     """验证资源文件是否存在
     

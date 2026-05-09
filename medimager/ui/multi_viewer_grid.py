@@ -18,6 +18,7 @@ from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition
 from medimager.core.image_data_model import ImageDataModel
 from medimager.utils.logger import get_logger
 from medimager.utils.settings import get_settings_manager
+from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
@@ -114,7 +115,7 @@ class ViewFrame(QFrame):
         layout.addWidget(self._position_label)
         
         # 序列信息标签
-        self._series_label = QLabel(self.tr("无序列"))
+        self._series_label = QLabel(t("viewframe.no_serial_number"))
         self._series_label.setObjectName("seriesLabel")
         layout.addWidget(self._series_label, 1)
         
@@ -359,7 +360,7 @@ class ViewFrame(QFrame):
                 self._clear_tool_data()
                 
                 # 更新UI
-                self._series_label.setText(self.tr("无序列"))
+                self._series_label.setText(t("viewframe.no_serial_number"))
                 self._slice_label.setText("")
                 self._wl_label.setText("")
                 self._coordinate_label.setText("")
@@ -388,7 +389,7 @@ class ViewFrame(QFrame):
                 model = self._image_model
                 current = model.current_slice_index + 1
                 total = model.slice_count
-                self._slice_label.setText(f"{self.tr('切片')}: {current}/{total}")
+                self._slice_label.setText(f"{t('viewframe.slice')}: {current}/{total}")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_slice_info] 更新切片信息失败: {e}")
     
@@ -423,7 +424,7 @@ class ViewFrame(QFrame):
         """更新像素信息显示"""
         try:
             self._coordinate_label.setText(f"X:{x} Y:{y}")
-            self._pixel_value_label.setText(f"{self.tr('CT值')}: {value:.0f}HU")
+            self._pixel_value_label.setText(f"{t('viewframe.ct_value')}: {value:.0f}HU")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_pixel_info] 更新像素信息失败: {e}")
     
@@ -1316,7 +1317,7 @@ class MultiViewerGrid(QWidget):
         elif series_info.patient_name:
             return f"{series_info.patient_name} - {series_info.modality}"
         else:
-            return f"{self.tr('序列')} {series_info.series_number}"
+            return f"{t('multiviewergrid.series')} {series_info.series_number}"
     
     def _on_layout_changed(self, layout: Tuple[int, int]) -> None:
         """处理布局变更事件（由 series_manager.layout_changed 信号触发）

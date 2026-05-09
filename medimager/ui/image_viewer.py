@@ -21,6 +21,7 @@ from medimager.core.roi import CircleROI, EllipseROI, RectangleROI
 from medimager.core.analysis import calculate_roi_statistics
 from medimager.ui.widgets.roi_stats_box import draw_stats_box, _get_stats_box_settings
 from medimager.utils.theme_colors import qcolor_from_theme
+from medimager.utils.i18n import t
 from ..utils.settings import get_settings_manager
 
 if TYPE_CHECKING:
@@ -164,10 +165,10 @@ class ImageViewer(QGraphicsView):
             # 更新交叉参考线颜色
             if theme_name == 'light':
                 self._cross_reference_color = QColor(255, 165, 0, 180)  # 橙色
-                ref_color = self.tr("橙色")
+                ref_color = t("imageviewer.orange")
             else:
                 self._cross_reference_color = QColor(255, 255, 0, 180)  # 黄色
-                ref_color = self.tr("黄色")
+                ref_color = t("imageviewer.yellow")
             
             self.logger.info(f"[ImageViewer.update_theme] 设置交叉参考线颜色: {ref_color}")
             

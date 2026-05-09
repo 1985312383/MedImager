@@ -9,6 +9,7 @@ from typing import Optional
 import math
 import uuid
 from medimager.utils.theme_colors import qcolor_from_theme
+from medimager.utils.i18n import t
 
 
 class MeasurementTool(BaseTool):
@@ -202,7 +203,7 @@ class MeasurementTool(BaseTool):
             # 优先删除选中的测量
             if model.selected_measurement_indices:
                 deleted_ids = model.delete_selected_measurements()
-                self.logger.info(f"{self.tr('删除了')} {len(deleted_ids)} {self.tr('个测量')}")
+                self.logger.info(f"{t('measurementtool.deleted')} {len(deleted_ids)} {t('measurementtool.measurements')}")
                 deleted_something = True
             
             # 如果没有选中的测量，检查是否有正在创建的测量线

@@ -21,13 +21,4 @@ SOURCES += \
     medimager/ui/tools/roi_tool.py \
     medimager/ui/tools/measurement_tool.py
 
-# 指定翻译文件
-TRANSLATIONS += \
-    medimager/translations/zh_CN.ts \
-    medimager/translations/en_US.ts
-
-# lupdate 工具选项
-# -locations none: 不在.ts文件中记录行号，使翻译更稳定
-LUPDATE_OPTIONS = -locations none -no-obsolete
-
 CODECFORTR = UTF-8 

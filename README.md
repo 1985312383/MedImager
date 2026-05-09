@@ -85,7 +85,7 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 * **Numerical/Image Processing:** NumPy
 * **2D Visualization:** Qt Graphics View Framework
 * **Packaging:** PyInstaller
-* **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)
+* **i18n:** YAML source catalogs compiled to JSON runtime catalogs
 
 ## 4. Project Structure
 
@@ -95,7 +95,7 @@ The project follows an MVC-like pattern to separate data logic, UI, and user int
 medimager/
 ├── main.py                 # Application entry point
 ├── icons/                  # UI icons and SVG resources
-├── translations/           # Translation files (.ts, .qm)
+├── i18n/                   # YAML source catalogs and compiled JSON runtime catalogs
 ├── themes/                 # Theme configuration files
 │   ├── ui/                 # UI themes (dark.toml, light.toml)
 │   ├── roi/                # ROI appearance themes
@@ -205,6 +205,13 @@ First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an
       --output performance_baseline.json
     ```
     This creates a synthetic de-identified DICOM series and records series loading, window/level display, cache-hit display, and QImage conversion timings. Unit tests intentionally do not enforce hard performance thresholds to avoid machine-specific failures; save the JSON before releases for cross-version comparison.
+
+5.  **Update translations (developers):**
+    ```bash
+    # Edit medimager/i18n/locales/*.yml first, then rebuild runtime catalogs.
+    python translation_tools/main.py
+    ```
+    UI code should use stable keys via `t("...")`. The old Qt `.ts/.qm` chain is not used.
 
 ---
 

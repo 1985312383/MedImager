@@ -13,6 +13,7 @@ from PySide6.QtSvg import QSvgRenderer
 
 from medimager.utils.logger import get_logger
 from medimager.utils.theme_manager import ThemeAwareMixin, get_theme_settings
+from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
@@ -58,7 +59,7 @@ class LayoutPresetButton(ThemeAwareMixin, QPushButton):
         self.layout_name = layout_name
         self.setFixedSize(60, 45)
         self.clicked.connect(self._on_clicked)
-        self.setToolTip(self.tr(layout_name))
+        self.setToolTip(t(layout_name))
 
         self._colors = _load_ui_colors(self._theme_manager)
         self._setup_style()
@@ -237,7 +238,7 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
-        self.title_label = QLabel(self.tr("自定义网格"))
+        self.title_label = QLabel(t("dynamiclayoutselector.custom_grid"))
         self.title_label.setAlignment(Qt.AlignLeft)
         self.title_label.setFont(QFont("", 9, QFont.Bold))
         self.title_label.setStyleSheet(f"color: {c['text_color']};")
@@ -250,7 +251,7 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
         self.grid_widget.setMouseTracking(True)
         layout.addWidget(self.grid_widget, 0, Qt.AlignCenter)
 
-        self.selection_label = QLabel(self.tr("1 × 1 网格"))
+        self.selection_label = QLabel(t("dynamiclayoutselector.one_by_one_grid"))
         self.selection_label.setAlignment(Qt.AlignCenter)
         self.selection_label.setFont(QFont("", 8))
         self.selection_label.setStyleSheet(f"color: {c['text_color']};")
@@ -295,7 +296,9 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
         if self.hovered_rows != row or self.hovered_cols != col:
             self.hovered_rows = row
             self.hovered_cols = col
-            self.selection_label.setText(self.tr("%1 × %2 网格").replace("%1", str(row)).replace("%2", str(col)))
+            self.selection_label.setText(
+                t("dynamiclayoutselector.grid_size").replace("%1", str(row)).replace("%2", str(col))
+            )
             self.grid_widget.update()
 
     def _on_mouse_press(self, event: QMouseEvent) -> None:
@@ -306,7 +309,7 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
     def _on_mouse_leave(self, event) -> None:
         self.hovered_rows = 0
         self.hovered_cols = 0
-        self.selection_label.setText(self.tr("1 × 1 网格"))
+        self.selection_label.setText(t("dynamiclayoutselector.one_by_one_grid"))
         self.grid_widget.update()
 
 
@@ -367,7 +370,7 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         layout.setSpacing(8)
 
         # 预设布局
-        self.preset_label = QLabel(self.tr("预设布局"))
+        self.preset_label = QLabel(t("layoutdropdown.preset_layout"))
         self.preset_label.setAlignment(Qt.AlignLeft)
         self.preset_label.setFont(QFont("", 9, QFont.Bold))
         self.preset_label.setStyleSheet(f"color: {c['text_color']};")
@@ -376,13 +379,13 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         preset_grid = QGridLayout()
         preset_grid.setSpacing(4)
         presets = [
-            ({'type': 'vertical_split', 'top_ratio': 0.6, 'bottom_split': True}, "上下分割+下分左右"),
-            ({'type': 'horizontal_split', 'left_ratio': 0.6, 'right_split': True}, "左右分割+右分上下"),
-            ({'type': 'triple_column_right_split', 'left_ratio': 0.33, 'middle_ratio': 0.34, 'right_split': True}, "左右三等分+右边上下等分"),
-            ({'type': 'triple_column_middle_right_split', 'left_ratio': 0.33, 'middle_ratio': 0.34, 'middle_split': True, 'right_split': True}, "左右三等分+中间和右边上下等分"),
+            ({'type': 'vertical_split', 'top_ratio': 0.6, 'bottom_split': True}, "layoutpreset.vertical_split_bottom_split"),
+            ({'type': 'horizontal_split', 'left_ratio': 0.6, 'right_split': True}, "layoutpreset.horizontal_split_right_split"),
+            ({'type': 'triple_column_right_split', 'left_ratio': 0.33, 'middle_ratio': 0.34, 'right_split': True}, "layoutpreset.triple_column_right_split"),
+            ({'type': 'triple_column_middle_right_split', 'left_ratio': 0.33, 'middle_ratio': 0.34, 'middle_split': True, 'right_split': True}, "layoutpreset.triple_column_middle_right_split"),
         ]
-        for i, (config, name) in enumerate(presets):
-            preset_btn = LayoutPresetButton(config, name)
+        for i, (config, label_key) in enumerate(presets):
+            preset_btn = LayoutPresetButton(config, label_key)
             self._preset_buttons.append(preset_btn)
             preset_btn.layout_selected.connect(self._on_preset_selected)
             preset_grid.addWidget(preset_btn, i // 4, i % 4)
@@ -404,7 +407,7 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         self.separator2.setStyleSheet(f"color: {c['border_color']};")
         layout.addWidget(self.separator2)
 
-        self.action_label = QLabel(self.tr("序列操作"))
+        self.action_label = QLabel(t("layoutdropdown.sequence_operations"))
         self.action_label.setAlignment(Qt.AlignLeft)
         self.action_label.setFont(QFont("", 9, QFont.Bold))
         self.action_label.setStyleSheet(f"color: {c['text_color']};")
@@ -412,13 +415,13 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
 
         action_layout = QHBoxLayout()
         action_layout.setSpacing(8)
-        auto_assign_btn = QPushButton(self.tr("自动分配"))
-        auto_assign_btn.setToolTip(self.tr("自动将序列分配到可用视图"))
+        auto_assign_btn = QPushButton(t("layoutdropdown.automatic_assignment"))
+        auto_assign_btn.setToolTip(t("layoutdropdown.automatically_assign_sequences_to_available_views"))
         auto_assign_btn.clicked.connect(self._on_auto_assign)
         self._action_buttons.append(auto_assign_btn)
         action_layout.addWidget(auto_assign_btn)
-        clear_bindings_btn = QPushButton(self.tr("清除绑定"))
-        clear_bindings_btn.setToolTip(self.tr("清除所有序列绑定"))
+        clear_bindings_btn = QPushButton(t("layoutdropdown.clear_bindings"))
+        clear_bindings_btn.setToolTip(t("layoutdropdown.clear_all_sequence_bindings"))
         clear_bindings_btn.clicked.connect(self._on_clear_bindings)
         self._action_buttons.append(clear_bindings_btn)
         action_layout.addWidget(clear_bindings_btn)
@@ -506,7 +509,7 @@ class LayoutSelectorButton(ThemeAwareMixin, QPushButton):
         self.setObjectName("LayoutSelectorButton")
 
         self._create_layout_icon()
-        self.setToolTip(self.tr("选择视图布局"))
+        self.setToolTip(t("layoutselectorbutton.select_view_layout"))
 
         self.dropdown = LayoutDropdown()
         self.dropdown.layout_selected.connect(self._on_layout_selected)
@@ -555,14 +558,14 @@ class LayoutSelectorButton(ThemeAwareMixin, QPushButton):
     def _on_layout_selected(self, layout_config) -> None:
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            self.setToolTip(self.tr("当前布局: %1×%2").replace("%1", str(rows)).replace("%2", str(cols)))
+            self.setToolTip(t("layoutselectorbutton.current_layout_size").replace("%1", str(rows)).replace("%2", str(cols)))
         else:
-            self.setToolTip(self.tr("当前布局: 特殊布局"))
+            self.setToolTip(t("layoutselectorbutton.current_layout_special_layout"))
         self.layout_selected.emit(layout_config)
 
     def set_current_layout(self, layout_config) -> None:
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            self.setToolTip(self.tr("当前布局: %1×%2").replace("%1", str(rows)).replace("%2", str(cols)))
+            self.setToolTip(t("layoutselectorbutton.current_layout_size").replace("%1", str(rows)).replace("%2", str(cols)))
         else:
-            self.setToolTip(self.tr("当前布局: 特殊布局"))
+            self.setToolTip(t("layoutselectorbutton.current_layout_special_layout"))

@@ -85,7 +85,7 @@ Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de 
 * **Traitement Numérique/Images :** NumPy
 * **Visualisation 2D :** Qt Graphics View Framework
 * **Empaquetage :** PyInstaller
-* **i18n :** Qt Linguist (`pylupdate6`, `lrelease`)
+* **i18n :** Catalogues source YAML compilés en catalogues JSON d'exécution
 
 ## 4. Structure du Projet
 
@@ -95,7 +95,7 @@ Le projet suit un modèle similaire à MVC pour séparer la logique des données
 medimager/
 ├── main.py                 # Point d'entrée de l'application
 ├── icons/                  # Icônes UI et ressources SVG
-├── translations/           # Fichiers de traduction (.ts, .qm)
+├── i18n/                   # Catalogues source YAML et catalogues JSON d'exécution
 ├── themes/                 # Fichiers de configuration de thèmes
 │   ├── ui/                 # Thèmes UI (dark.toml, light.toml)
 │   ├── roi/                # Thèmes d'apparence ROI

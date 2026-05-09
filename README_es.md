@@ -85,7 +85,7 @@ Crear un visor de código abierto pragmático que pueda crecer hacia flujos de t
 * **Procesamiento Numérico/Imágenes:** NumPy
 * **Visualización 2D:** Qt Graphics View Framework
 * **Empaquetado:** PyInstaller
-* **i18n:** Qt Linguist (`pylupdate6`, `lrelease`)
+* **i18n:** Catálogos fuente YAML compilados a catálogos JSON de ejecución
 
 ## 4. Estructura del Proyecto
 
@@ -95,7 +95,7 @@ El proyecto sigue un patrón similar a MVC para separar la lógica de datos, UI 
 medimager/
 ├── main.py                 # Punto de entrada de la aplicación
 ├── icons/                  # Iconos UI y recursos SVG
-├── translations/           # Archivos de traducción (.ts, .qm)
+├── i18n/                   # Catálogos fuente YAML y catálogos JSON de ejecución
 ├── themes/                 # Archivos de configuración de temas
 │   ├── ui/                 # Temas UI (dark.toml, light.toml)
 │   ├── roi/                # Temas de apariencia ROI

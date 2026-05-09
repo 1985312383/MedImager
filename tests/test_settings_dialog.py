@@ -84,3 +84,13 @@ def test_settings_dialog_saves_workflow_settings(qapp):
     assert settings.get_setting("roi.stats.area_unit") == "cm2"
     assert settings.get_setting("multiview.default_layout") == "2x2"
     assert settings.get_setting("cine.default_fps") == 24
+
+
+def test_settings_dialog_defaults_language_to_english(qapp):
+    settings = SettingsManager(app_name="MedImagerTestDefaultLanguage", use_json=True)
+    dialog = SettingsDialog(settings)
+
+    language_combo = dialog.setting_widgets["language"]
+    assert language_combo.currentData() == "en_US"
+
+    dialog.close()
