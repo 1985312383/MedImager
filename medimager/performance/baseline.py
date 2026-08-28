@@ -9,6 +9,7 @@ import platform
 import statistics
 import tempfile
 import time
+import tracemalloc
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -21,12 +22,17 @@ from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
 
 from medimager.app_info import get_version
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.volume_geometry import (
+    MprPlane,
+    OrthogonalMprResampler,
+    VolumeBuilder,
+)
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.utils.settings import get_performance_manager
 
 
 SCHEMA = "medimager.performance_baseline"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def run_baseline(
@@ -78,6 +84,31 @@ def run_baseline(
             for idx in sample_indices
         ]
 
+        tracemalloc.start()
+        mpr_build_ms, volume_result = _time_call(lambda: VolumeBuilder.build(last_model))
+        _, mpr_peak_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        if not volume_result.compatible or volume_result.volume is None:
+            raise RuntimeError(f"Synthetic series is not MPR compatible: {volume_result.detail}")
+        resampler = OrthogonalMprResampler(volume_result.volume)
+        cursor = np.asarray(volume_result.volume.geometry.center_lps, dtype=np.float64)
+        first_frame_ms, _ = _time_call(
+            lambda: resampler.reconstruct(MprPlane.AXIAL, cursor)
+        )
+        mpr_interaction_runs = []
+        bounds = volume_result.volume.geometry.patient_bounds
+        for position in np.linspace(bounds[2][0], bounds[2][1], len(sample_indices)):
+            sample_cursor = cursor.copy()
+            sample_cursor[2] = position
+            elapsed_ms, _ = _time_call(
+                lambda current=sample_cursor: resampler.reconstruct(MprPlane.AXIAL, current)
+            )
+            mpr_interaction_runs.append(elapsed_ms)
+        repeat_frame_runs = [
+            _time_call(lambda: resampler.reconstruct(MprPlane.AXIAL, cursor))[0]
+            for _ in range(max(1, len(sample_indices)))
+        ]
+
     result = {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -100,6 +131,30 @@ def run_baseline(
             "display_windowing_cold": _summarize_runs(window_runs, work_units=len(sample_indices), unit_name="slices_per_second"),
             "display_windowing_cached": _summarize_runs(cached_runs, work_units=len(sample_indices), unit_name="slices_per_second"),
             "display_qimage_conversion": _summarize_runs(qimage_runs, work_units=len(sample_indices), unit_name="images_per_second"),
+            "mpr_volume_build": {
+                "total_ms": round(mpr_build_ms, 3),
+                "estimated_volume_mb": round(volume_result.estimated_bytes / (1024 * 1024), 3),
+                "python_peak_mb": round(mpr_peak_bytes / (1024 * 1024), 3),
+            },
+            "mpr_first_frame": {"total_ms": round(first_frame_ms, 3)},
+            "mpr_cursor_interaction": {
+                **_summarize_runs(
+                    mpr_interaction_runs,
+                    work_units=len(mpr_interaction_runs),
+                    unit_name="frames_per_second",
+                ),
+                "p95_ms": round(float(np.percentile(mpr_interaction_runs, 95)), 3),
+            },
+            "mpr_repeat_frame": _summarize_runs(
+                repeat_frame_runs,
+                work_units=len(repeat_frame_runs),
+                unit_name="frames_per_second",
+            ),
+        },
+        "regression_policy": {
+            "baseline_version": "2.4",
+            "relative_limit": 1.20,
+            "description": "Flag a regression when duration or peak memory exceeds the recorded v2.4 baseline by more than 20% on the same host.",
         },
     }
 
@@ -188,6 +243,7 @@ def _make_ct_slice(
     dataset.PatientID = "PERF-SYNTHETIC"
     dataset.StudyInstanceUID = study_uid
     dataset.SeriesInstanceUID = series_uid
+    dataset.FrameOfReferenceUID = study_uid
     dataset.Modality = "CT"
     dataset.SeriesNumber = 1
     dataset.InstanceNumber = instance_number

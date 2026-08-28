@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.0 fasst die abgeschlossenen Arbeiten aus 1.0 und 1.x zu einer zuverlässigen 2D-DICOM-Basis zusammen: Multi-Serien-Anzeige, Messung und ROI-Analyse, professionelle synthetische DICOM-Testabdeckung, Annotationspersistenz und wiederholbare Performance-Baselines.
+MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.4 ergänzt die zuverlässige 2D-DICOM-Basis um ein Patientenraum-Volumenmodell und verknüpfte axiale, koronare und sagittale MPR: Multi-Serien-Anzeige, Messung und ROI-Analyse, professionelle synthetische DICOM-Testabdeckung, Annotationspersistenz und wiederholbare Performance-Baselines.
 
 ## 1. Projektvision
 
-Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.0 ist als stabile 2D-Basisversion bereit; spätere Versionen sollen darauf MPR, DICOMDIR/PACS, Hanging Protocols und weitere klinikähnliche Workflows aufbauen.
+Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.4 bietet geometrievalidierte orthogonale MPR; spätere Versionen bauen darauf DICOMDIR/PACS, Hanging Protocols, schräge Rekonstruktion und weitere klinikähnliche Workflows auf.
 
 <div align="center">
 
@@ -70,7 +70,7 @@ Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen 
     - [x] Versionierte JSON-Persistenz für ROI-, Distanz- und Winkelmessungs-Annotationen.
 
 ### Nächste Roadmap - RadiAnt-ähnliche Workflows
-- [ ] **Multi-Planar-Rekonstruktion (MPR):** Anzeige axialer, sagittaler und koronaler Ebenen aus 3D-Volumendaten.
+- [x] **Orthogonale Multi-Planar-Rekonstruktion (MPR):** Verknüpfte axiale, koronare und sagittale Ansichten im LPS-Patientenraum.
 - [ ] **3D-Volumen-Rendering:** Grundlegende 3D-Visualisierung von DICOM-Serien.
 - [ ] **Bildfusion:** Überlagerung zweier verschiedener Serien (z.B. PET/CT).
 - [ ] **DICOMDIR / PACS:** Lokale Mediennavigation und DICOM-Netzwerkabfrage/-abruf nach stabiler 2D-Parser-Basis.

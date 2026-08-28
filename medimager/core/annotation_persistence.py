@@ -20,9 +20,13 @@ from medimager.core.image_data_model import (
     MeasurementData,
 )
 from medimager.core.roi import BaseROI, CircleROI, EllipseROI, RectangleROI
+from medimager.core.annotation_coordinates import (
+    deserialize_angle_lps, deserialize_measurement_lps, deserialize_roi_lps,
+    serialize_angle_lps, serialize_measurement_lps, serialize_roi_lps,
+)
 
 
-ANNOTATION_SCHEMA_VERSION = 1
+ANNOTATION_SCHEMA_VERSION = 2
 _ANNOTATION_COUNT_KEYS = ("rois", "measurements", "angle_measurements")
 _SAVED_ANNOTATION_SIGNATURE_ATTRIBUTE = "_medimager_saved_annotation_signature"
 
@@ -90,14 +94,15 @@ def export_annotations(model: ImageDataModel) -> dict[str, Any]:
         "schema_version": ANNOTATION_SCHEMA_VERSION,
         "app": APP_NAME,
         "app_version": get_version(),
+        "coordinate_system": "DICOM_LPS",
         "series": _series_identity(model),
         "annotations": {
-            "rois": [_serialize_roi(roi) for roi in model.rois],
+            "rois": [serialize_roi_lps(model, roi) for roi in model.rois],
             "measurements": [
-                _serialize_measurement(measurement) for measurement in model.measurements
+                serialize_measurement_lps(model, measurement) for measurement in model.measurements
             ],
             "angle_measurements": [
-                _serialize_angle_measurement(measurement)
+                serialize_angle_lps(model, measurement)
                 for measurement in model.angle_measurements
             ],
         },
@@ -149,12 +154,14 @@ def import_annotations(
     document = _load_document(source)
     _validate_document(document)
     annotations = document["annotations"]
-    rois = _deserialize_items(annotations, "rois", _deserialize_roi)
+    rois = _deserialize_items(
+        annotations, "rois", lambda data: deserialize_roi_lps(model, data)
+    )
     measurements = _deserialize_items(
-        annotations, "measurements", _deserialize_measurement
+        annotations, "measurements", lambda data: deserialize_measurement_lps(model, data)
     )
     angle_measurements = _deserialize_items(
-        annotations, "angle_measurements", _deserialize_angle_measurement
+        annotations, "angle_measurements", lambda data: deserialize_angle_lps(model, data)
     )
 
     source_identity = document.get("series")
@@ -228,6 +235,7 @@ def _series_identity(model: ImageDataModel) -> dict[str, Any]:
         "study_instance_uid": str(model.get_metadata("StudyInstanceUID", "")),
         "series_instance_uid": str(model.get_metadata("SeriesInstanceUID", "")),
         "series_description": str(model.get_metadata("SeriesDescription", "")),
+        "frame_of_reference_uid": str(model.get_metadata("FrameOfReferenceUID", "")),
         "slice_count": model.get_slice_count(),
     }
 
@@ -352,7 +360,11 @@ def _validate_document(document: dict[str, Any]) -> None:
     if version != ANNOTATION_SCHEMA_VERSION:
         raise AnnotationImportError(
             "Unsupported annotation schema version: "
-            f"{document.get('schema_version')}"
+            f"{document.get('schema_version')}; only patient-space schema v2 is supported."
+        )
+    if document.get("coordinate_system") != "DICOM_LPS":
+        raise AnnotationImportError(
+            "Annotation schema v2 requires DICOM_LPS coordinates."
         )
     if not isinstance(document.get("annotations"), dict):
         raise AnnotationImportError("Invalid annotation file: missing annotations object.")
@@ -363,7 +375,10 @@ def _series_identity_mismatches(
 ) -> dict[str, tuple[str, str]]:
     target_identity = _series_identity(model)
     mismatches: dict[str, tuple[str, str]] = {}
-    for field in ("patient_id", "study_instance_uid", "series_instance_uid"):
+    for field in (
+        "patient_id", "study_instance_uid", "series_instance_uid",
+        "frame_of_reference_uid",
+    ):
         source_value = _normalize_identity(source_identity.get(field, ""))
         target_value = _normalize_identity(target_identity.get(field, ""))
         if source_value != target_value:

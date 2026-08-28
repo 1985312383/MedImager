@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 
 decoder_metadata = []
@@ -12,6 +12,8 @@ for distribution in (
     'pyjpegls',
 ):
     decoder_metadata += copy_metadata(distribution)
+
+simpleitk_datas, simpleitk_binaries, simpleitk_hiddenimports = collect_all('SimpleITK')
 
 decoder_hiddenimports = [
     'pydicom.pixels.decoders.pylibjpeg',
@@ -34,6 +36,7 @@ runtime_icons = sorted(path.name for path in Path('medimager/icons').glob('*.svg
 
 runtime_datas = [
     *decoder_metadata,
+    *simpleitk_datas,
     *[(f'medimager\\icons\\{name}', 'medimager/icons') for name in runtime_icons],
     ('medimager\\icons\\logo.png', 'medimager/icons'),
     ('medimager\\themes', 'medimager/themes'),
@@ -47,9 +50,9 @@ runtime_datas = [
 a = Analysis(
     ['medimager\\main.py'],
     pathex=[],
-    binaries=[],
+    binaries=simpleitk_binaries,
     datas=runtime_datas,
-    hiddenimports=decoder_hiddenimports,
+    hiddenimports=decoder_hiddenimports + simpleitk_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

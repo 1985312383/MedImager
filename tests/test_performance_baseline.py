@@ -25,6 +25,11 @@ def test_performance_baseline_outputs_stable_schema(tmp_path):
     assert result["benchmarks"]["display_windowing_cold"]["slices_per_second"] > 0
     assert result["benchmarks"]["display_windowing_cached"]["slices_per_second"] > 0
     assert result["benchmarks"]["display_qimage_conversion"]["images_per_second"] > 0
+    assert result["benchmarks"]["mpr_volume_build"]["total_ms"] > 0
+    assert result["benchmarks"]["mpr_first_frame"]["total_ms"] > 0
+    assert result["benchmarks"]["mpr_cursor_interaction"]["p95_ms"] > 0
+    assert result["benchmarks"]["mpr_repeat_frame"]["frames_per_second"] > 0
+    assert result["regression_policy"]["baseline_version"] == "2.4"
 
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert saved["schema"] == SCHEMA

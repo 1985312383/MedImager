@@ -1,10 +1,4 @@
-"""Per-view presentation state for a shared image series.
-
-The pixel volume and annotations belong to :class:`ImageDataModel`, while the
-state in this module belongs to one viewport.  Keeping these concerns separate
-allows the same series to be displayed with different slices, VOI settings and
-geometric transforms in multiple viewports.
-"""
+"""Per-view presentation state for a shared image series."""
 
 from __future__ import annotations
 
@@ -97,8 +91,6 @@ class ViewPresentationState:
         source: "ViewPresentationState",
         fields: Iterable[str],
     ) -> None:
-        """Copy only explicitly selected presentation fields."""
-
         for name in fields:
             if not hasattr(self, name) or not hasattr(source, name):
                 continue
@@ -109,15 +101,10 @@ class ViewPresentationState:
 
 @contextmanager
 def model_presentation_context(model, state: ViewPresentationState) -> Iterator[None]:
-    """Temporarily expose a view state to legacy model rendering methods.
+    """Compatibility helper retained for third-party callers.
 
-    ``ImageDataModel.get_display_slice`` currently reads WW/WL from the model.
-    Qt GUI rendering is single-threaded, so assigning the fields without
-    emitting signals for the duration of one render is safe and lets us reuse
-    the model's DICOM-correct VOI implementation.  All values are restored even
-    when rendering raises.
+    MedImager's own rendering path no longer uses this context manager.
     """
-
     names = (
         "current_slice_index",
         "window_width",
@@ -139,16 +126,44 @@ def model_presentation_context(model, state: ViewPresentationState) -> Iterator[
 
 
 def render_display_slice(model, state: ViewPresentationState):
-    """Render one slice using the presentation choices of one viewport."""
+    """Render one slice without mutating the shared image model."""
+    from medimager.core.render_pipeline import RenderRequest, render_frame
 
     state.clamp(getattr(model, "get_slice_count", lambda: 0)())
-    with model_presentation_context(model, state):
-        return model.get_display_slice(state.slice_index)
+    # Keep compatibility with lightweight external/test models while the
+    # production ImageDataModel always uses the pure request path below.
+    if not hasattr(model, "get_slice_data") or not hasattr(model, "get_slice_metadata"):
+        with model_presentation_context(model, state):
+            return model.get_display_slice(state.slice_index)
+    pixels = model.get_slice_data(state.slice_index)
+    if pixels is None:
+        return None
+    if str(getattr(model, "image_mode", "")).startswith("rgb"):
+        return model._as_uint8_rgb(pixels)
+    metadata = model.get_slice_metadata(state.slice_index)
+    photometric = metadata.get(
+        "PhotometricInterpretation", metadata.get("Photometric Interpretation", "")
+    )
+    return render_frame(
+        RenderRequest(
+            pixels=pixels,
+            window_width=state.window_width,
+            window_level=state.window_level,
+            voi_function=str(metadata.get("VOILUTFunction", "LINEAR")),
+            inverted=state.inverted,
+            monochrome1=str(photometric).upper() == "MONOCHROME1",
+            presentation_lut_shape=str(
+                metadata.get("PresentationLUTShape", "IDENTITY")
+            ),
+            use_dicom_voi_lut=state.use_dicom_voi_lut,
+            voi_lut_index=int(state.voi_lut_index or 0),
+            dataset=model.get_dicom_file(state.slice_index),
+        )
+    ).pixels_uint8
 
 
 def pixel_value_for_view(model, state: ViewPresentationState, x: int, y: int):
     """Return a raw pixel value without consulting the model's shared cursor."""
-
     data = model.get_slice_data(state.slice_index)
     if data is None or not (0 <= y < data.shape[0] and 0 <= x < data.shape[1]):
         return None

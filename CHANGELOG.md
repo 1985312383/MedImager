@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.4.0 - 2026-08-29
+
+### Features
+- Added a patient-space volume geometry model with explicit voxel-to-LPS transforms and structured compatibility diagnostics.
+- Added asynchronous axial, coronal, and sagittal MPR reconstruction powered by SimpleITK.
+- Added a main-window MPR workspace with linked 3D cursor, true orthogonal localizer lines, wheel navigation, cancel support, and viewport maximization.
+- Added a pure RenderRequest/RenderedFrame display pipeline shared by 2D and MPR rendering.
+- Upgraded annotation persistence to patient-space DICOM LPS schema v2; legacy schema v1 files are rejected without mutation.
+
+### Correctness and safety
+- Rejects MPR for duplicate/missing/non-uniform slices, gantry tilt, mixed orientations, mixed temporal/stack dimensions, color data, and unsupported modalities.
+- Adds memory preflight, background cancellation, malformed-coordinate validation, geometry golden tests, and packaging support for SimpleITK.
+
 ## 2.3.0 - 2026-08-28
 
 ### 特性

@@ -19,14 +19,14 @@
 
 </div>
 
-MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.0 consolidates the completed 1.0 and 1.x work into a reliable 2D DICOM foundation: multi-series viewing, measurement and ROI analysis, professional synthetic DICOM coverage, annotation persistence, and repeatable performance baselines.
+MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.4 builds on the stable 2D foundation with a patient-space volume model and linked axial, coronal, and sagittal MPR reconstruction, while retaining multi-series viewing, quantitative tools, annotation persistence, and repeatable performance baselines.
 
 > [!WARNING]
 > **Research and teaching use only — not diagnostic grade.** MedImager has not completed DICOM GSDF conformance or calibrated diagnostic-display validation. Do not use it for primary diagnosis or other clinical decisions.
 
 ## 1. Project Vision
 
-Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.0 is ready as the stable 2D foundation release; later versions should build on that base with MPR, DICOMDIR/PACS, hanging protocols, and advanced clinical-style workflows.
+Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.4 adds geometry-validated orthogonal MPR to the stable 2D foundation; later versions can build on it with DICOMDIR/PACS, hanging protocols, oblique reconstruction, 3D rendering, and fusion.
 
 <div align="center">
 
@@ -72,8 +72,13 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
     - [x] Large-series loading, window/level display, cache-hit display, and QImage conversion performance baselines.
     - [x] Versioned JSON annotation persistence for ROI, distance measurement, and angle measurement annotations.
 
+### ✅ V2.4 - Patient-Space Volume and Orthogonal MPR
+- [x] Geometry-validated axial, coronal, and sagittal reconstruction.
+- [x] Linked 3D cursor and true orthogonal localizer lines.
+- [x] Asynchronous volume building with cancellation and memory preflight.
+- [x] Patient-space DICOM LPS annotation schema v2.
+
 ### Next Roadmap - RadiAnt-Class Workflow
-- [ ] **Multi-Planar Reconstruction (MPR):** View axial, sagittal, and coronal planes from 3D volume data.
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
 - [ ] **DICOMDIR / PACS:** Local media browsing and DICOM network query/retrieve after the 2D parser baseline is stable.
@@ -85,7 +90,7 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 * **Language:** Python 3.11+
 * **GUI Framework:** PySide6 (LGPL)
 * **DICOM Parsing:** pydicom
-* **Numerical/Image Processing:** NumPy
+* **Numerical/Image Processing:** NumPy and SimpleITK
 * **2D Visualization:** Qt Graphics View Framework
 * **Packaging:** PyInstaller
 * **i18n:** YAML source catalogs compiled to JSON runtime catalogs
@@ -111,6 +116,8 @@ medimager/
 │   ├── multi_series_manager.py # Multi-series management and layout control
 │   ├── series_view_binding.py  # Series-view binding management
 │   ├── sync_manager.py     # Cross-viewport synchronization
+│   ├── volume_geometry.py  # Patient-space volume geometry and MPR resampling
+│   ├── render_pipeline.py  # Pure 2D/MPR display rendering
 │   ├── roi.py              # ROI shapes and logic
 │   └── analysis.py         # Statistical calculations (HU stats, etc.)
 │
@@ -119,7 +126,7 @@ medimager/
 │   ├── main_window.py      # Main window with multi-series support
 │   ├── main_toolbar.py     # Unified toolbar management (tools, layout, sync)
 │   ├── image_viewer.py     # Core 2D image viewer (QGraphicsView)
-│   ├── viewport.py         # Standalone viewport with image_viewer
+│   ├── mpr_workspace.py    # Orthogonal three-plane MPR workspace
 │   ├── multi_viewer_grid.py# Multi-viewport grid layout manager
 │   ├── panels/             # Dockable panels
 │   │   ├── __init__.py
@@ -184,6 +191,16 @@ First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an
     # `uv run` executes the command within the project's virtual environment,
     # avoiding the need to activate it in your shell.
     uv run python medimager/main.py
+    ```
+
+    Run the full test suite:
+    ```bash
+    uv run pytest
+    ```
+
+    Record the release-scale v2.4 MPR baseline (512×512×500 CT):
+    ```bash
+    uv run python -m medimager.performance.baseline --slices 500 --rows 512 --cols 512 --repeats 1 --output performance_baseline_v2.4.json
     ```
     For developers who prefer an active environment:
     ```bash

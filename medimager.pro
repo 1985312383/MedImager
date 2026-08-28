@@ -7,10 +7,12 @@ SOURCES += \
     medimager/main.py \
     medimager/core/dicom_parser.py \
     medimager/core/image_data_model.py \
+    medimager/core/volume_geometry.py \
+    medimager/core/render_pipeline.py \
     medimager/core/roi.py \
     medimager/ui/main_window.py \
     medimager/ui/image_viewer.py \
-    medimager/ui/viewport.py \
+    medimager/ui/mpr_workspace.py \
     medimager/ui/main_toolbar.py \
     medimager/ui/panels/series_panel.py \
     medimager/ui/panels/dicom_tag_panel.py \

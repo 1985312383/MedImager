@@ -70,7 +70,10 @@ def test_annotation_document_contains_series_identity():
     document = export_annotations(model)
 
     assert document["schema"] == "medimager.annotations"
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
+    assert document["coordinate_system"] == "DICOM_LPS"
+    assert "points_lps" in document["annotations"]["rois"][0]
+    assert "slice_index" not in document["annotations"]["rois"][0]
     assert document["series"]["patient_id"] == "TEST-001"
     assert document["series"]["slice_count"] == 4
     assert len(document["annotations"]["rois"]) == 3
@@ -138,7 +141,8 @@ def test_import_rejects_unknown_schema():
 def test_import_rejects_unknown_roi_type(tmp_path):
     document = {
         "schema": "medimager.annotations",
-        "schema_version": 1,
+        "schema_version": 2,
+        "coordinate_system": "DICOM_LPS",
         "annotations": {
             "rois": [{"id": "bad", "type": "Polygon", "slice_index": 0}],
             "measurements": [],
@@ -150,3 +154,46 @@ def test_import_rejects_unknown_roi_type(tmp_path):
 
     with pytest.raises(ValueError, match="Unsupported ROI type"):
         import_annotations(make_model(), file_path)
+
+
+def test_schema_v1_is_rejected_without_mutating_target():
+    target = make_model()
+    target.add_roi(RectangleROI((0, 0), (1, 1), 0))
+    document = {
+        "schema": "medimager.annotations",
+        "schema_version": 1,
+        "annotations": {"rois": [], "measurements": [], "angle_measurements": []},
+    }
+    with pytest.raises(ValueError, match="only patient-space schema v2"):
+        import_annotations(target, document)
+    assert len(target.rois) == 1
+
+
+def test_non_axial_patient_points_survive_schema_v2_roundtrip():
+    source = make_model()
+    item = MeasurementData(
+        id="coronal-distance",
+        slice_index=0,
+        start_point=QPointF(1, 1),
+        end_point=QPointF(1, 3),
+        distance=3.0,
+        unit="mm",
+    )
+    item.creation_plane = {
+        "origin_lps": [0.0, 1.0, 0.0],
+        "column_axis_lps": [1.0, 0.0, 0.0],
+        "row_axis_lps": [0.0, 0.0, -1.0],
+        "normal_lps": [0.0, 1.0, 0.0],
+        "pixel_spacing_rc": [1.0, 1.0],
+    }
+    item.points_lps = {"start": [1.0, 1.0, 0.0], "end": [1.0, 1.0, 3.0]}
+    source.add_measurement(item)
+
+    document = export_annotations(source)
+    target = make_model()
+    import_annotations(target, document)
+    second_document = export_annotations(target)
+
+    saved = second_document["annotations"]["measurements"][0]
+    assert saved["points_lps"] == item.points_lps
+    assert saved["plane"] == item.creation_plane

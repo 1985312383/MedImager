@@ -304,7 +304,27 @@ def create_main_toolbar(main_window) -> QToolBar:
     sync_button.setProperty("toolbarGroup", "layout-sync-cine")
     toolbar.addWidget(sync_button)
 
-    # 8. Cine playback
+    # 8. Orthogonal MPR workspace
+    mpr_icon_path = get_icon_path('mpr.svg')
+    mpr_action = QAction(
+        main_window.theme_manager.create_themed_icon(mpr_icon_path),
+        t('mpr.enter'),
+        main_window,
+    )
+    mpr_action.setCheckable(True)
+    mpr_action.setEnabled(False)
+    mpr_handler = getattr(main_window, '_toggle_mpr_workspace', None)
+    if callable(mpr_handler):
+        mpr_action.triggered.connect(mpr_handler)
+    mpr_action._icon_path = mpr_icon_path
+    toolbar.addAction(mpr_action)
+    _tag_toolbar_action(toolbar, mpr_action, 'layout-sync-cine', 'M')
+    main_window.mpr_action = mpr_action
+    if not hasattr(main_window, '_image_required_actions'):
+        main_window._image_required_actions = []
+    main_window._image_required_actions.append(mpr_action)
+
+    # 9. Cine playback
     cine_controls = create_cine_controls(main_window)
     cine_controls.setProperty("toolbarGroup", "layout-sync-cine")
     toolbar.addWidget(cine_controls)

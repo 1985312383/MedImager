@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.0 consolide le travail terminé de 1.0 et 1.x en une base DICOM 2D fiable : visualisation multi-séries, mesure et analyse ROI, couverture DICOM synthétique professionnelle, persistance des annotations et baselines de performance répétables.
+MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.4 enrichit la base DICOM 2D fiable avec un modèle de volume dans l’espace patient et une MPR axiale, coronale et sagittale liée : visualisation multi-séries, mesure et analyse ROI, couverture DICOM synthétique professionnelle, persistance des annotations et baselines de performance répétables.
 
 ## 1. Vision du Projet
 
-Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.0 est prêt comme version de base 2D stable ; les versions suivantes doivent construire sur cette base la MPR, DICOMDIR/PACS, les hanging protocols et des flux de lecture plus complets.
+Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.4 fournit une MPR orthogonale validée géométriquement ; les versions suivantes ajouteront DICOMDIR/PACS, les hanging protocols, la reconstruction oblique et des flux plus complets.
 
 <div align="center">
 
@@ -70,7 +70,7 @@ Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de 
     - [x] Persistance JSON versionnée pour les annotations ROI, mesures de distance et mesures d'angle.
 
 ### Prochaine Feuille de Route - Flux Type RadiAnt
-- [ ] **Reconstruction Multi-Planaire (MPR) :** Visualiser les plans axial, sagittal et coronal à partir de données de volume 3D.
+- [x] **Reconstruction multiplanaire orthogonale (MPR) :** Vues axiale, coronale et sagittale liées dans l’espace patient LPS.
 - [ ] **Rendu de Volume 3D :** Visualisation 3D de base des séries DICOM.
 - [ ] **Fusion d'Images :** Superposer deux séries différentes (ex. PET/CT).
 - [ ] **DICOMDIR / PACS :** Navigation sur médias locaux et requête/récupération DICOM réseau après stabilisation de la base 2D.

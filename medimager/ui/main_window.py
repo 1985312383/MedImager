@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
     QPushButton, QProgressBar, QToolButton,
     QAbstractItemView, QListView, QTreeView, QLineEdit, QTextEdit,
-    QPlainTextEdit, QDockWidget, QInputDialog,
+    QPlainTextEdit, QDockWidget, QInputDialog, QStackedWidget,
 )
 from PySide6.QtCore import Qt, QDir, QEvent, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup
@@ -40,6 +40,8 @@ from medimager.core.annotation_persistence import (
 from medimager.core.dicom_parser import DicomParser
 from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
+from medimager.ui.mpr_workspace import MprWorkspace
+from medimager.core.volume_geometry import GeometryStatus, VolumeBuilder
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
@@ -388,6 +390,8 @@ class MainWindow(QMainWindow):
         )
         self._image_required_actions: List[QAction] = []
         self._image_required_widgets: List[QWidget] = []
+        self._mpr_active = False
+        self._mpr_series_id: Optional[str] = None
         
         # 初始化UI
         self._init_ui()
@@ -538,9 +542,15 @@ class MainWindow(QMainWindow):
         self.series_dock.setWidget(self.series_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.series_dock)
 
-        # 中央多视图网格
+        # 中央工作区在常规 2-D 网格与三平面 MPR 之间切换。
+        self.workspace_stack = QStackedWidget(self)
         self.multi_viewer_grid = MultiViewerGrid(self.series_manager, self)
-        main_layout.addWidget(self.multi_viewer_grid, 1)
+        self.mpr_workspace = MprWorkspace(self)
+        self.mpr_workspace.request_return_to_2d.connect(self._leave_mpr_workspace)
+        self.workspace_stack.addWidget(self.multi_viewer_grid)
+        self.workspace_stack.addWidget(self.mpr_workspace)
+        self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        main_layout.addWidget(self.workspace_stack, 1)
 
         # 右侧信息面板
         self.dicom_tag_panel = _DockAwareDicomTagPanel()
@@ -933,6 +943,8 @@ class MainWindow(QMainWindow):
         ):
             return
         self._on_tool_selected('default', interaction_mode=mode)
+        if getattr(self, '_mpr_active', False):
+            self.mpr_workspace.set_interaction_mode(mode)
 
     def _on_viewer_command_requested(self, command: str) -> None:
         operations = {
@@ -1039,6 +1051,8 @@ class MainWindow(QMainWindow):
         
         # 创建对应的工具实例
         self.current_tool = self._create_tool_instance(tool_name)
+        if getattr(self, "_mpr_active", False):
+            self.mpr_workspace.set_annotation_tool(tool_name)
         
         # 传播工具到所有视图
         self._propagate_tool_to_viewers()
@@ -1212,6 +1226,9 @@ class MainWindow(QMainWindow):
             )
 
     def _active_viewer(self):
+        if getattr(self, '_mpr_active', False):
+            workspace = getattr(self, 'mpr_workspace', None)
+            return workspace.active_viewer if workspace is not None else None
         frame = self.multi_viewer_grid.get_active_view_frame()
         return getattr(frame, 'image_viewer', None) if frame else None
 
@@ -1269,6 +1286,66 @@ class MainWindow(QMainWindow):
         if callable(cancel):
             cancel()
     
+    def _mpr_memory_budget_bytes(self) -> int:
+        cache_mb = get_performance_manager().get_cache_size()
+        return max(512, min(2048, cache_mb * 4)) * 1024 * 1024
+
+    def _refresh_mpr_availability(self) -> None:
+        action = getattr(self, 'mpr_action', None)
+        if action is None:
+            return
+        if self._mpr_active:
+            action.setEnabled(True)
+            action.setChecked(True)
+            action.setText(t('mpr.return_to_2d'))
+            action.setToolTip(t('mpr.return_to_2d'))
+            return
+        model = self._get_active_image_model()
+        result = (
+            VolumeBuilder.inspect(model, memory_budget_bytes=self._mpr_memory_budget_bytes())
+            if model is not None and model.has_image()
+            else None
+        )
+        compatible = bool(result and result.status is GeometryStatus.COMPATIBLE)
+        action.setEnabled(compatible)
+        action.setChecked(False)
+        action.setText(t('mpr.enter'))
+        action.setToolTip(t('mpr.enter') if compatible else t(result.detail) if result else t('mpr.no_active_series'))
+
+    def _toggle_mpr_workspace(self, checked: bool = False) -> None:
+        if self._mpr_active:
+            self._leave_mpr_workspace()
+            return
+        model = self._get_active_image_model()
+        series_id = self._active_series_id()
+        if model is None or series_id is None:
+            self._refresh_mpr_availability()
+            return
+        inspection = VolumeBuilder.inspect(
+            model, memory_budget_bytes=self._mpr_memory_budget_bytes()
+        )
+        if inspection.status is not GeometryStatus.COMPATIBLE:
+            QMessageBox.warning(self, t('mpr.title'), t(inspection.detail))
+            self._refresh_mpr_availability()
+            return
+        self._cine_stop()
+        self._mpr_active = True
+        self._mpr_series_id = series_id
+        self.workspace_stack.setCurrentWidget(self.mpr_workspace)
+        self.mpr_workspace.start_build(
+            model, series_id, self._mpr_memory_budget_bytes()
+        )
+        self._refresh_mpr_availability()
+
+    def _leave_mpr_workspace(self) -> None:
+        if hasattr(self, 'mpr_workspace'):
+            self.mpr_workspace.clear()
+        self._mpr_active = False
+        self._mpr_series_id = None
+        if hasattr(self, 'workspace_stack'):
+            self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        self._refresh_mpr_availability()
+
     def _update_ui_state(self) -> None:
         """更新UI状态"""
         series_count = self.series_manager.get_series_count()
@@ -1294,6 +1371,7 @@ class MainWindow(QMainWindow):
                 and not self._loading_futures
             )
         self._refresh_toolbar_dicom_voi_options()
+        self._refresh_mpr_availability()
         if hasattr(self, '_cine_play_btn'):
             if not has_cine_frames and self._cine_playing:
                 self._cine_stop()
@@ -2544,6 +2622,13 @@ class MainWindow(QMainWindow):
 
     def _apply_viewer_transform(self, transform_type: str) -> None:
         """对活动视图应用图像变换"""
+        if getattr(self, "_mpr_active", False):
+            viewer = self._active_viewer()
+            if transform_type == "invert" and viewer is not None:
+                viewer.invert()
+            elif transform_type == "reset" and viewer is not None:
+                viewer.reset_view()
+            return
         active_frame = self.multi_viewer_grid.get_active_view_frame()
         if not active_frame:
             return
@@ -3014,6 +3099,8 @@ class MainWindow(QMainWindow):
 
     def _on_series_removed(self, series_id: str) -> None:
         """移除序列对应的撤销历史，避免保留已销毁模型。"""
+        if self._mpr_series_id == series_id:
+            self._leave_mpr_workspace()
         timer = self._annotation_draft_timers.pop(series_id, None)
         if timer is not None:
             timer.stop()
@@ -3229,6 +3316,12 @@ class MainWindow(QMainWindow):
         
         # 更新状态栏
         binding = self.series_manager.get_view_binding(view_id)
+        if (
+            self._mpr_active
+            and binding is not None
+            and binding.series_id != self._mpr_series_id
+        ):
+            self._leave_mpr_workspace()
         if binding:
             pos_text = f"{binding.position.value[0]+1}-{binding.position.value[1]+1}"
             self.active_view_label.setText(t("mainwindow.event_view_value").replace("%1", pos_text))
@@ -3454,6 +3547,8 @@ class MainWindow(QMainWindow):
                     return
                 self._close_annotations_confirmed = True
             self._cine_stop()
+            if hasattr(self, 'mpr_workspace'):
+                self.mpr_workspace.cancel_build()
             dicom_tag_timer = getattr(self, '_dicom_tag_update_timer', None)
             if dicom_tag_timer is not None:
                 dicom_tag_timer.stop()

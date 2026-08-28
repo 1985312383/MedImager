@@ -146,13 +146,13 @@ def test_import_rejects_out_of_bounds_slice_transactionally():
     source = make_model()
     add_all_annotation_types(source)
     document = export_annotations(source)
-    document["annotations"]["rois"][0]["slice_index"] = 99
+    document["annotations"]["rois"][0]["points_lps"]["top_left"] = [1000, 1000, 1000]
     target = make_model()
     existing = RectangleROI((0, 0), (1, 1), 0)
     existing.id = "existing"
     target.add_roi(existing)
 
-    with pytest.raises(InvalidAnnotationError, match="outside the source volume"):
+    with pytest.raises(InvalidAnnotationError, match="outside the target image"):
         import_annotations(target, document)
 
     assert [roi.id for roi in target.rois] == ["existing"]
