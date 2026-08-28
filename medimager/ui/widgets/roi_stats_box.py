@@ -8,7 +8,7 @@ ROI 统计信息框控件
 
 from PySide6.QtGui import QPainter, QFont, QPen, QFontMetrics
 from PySide6.QtCore import QRect, Qt
-from typing import Dict, Optional
+from typing import Dict
 from medimager.utils.settings import get_settings_manager
 from medimager.utils.theme_colors import qcolor_from_theme
 

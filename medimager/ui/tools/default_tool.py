@@ -2,9 +2,8 @@ from medimager.ui.tools.base_tool import BaseTool, point_distance, check_measure
 from medimager.utils.logger import get_logger
 from medimager.utils.settings import get_settings_manager
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtGui import QMouseEvent, QWheelEvent, QCursor, QKeyEvent
+from PySide6.QtGui import QMouseEvent, QWheelEvent, QKeyEvent
 from PySide6.QtCore import Qt, QPointF, QPoint
-from medimager.core.roi import BaseROI
 from enum import Enum, auto
 import math
 
@@ -19,6 +18,11 @@ class DragMode(Enum):
     ROI_MOVE = auto()           # 移动ROI
     ROI_RESIZE = auto()         # 调整ROI大小
     INFO_BOX_MOVE = auto()      # 移动信息板
+    MEASUREMENT_MOVE = auto()
+    MEASUREMENT_RESIZE = auto()
+    ANGLE_MOVE = auto()
+    ANGLE_RESIZE = auto()
+    ANNOTATION_LABEL_MOVE = auto()
 
 
 DRAG_ACTION_TO_MODE = {
@@ -42,30 +46,73 @@ class DefaultTool(BaseTool):
     - ROI交互: 支持拖拽ROI锚点、移动ROI、移动信息板
     """
 
-    def __init__(self, viewer: QGraphicsView):
+    def __init__(self, viewer: QGraphicsView, interaction_mode: str = 'default'):
         super().__init__(viewer)
         self.logger = get_logger(__name__)
+        self.interaction_mode = (
+            interaction_mode
+            if interaction_mode in {'default', 'pan', 'zoom', 'window_level'}
+            else 'default'
+        )
         self._drag_mode = DragMode.NONE
         self._last_mouse_pos = QPoint()
         self._target_roi_id: str | None = None
         self._target_anchor_idx: int | None = None
+        self._roi_interaction_changed = False
+        self._target_measurement_id: str | None = None
+        self._target_measurement_anchor: str | None = None
+        self._target_angle_id: str | None = None
+        self._target_angle_anchor: str | None = None
+        self._target_label_id: str | None = None
+        self._annotation_interaction_changed = False
+        self._browse_drag_remainder = 0
+        self._wheel_angle_remainder = 0
+        self._wheel_pixel_remainder = 0
+        self._wheel_remainder_modifiers = None
 
     def activate(self):
         """激活工具，设置光标样式。"""
-        self.viewer.setCursor(Qt.ArrowCursor)
+        if self.interaction_mode == 'pan':
+            self.viewer.setCursor(Qt.OpenHandCursor)
+        elif self.interaction_mode in {'zoom', 'window_level'}:
+            self.viewer.setCursor(Qt.SizeVerCursor)
+        else:
+            self.viewer.setCursor(Qt.ArrowCursor)
 
     def deactivate(self):
         """停用工具，恢复默认光标。"""
+        self.finalize_interaction()
         self.viewer.setCursor(Qt.ArrowCursor)
+
+    def finalize_interaction(self) -> None:
+        """提交尚未收到 mouseRelease 的 ROI 移动或缩放。"""
+        self._finish_drag_interaction()
+
+    def cancel_interaction(self) -> None:
+        # Geometry is updated continuously, so cancellation at an arbitrary
+        # lifecycle boundary safely commits the already-visible state.
+        self._finish_drag_interaction()
 
     def mouse_press_event(self, event: QMouseEvent):
         """处理鼠标按下事件，根据按键和修饰键设置拖动模式。"""
         super().mouse_press_event(event)
-        self._last_mouse_pos = event.pos()
+        self._last_mouse_pos = event.position().toPoint()
+        self._browse_drag_remainder = 0
         model = self.viewer.model
         
         # 左键处理
         if event.button() == Qt.LeftButton:
+            forced_mode = {
+                'pan': DragMode.PAN,
+                'zoom': DragMode.ZOOM,
+                'window_level': DragMode.ADJUST_WINDOW,
+            }.get(self.interaction_mode)
+            if forced_mode is not None:
+                self._drag_mode = forced_mode
+                if forced_mode == DragMode.PAN:
+                    self.viewer.setCursor(Qt.ClosedHandCursor)
+                event.accept()
+                return
             if event.modifiers() == Qt.ShiftModifier:
                 # Shift+左键：平移
                 self._drag_mode = DragMode.PAN
@@ -73,10 +120,19 @@ class DefaultTool(BaseTool):
                 event.accept()
                 return
             elif model and model.has_image():
-                # 先检查测量选中 - 如果处理了测量交互，就不进入其他模式
+                if self._check_annotation_label_interaction(
+                    self.viewer.last_mouse_scene_pos
+                ):
+                    event.accept()
+                    return
+                # Pointer owns selection and editing for all persisted
+                # annotation types; creation tools only create new objects.
                 if self._check_measurement_interactions(self.viewer.last_mouse_scene_pos, event.modifiers()):
-                    # 重要：确保不进入其他拖拽模式
-                    self._drag_mode = DragMode.NONE
+                    event.accept()
+                    return
+                if self._check_angle_interactions(
+                    self.viewer.last_mouse_scene_pos, event.modifiers()
+                ):
                     event.accept()
                     return
                 
@@ -115,33 +171,149 @@ class DefaultTool(BaseTool):
             return default
             
     def _check_measurement_interactions(self, scene_pos: QPointF, modifiers) -> bool:
-        """检查测量交互 - DefaultTool只处理选中，不处理拖拽"""
+        """Select and start whole-line or anchor editing for a distance."""
         model = self.viewer.model
         if not model:
             return False
-        
-        # 检查是否击中测量线 - 只处理选中，不触发拖拽
+
+        scale = self.viewer.effective_scale() if hasattr(self.viewer, 'effective_scale') else 1.0
+        tolerance = 12.0 / max(scale, 1e-6)
+        # Anchors are active only on an already selected item, preventing an
+        # endpoint from making ordinary line selection surprising.
+        for index in sorted(model.selected_measurement_indices, reverse=True):
+            if not (0 <= index < len(model.measurements)):
+                continue
+            measurement = model.measurements[index]
+            if measurement.slice_index != self.current_slice_index():
+                continue
+            start_distance = point_distance(scene_pos, measurement.start_point)
+            end_distance = point_distance(scene_pos, measurement.end_point)
+            if min(start_distance, end_distance) <= tolerance:
+                self._target_measurement_id = measurement.id
+                self._target_measurement_anchor = (
+                    'start' if start_distance <= end_distance else 'end'
+                )
+                self._drag_mode = DragMode.MEASUREMENT_RESIZE
+                self._annotation_interaction_changed = False
+                return True
+
         clicked_measurement_index = check_measurement_hit(self.viewer, scene_pos)
-        
         if clicked_measurement_index is not None:
-            # DefaultTool只处理选中/取消选中，不处理拖拽
             if not (modifiers & Qt.ControlModifier):
                 model.clear_measurement_selection()
-                model.clear_selection()  # 同时清除ROI选择
-            
-            if clicked_measurement_index in model.selected_measurement_indices:
+                model.clear_selection()
+                model.clear_angle_measurement_selection()
+
+            if (
+                modifiers & Qt.ControlModifier
+                and clicked_measurement_index in model.selected_measurement_indices
+            ):
                 model.deselect_measurement(clicked_measurement_index)
+                self._drag_mode = DragMode.NONE
             else:
                 model.select_measurement(clicked_measurement_index)
-            
-            # 强制更新视图以立即显示选中状态
+                self._target_measurement_id = model.measurements[
+                    clicked_measurement_index
+                ].id
+                self._drag_mode = DragMode.MEASUREMENT_MOVE
+                self._annotation_interaction_changed = False
             self.viewer.viewport().update()
-            
-            # 重要：设置拖拽模式为NONE，防止意外拖拽
-            self._drag_mode = DragMode.NONE
             return True
-        
         return False
+
+    def _check_angle_interactions(self, scene_pos: QPointF, modifiers) -> bool:
+        model = self.viewer.model
+        if not model:
+            return False
+        scale = self.viewer.effective_scale() if hasattr(self.viewer, 'effective_scale') else 1.0
+        tolerance = 12.0 / max(scale, 1e-6)
+        angles = list(reversed(model.get_angle_measurements_for_slice(
+            self.current_slice_index()
+        )))
+        for angle in angles:
+            if angle.id not in model.selected_angle_measurement_ids:
+                continue
+            points = (
+                ('point1', angle.point1),
+                ('vertex', angle.vertex),
+                ('point3', angle.point3),
+            )
+            nearest = min(points, key=lambda item: point_distance(scene_pos, item[1]))
+            if point_distance(scene_pos, nearest[1]) <= tolerance:
+                self._target_angle_id = angle.id
+                self._target_angle_anchor = nearest[0]
+                self._drag_mode = DragMode.ANGLE_RESIZE
+                self._annotation_interaction_changed = False
+                return True
+
+        for angle in angles:
+            hit = (
+                point_distance(scene_pos, angle.point1) <= tolerance
+                or point_distance(scene_pos, angle.vertex) <= tolerance
+                or point_distance(scene_pos, angle.point3) <= tolerance
+                or self._point_to_line_distance(scene_pos, angle.point1, angle.vertex) <= tolerance
+                or self._point_to_line_distance(scene_pos, angle.vertex, angle.point3) <= tolerance
+            )
+            if not hit:
+                continue
+            if not (modifiers & Qt.ControlModifier):
+                model.clear_selection()
+                model.clear_measurement_selection()
+                model.clear_angle_measurement_selection()
+            if modifiers & Qt.ControlModifier and angle.id in model.selected_angle_measurement_ids:
+                model.deselect_angle_measurement(angle.id)
+                self._drag_mode = DragMode.NONE
+            else:
+                model.select_angle_measurement(
+                    angle.id, multi=bool(modifiers & Qt.ControlModifier)
+                )
+                self._target_angle_id = angle.id
+                self._drag_mode = DragMode.ANGLE_MOVE
+                self._annotation_interaction_changed = False
+            self.viewer.viewport().update()
+            return True
+        return False
+
+    @staticmethod
+    def _point_to_line_distance(point, start, end) -> float:
+        from medimager.ui.tools.base_tool import point_to_line_distance
+        return point_to_line_distance(point, start, end)
+
+    def _check_annotation_label_interaction(self, scene_pos: QPointF) -> bool:
+        hit_test = getattr(self.viewer, 'hit_test_annotation_label', None)
+        if not callable(hit_test):
+            return False
+        hit = hit_test(self.viewer.mapFromScene(scene_pos))
+        if not hit:
+            return False
+        self._target_label_id = hit[1] if isinstance(hit, tuple) else str(hit)
+        self._drag_mode = DragMode.ANNOTATION_LABEL_MOVE
+        return True
+
+    @staticmethod
+    def _calculate_angle_degrees(p1, vertex, p3, spacing=None) -> float:
+        row_spacing, col_spacing = spacing or (1.0, 1.0)
+        first = (
+            (p1.x() - vertex.x()) * col_spacing,
+            (p1.y() - vertex.y()) * row_spacing,
+        )
+        second = (
+            (p3.x() - vertex.x()) * col_spacing,
+            (p3.y() - vertex.y()) * row_spacing,
+        )
+        first_length = math.hypot(*first)
+        second_length = math.hypot(*second)
+        if not first_length or not second_length:
+            return 0.0
+        cosine = max(
+            -1.0,
+            min(
+                1.0,
+                (first[0] * second[0] + first[1] * second[1])
+                / (first_length * second_length),
+            ),
+        )
+        return math.degrees(math.acos(cosine))
             
     def _check_roi_interactions(self, scene_pos: QPointF, modifiers) -> bool:
         """检查ROI交互：ROI锚点 > 信息板 > ROI主体"""
@@ -149,7 +321,10 @@ class DefaultTool(BaseTool):
         view = self.viewer
         
         # 1. 检查是否击中某个已选中ROI的锚点
-        rois_on_slice = [roi for roi in reversed(model.rois) if roi.slice_index == model.current_slice_index]
+        rois_on_slice = [
+            roi for roi in reversed(model.rois)
+            if roi.slice_index == self.current_slice_index()
+        ]
         for roi in rois_on_slice:
             if roi.selected:
                 for i, (ay, ax) in enumerate(roi.get_anchor_points()):
@@ -158,18 +333,24 @@ class DefaultTool(BaseTool):
                     # 计算与鼠标点击位置的距离(手动计算以避免NotImplementedError)
                     dx = scene_pos.x() - anchor_pos_scene.x()
                     dy = scene_pos.y() - anchor_pos_scene.y()
-                    if abs(dx) + abs(dy) < 10: # 10px的容差
+                    scale = (
+                        self.viewer.effective_scale()
+                        if hasattr(self.viewer, 'effective_scale')
+                        else max(math.hypot(self.viewer.transform().m11(), self.viewer.transform().m12()), 1e-6)
+                    )
+                    if math.hypot(dx, dy) <= 10.0 / max(scale, 1e-6):
                         self._drag_mode = DragMode.ROI_RESIZE
                         self._target_roi_id = roi.id
                         self._target_anchor_idx = i
+                        self._roi_interaction_changed = False
                         roi.start_resize(i) # 通知ROI开始缩放
                         return True
 
         # 2. 检查是否击中某个信息板
         for roi in rois_on_slice:
             if roi.id in view.stats_box_positions:
-                info_box_rect = view.stats_box_positions[roi.id]
-                if info_box_rect.contains(scene_pos.toPoint()):
+                info_box_rect = view.get_stats_box_viewport_rect(roi.id)
+                if info_box_rect.contains(view.mapFromScene(scene_pos)):
                     self._drag_mode = DragMode.INFO_BOX_MOVE
                     self._target_roi_id = roi.id
                     # 选中这个ROI以提供视觉反馈
@@ -182,6 +363,7 @@ class DefaultTool(BaseTool):
             if hit_type == 'inside':
                 self._drag_mode = DragMode.ROI_MOVE
                 self._target_roi_id = roi.id
+                self._roi_interaction_changed = False
                 model.select_roi(roi.id, multi=modifiers & Qt.ControlModifier)
                 return True
 
@@ -189,6 +371,7 @@ class DefaultTool(BaseTool):
         if not (modifiers & Qt.ControlModifier):
             model.clear_selection()
             model.clear_measurement_selection()
+            model.clear_angle_measurement_selection()
         
         return False
 
@@ -201,9 +384,10 @@ class DefaultTool(BaseTool):
             event.accept()
             return
         
-        delta = event.pos() - self._last_mouse_pos
+        event_pos = event.position().toPoint()
+        delta = event_pos - self._last_mouse_pos
         scene_delta = self.viewer.last_mouse_scene_pos - self.viewer.mapToScene(self._last_mouse_pos)
-        self._last_mouse_pos = event.pos()
+        self._last_mouse_pos = event_pos
         
         model = self.viewer.model
         view = self.viewer
@@ -211,27 +395,36 @@ class DefaultTool(BaseTool):
         if self._drag_mode == DragMode.BROWSE_IMAGES:
             # 浏览系列图像
             if model and model.get_slice_count() > 1:
-                # 根据垂直移动切换切片
-                if abs(delta.y()) > 5:  # 阈值避免过于敏感
-                    direction = 1 if delta.y() > 0 else -1
-                    new_index = model.current_slice_index + direction
-                    model.set_current_slice(new_index)
-                    self._sync_slice(model.current_slice_index)
+                # 累积高采样率鼠标/触控板的小位移；每消费 6px 切一片，
+                # 并保留不足一步的余量，避免慢拖永远达不到单事件阈值。
+                self._browse_drag_remainder += delta.y()
+                steps = int(self._browse_drag_remainder / 6)
+                if steps:
+                    target_index = max(
+                        0,
+                        min(
+                            model.get_slice_count() - 1,
+                            self.current_slice_index() + steps,
+                        ),
+                    )
+                    if target_index != self.current_slice_index():
+                        self.set_view_slice(target_index)
+                    self._browse_drag_remainder -= steps * 6
 
         elif self._drag_mode == DragMode.ADJUST_WINDOW:
             # 调整窗口（亮度/对比度）
             if model:
-                ww, wl = model.window_width, model.window_level
+                ww, wl = self.current_window()
                 new_ww = max(1, ww + delta.x())
                 new_wl = wl + delta.y()
-                model.set_window(new_ww, new_wl)
-                self._sync_window_level(model.window_width, model.window_level)
+                self.set_view_window(new_ww, new_wl)
+                self._sync_window_level(new_ww, new_wl)
 
         elif self._drag_mode == DragMode.ZOOM:
             # 放大/缩小图像
             zoom_factor = 1.0 + delta.y() * 0.01  # 缩放敏感度
             if zoom_factor > 0.1:  # 防止缩放过小
-                self.viewer.scale(zoom_factor, zoom_factor)
+                self.viewer.set_view_zoom(self.viewer.get_view_zoom() * zoom_factor)
                 self._sync_zoom_pan()
 
         elif self._drag_mode == DragMode.PAN:
@@ -245,6 +438,7 @@ class DefaultTool(BaseTool):
             if roi:
                 scene_pos = self.viewer.last_mouse_scene_pos # 使用安全坐标
                 roi.resize(self._target_anchor_idx, (scene_pos.y(), scene_pos.x()))
+                self._roi_interaction_changed = True
                 # 不要在缩放时移动信息框，保持其原有位置
                 view.scene.update()
 
@@ -252,51 +446,195 @@ class DefaultTool(BaseTool):
             roi = model.get_roi_by_id(self._target_roi_id)
             if roi:
                 roi.move(scene_delta.y(), scene_delta.x())
-                 # 如果信息板也关联，一起移动
+                if scene_delta.x() or scene_delta.y():
+                    self._roi_interaction_changed = True
+                # 标签是固定设备尺寸；直接用本次 viewport 像素增量移动，
+                # 避免高倍率下亚 scene 像素被 QPoint 取整吞掉。
                 if roi.id in view.stats_box_positions:
-                    view.stats_box_positions[roi.id].translate(scene_delta.toPoint())
+                    stats_rect = view.get_stats_box_viewport_rect(roi.id)
+                    stats_rect.translate(delta)
+                    view.set_stats_box_viewport_rect(roi.id, stats_rect)
                 view.scene.update()
         
         elif self._drag_mode == DragMode.INFO_BOX_MOVE and self._target_roi_id:
             if self._target_roi_id in view.stats_box_positions:
-                view.stats_box_positions[self._target_roi_id].translate(scene_delta.toPoint())
+                stats_rect = view.get_stats_box_viewport_rect(self._target_roi_id)
+                stats_rect.translate(delta)
+                view.set_stats_box_viewport_rect(self._target_roi_id, stats_rect)
                 view.scene.update()
+
+        elif self._drag_mode in (DragMode.MEASUREMENT_MOVE, DragMode.MEASUREMENT_RESIZE) and self._target_measurement_id and model:
+            measurement = model.get_measurement_by_id(self._target_measurement_id)
+            if measurement:
+                if self._drag_mode == DragMode.MEASUREMENT_MOVE:
+                    measurement.start_point += scene_delta
+                    measurement.end_point += scene_delta
+                elif self._target_measurement_anchor == 'start':
+                    measurement.start_point = QPointF(self.viewer.last_mouse_scene_pos)
+                else:
+                    measurement.end_point = QPointF(self.viewer.last_mouse_scene_pos)
+                spacing = self.measurement_pixel_spacing()
+                row_spacing, col_spacing = spacing or (1.0, 1.0)
+                dx = (measurement.end_point.x() - measurement.start_point.x()) * col_spacing
+                dy = (measurement.end_point.y() - measurement.start_point.y()) * row_spacing
+                measurement.distance = math.hypot(dx, dy)
+                measurement.unit = 'mm' if spacing is not None else 'px'
+                if scene_delta.x() or scene_delta.y():
+                    self._annotation_interaction_changed = True
+                model.data_changed.emit()
+
+        elif self._drag_mode in (DragMode.ANGLE_MOVE, DragMode.ANGLE_RESIZE) and self._target_angle_id and model:
+            angle = model.get_angle_measurement_by_id(self._target_angle_id)
+            if angle:
+                if self._drag_mode == DragMode.ANGLE_MOVE:
+                    angle.point1 += scene_delta
+                    angle.vertex += scene_delta
+                    angle.point3 += scene_delta
+                else:
+                    setattr(
+                        angle,
+                        self._target_angle_anchor or 'vertex',
+                        QPointF(self.viewer.last_mouse_scene_pos),
+                    )
+                angle.angle_degrees = self._calculate_angle_degrees(
+                    angle.point1,
+                    angle.vertex,
+                    angle.point3,
+                    self.measurement_pixel_spacing(),
+                )
+                if scene_delta.x() or scene_delta.y():
+                    self._annotation_interaction_changed = True
+                model.data_changed.emit()
+
+        elif self._drag_mode == DragMode.ANNOTATION_LABEL_MOVE and self._target_label_id:
+            mover = getattr(self.viewer, 'move_annotation_label', None)
+            if callable(mover):
+                mover(self._target_label_id, delta)
+            else:
+                offsets = getattr(self.viewer, 'annotation_label_offsets', None)
+                if isinstance(offsets, dict):
+                    offsets[self._target_label_id] = offsets.get(
+                        self._target_label_id, QPointF()
+                    ) + QPointF(delta)
+                    self.viewer.viewport().update()
 
         event.accept()
 
     def mouse_release_event(self, event: QMouseEvent):
         """处理鼠标释放事件，重置拖动状态。"""
+        self._finish_drag_interaction()
+        event.accept()
+
+    def _finish_drag_interaction(self) -> None:
+        """提交或取消当前拖拽，工具切换时也保证 ROI 状态进入撤销栈。"""
         model = self.viewer.model
+        completed_mode = self._drag_mode
         if self._drag_mode == DragMode.ROI_RESIZE and self._target_roi_id and model:
             roi = model.get_roi_by_id(self._target_roi_id)
             if roi:
                 roi.end_resize()
 
+        if (
+            model
+            and self._roi_interaction_changed
+            and completed_mode in (DragMode.ROI_MOVE, DragMode.ROI_RESIZE)
+        ):
+            marker = getattr(model, 'mark_annotations_dirty', None)
+            if callable(marker):
+                marker()
+            # 同一 model 可能同时绑定到多个 ViewFrame；结束编辑时通知
+            # 所有观察者重绘共享 ROI，而不只刷新发起交互的 scene。
+            model.data_changed.emit()
+
+        if model and self._annotation_interaction_changed and completed_mode in (
+            DragMode.MEASUREMENT_MOVE,
+            DragMode.MEASUREMENT_RESIZE,
+            DragMode.ANGLE_MOVE,
+            DragMode.ANGLE_RESIZE,
+        ):
+            model.mark_annotations_dirty()
+            model.data_changed.emit()
+
         self._drag_mode = DragMode.NONE
         self._target_roi_id = None
         self._target_anchor_idx = None
+        self._target_measurement_id = None
+        self._target_measurement_anchor = None
+        self._target_angle_id = None
+        self._target_angle_anchor = None
+        self._target_label_id = None
+        self._roi_interaction_changed = False
+        self._annotation_interaction_changed = False
+        self._browse_drag_remainder = 0
         self.viewer.setCursor(Qt.ArrowCursor)
         self.viewer.scene.update()
-        event.accept()
 
     def wheel_event(self, event: QWheelEvent):
         """处理滚轮事件，实现缩放或切片切换。"""
         modifiers = event.modifiers()
-        angle = event.angleDelta().y()
+        if modifiers not in (Qt.ControlModifier, Qt.NoModifier):
+            event.ignore()
+            return
+
+        if modifiers != self._wheel_remainder_modifiers:
+            # 修饰键变化意味着交互语义已经改变，不能把浏览切片时残留的
+            # 部分刻度带入 Ctrl+缩放（反之亦然）。
+            self._wheel_angle_remainder = 0
+            self._wheel_pixel_remainder = 0
+            self._wheel_remainder_modifiers = modifiers
+
+        angle_delta = event.angleDelta().y()
+        if angle_delta:
+            # 标准滚轮以 120 为一格；部分设备会一次上报多格或连续上报
+            # 小于一格的 angleDelta，因此必须累计并按完整刻度消费。
+            self._wheel_pixel_remainder = 0
+            self._wheel_angle_remainder += angle_delta
+            steps = int(abs(self._wheel_angle_remainder) / 120)
+            if steps == 0:
+                event.accept()
+                return
+            vertical_delta = self._wheel_angle_remainder
+            consumed = steps * 120 * (1 if vertical_delta > 0 else -1)
+            self._wheel_angle_remainder -= consumed
+        else:
+            pixel_delta = event.pixelDelta().y()
+            if pixel_delta == 0:
+                event.ignore()
+                return
+            # 高精度触控板只提供 pixelDelta。累积到 15px 再消费一步，
+            # 既保留响应性，也避免每个 1px 事件都切一片。
+            self._wheel_angle_remainder = 0
+            self._wheel_pixel_remainder += pixel_delta
+            steps = int(abs(self._wheel_pixel_remainder) / 15)
+            if steps == 0:
+                event.accept()
+                return
+            vertical_delta = self._wheel_pixel_remainder
+            consumed = steps * 15 * (1 if vertical_delta > 0 else -1)
+            self._wheel_pixel_remainder -= consumed
 
         if modifiers == Qt.ControlModifier:
-            if angle > 0: self.viewer.zoom_in()
-            else: self.viewer.zoom_out()
+            for _ in range(steps):
+                if vertical_delta > 0:
+                    self.viewer.zoom_in()
+                else:
+                    self.viewer.zoom_out()
             self._sync_zoom_pan()
             event.accept()
         elif modifiers == Qt.NoModifier:
             if self.viewer.model and self.viewer.model.get_slice_count() > 1:
                 reverse = self._bool_setting("interaction.wheel_reverse", False)
-                direction = -1 if angle > 0 else 1
+                direction = (-steps if vertical_delta > 0 else steps)
                 if reverse:
                     direction *= -1
-                self.viewer.model.set_current_slice(self.viewer.model.current_slice_index + direction)
-                self._sync_slice(self.viewer.model.current_slice_index)
+                target_index = max(
+                    0,
+                    min(
+                        self.viewer.model.get_slice_count() - 1,
+                        self.current_slice_index() + direction,
+                    ),
+                )
+                self.set_view_slice(target_index)
 
                 # 切片切换后，如果鼠标在图像区域内，主动更新像素信息
                 if hasattr(self.viewer, 'last_mouse_scene_pos') and self.viewer.last_mouse_scene_pos:
@@ -328,23 +666,23 @@ class DefaultTool(BaseTool):
             model = self.viewer.model
             if model:
                 deleted_something = False
-                
-                # 删除选中的测量 - 优先处理测量删除
-                if model.selected_measurement_indices:
-                    deleted_measurement_ids = model.delete_selected_measurements()
-                    self.logger.info(f"删除了 {len(deleted_measurement_ids)} 个测量")
-                    deleted_something = True
-                
-                # 删除选中的ROI
-                if model.selected_indices:
-                    deleted_roi_ids = model.delete_selected_rois()
-                    
-                    # 清除相关的统计框
-                    for roi_id in deleted_roi_ids:
-                        if hasattr(self.viewer, 'stats_box_positions') and roi_id in self.viewer.stats_box_positions:
-                            del self.viewer.stats_box_positions[roi_id]
-                    
-                    deleted_something = True
+                with model.annotation_transaction():
+                    # 一次 Delete 同时删除三类选择，但只形成一个撤销步骤。
+                    if model.selected_measurement_indices:
+                        deleted_measurement_ids = model.delete_selected_measurements()
+                        self.logger.info(f"删除了 {len(deleted_measurement_ids)} 个测量")
+                        deleted_something = bool(deleted_measurement_ids) or deleted_something
+
+                    if model.selected_indices:
+                        deleted_roi_ids = model.delete_selected_rois()
+                        for roi_id in deleted_roi_ids:
+                            if hasattr(self.viewer, 'stats_box_positions') and roi_id in self.viewer.stats_box_positions:
+                                del self.viewer.stats_box_positions[roi_id]
+                        deleted_something = bool(deleted_roi_ids) or deleted_something
+
+                    if model.selected_angle_measurement_ids:
+                        deleted_angle_ids = model.delete_selected_angle_measurements()
+                        deleted_something = bool(deleted_angle_ids) or deleted_something
                 
                 if deleted_something:
                     self.viewer.viewport().update()
@@ -388,12 +726,13 @@ class DefaultTool(BaseTool):
         view_id, sync_manager = self._get_sync_context()
         if view_id and sync_manager:
             try:
-                from PySide6.QtCore import QPointF
                 transform = self.viewer.transform()
-                zoom_factor = transform.m11()
-                h_scroll = self.viewer.horizontalScrollBar().value()
-                v_scroll = self.viewer.verticalScrollBar().value()
-                pan_offset = QPointF(h_scroll, v_scroll)
+                zoom_factor = (
+                    self.viewer.get_view_zoom()
+                    if hasattr(self.viewer, 'get_view_zoom')
+                    else max(1e-6, math.hypot(transform.m11(), transform.m12()))
+                )
+                pan_offset = self.viewer.mapToScene(self.viewer.viewport().rect().center())
                 sync_manager.sync_zoom_pan(view_id, zoom_factor, pan_offset, transform)
             except Exception as e:
                 self.logger.debug(f"[DefaultTool._sync_zoom_pan] 同步失败: {e}")
@@ -410,10 +749,12 @@ class DefaultTool(BaseTool):
         self.logger.info("=" * 40)
         
         self.logger.info(f"总数量: {len(model.measurements)}")
-        self.logger.info(f"当前切片: {model.current_slice_index}")
+        self.logger.info(f"当前切片: {self.current_slice_index()}")
         self.logger.info(f"选中索引: {list(model.selected_measurement_indices)}")
         
-        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
+        current_slice_measurements = model.get_measurements_for_slice(
+            self.current_slice_index()
+        )
         self.logger.info(f"当前切片数量: {len(current_slice_measurements)}")
         
         for i, measurement in enumerate(model.measurements):
@@ -423,7 +764,7 @@ class DefaultTool(BaseTool):
             length = math.sqrt(dx * dx + dy * dy)
             
             selected = "是" if i in model.selected_measurement_indices else "否"
-            on_current_slice = "是" if measurement.slice_index == model.current_slice_index else "否"
+            on_current_slice = "是" if measurement.slice_index == self.current_slice_index() else "否"
             
             self.logger.info(f"测量{i}: 距离={measurement.distance:.1f}{measurement.unit}, "
                            f"长度={length:.1f}, 选中={selected}, 当前切片={on_current_slice}")

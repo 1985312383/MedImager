@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QListWidgetItem, QScrollArea
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap, QIcon
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPixmap, QIcon
 from typing import Dict, Any
 from medimager.utils.settings import SettingsManager
 from medimager.utils.i18n import get_translation_manager, t
 from medimager.utils.logger import get_logger
-from medimager.utils.theme_colors import qcolor_from_theme
+from medimager.utils.theme_colors import qcolor_from_theme, qcolor_to_theme
+from medimager.utils.theme_manager import get_user_themes_dir
 
 logger = get_logger(__name__)
 
@@ -47,6 +48,7 @@ SIMPLE_SETTING_DEFAULTS = {
     "roi.stats.area_unit": "auto",
     "multiview.default_layout": "1x1",
     "multiview.default_sync_mode": "basic",
+    "multiview.sync_group": "same_study",
 }
 
 
@@ -69,7 +71,10 @@ class ColorButton(QPushButton):
             self._color = color
             self._update_color_icon()
             # 同时在按钮文本中显示颜色值
-            self.setText(f"{t('colorbutton.select')} ({color.name()})")
+            color_text = qcolor_to_theme(color)
+            if color.alpha() == 255:
+                color_text = color_text[:7]
+            self.setText(f"{t('colorbutton.select')} ({color_text})")
             self.colorChanged.emit(color)
     
     def _update_color_icon(self):
@@ -92,7 +97,12 @@ class ColorButton(QPushButton):
     
     def _choose_color(self):
         """打开颜色选择对话框"""
-        color = QColorDialog.getColor(self._color, self, t("colorbutton.select_color"))
+        color = QColorDialog.getColor(
+            self._color,
+            self,
+            t("colorbutton.select_color"),
+            QColorDialog.ShowAlphaChannel,
+        )
         if color.isValid():
             self.setColor(color)
 
@@ -107,7 +117,14 @@ class SettingsDialog(QDialog):
         self._language_changed = False
         self._original_ui_theme = self.settings_manager.get_setting('ui_theme', 'dark')
         self.setWindowTitle(t("settingsdialog.settings"))
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(560, 420)
+        preferred_width, preferred_height = 900, 700
+        screen = QGuiApplication.screenAt(self.cursor().pos()) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            preferred_width = min(preferred_width, max(560, int(available.width() * 0.9)))
+            preferred_height = min(preferred_height, max(420, int(available.height() * 0.9)))
+        self.resize(preferred_width, preferred_height)
         self.setModal(True)
         
         # 存储所有主题数据
@@ -141,7 +158,8 @@ class SettingsDialog(QDialog):
         # 左侧导航栏
         self.nav_list = QListWidget()
         self.nav_list.setObjectName("settings_nav")  # 为主题样式设置ID
-        self.nav_list.setFixedWidth(120)
+        self.nav_list.setMinimumWidth(112)
+        self.nav_list.setMaximumWidth(180)
         
         # 右侧内容区
         self.stacked_widget = QStackedWidget()
@@ -159,11 +177,8 @@ class SettingsDialog(QDialog):
         self._add_page(t("settingsdialog.multi_view"), self._create_multiview_page)
         self._add_page(t("settingsdialog.performance"), self._create_performance_page)
         
-        # 移除导航栏的 currentRowChanged 连接，避免不必要的逻辑
-        # self.nav_list.currentRowChanged.connect(self.stacked_widget.setCurrentIndex)
-        self.nav_list.itemClicked.connect(
-            lambda item: self.stacked_widget.setCurrentIndex(self.nav_list.row(item))
-        )
+        # currentRowChanged 同时覆盖鼠标、方向键和辅助技术导航。
+        self.nav_list.currentRowChanged.connect(self.stacked_widget.setCurrentIndex)
         self.nav_list.setCurrentRow(0)
         
         # 按钮栏
@@ -344,7 +359,7 @@ class SettingsDialog(QDialog):
         cine_layout = QFormLayout(cine_group)
         fps_spin = QSpinBox()
         fps_spin.setRange(1, 60)
-        fps_spin.setSuffix(" fps")
+        fps_spin.setSuffix(t("settingsdialog.fps_suffix"))
         self.setting_widgets["cine.default_fps"] = fps_spin
         cine_layout.addRow(t("settingsdialog.default_frame_rate"), fps_spin)
         layout.addWidget(cine_group)
@@ -418,6 +433,15 @@ class SettingsDialog(QDialog):
         sync_combo.addItem(t("settingsdialog.full_advanced_cross_reference"), "full")
         self.setting_widgets["multiview.default_sync_mode"] = sync_combo
         sync_form.addRow(t("settingsdialog.sync_mode"), sync_combo)
+
+        sync_scope_combo = QComboBox()
+        sync_scope_combo.addItem(t("settingsdialog.sync_scope_same_study"), "same_study")
+        sync_scope_combo.addItem(t("settingsdialog.sync_scope_same_patient"), "same_patient")
+        sync_scope_combo.addItem(t("settingsdialog.sync_scope_same_modality"), "same_modality")
+        sync_scope_combo.addItem(t("settingsdialog.sync_scope_all_views"), "all_views")
+        sync_scope_combo.setToolTip(t("settingsdialog.sync_scope_safety_hint"))
+        self.setting_widgets["multiview.sync_group"] = sync_scope_combo
+        sync_form.addRow(t("settingsdialog.sync_scope"), sync_scope_combo)
         layout.addWidget(sync_group)
 
         layout.addStretch()
@@ -771,7 +795,12 @@ class SettingsDialog(QDialog):
             for handler in pydicom.config.pixel_data_handlers:
                 name = getattr(handler, "__name__", handler.__class__.__name__).split(".")[-1]
                 available = handler.is_available() if hasattr(handler, "is_available") else True
-                handlers.append(f"{name}: {'可用' if available else '不可用'}")
+                status = t(
+                    "settingsdialog.decoder_available"
+                    if available
+                    else "settingsdialog.decoder_unavailable"
+                )
+                handlers.append(f"{name}: {status}")
             return "\n".join(handlers) if handlers else t("settingsdialog.no_pixel_decoder_detected")
         except Exception as e:
             return t("settingsdialog.decoder_detection_failed_prefix") + str(e)
@@ -806,21 +835,22 @@ class SettingsDialog(QDialog):
         return line
 
     def _load_themes(self):
-        """从主题目录加载所有 TOML 主题文件"""
+        """Load bundled themes and overlay writable user themes."""
         self.themes.clear()
-        base_themes_dir = Path(__file__).parent.parent.parent / "themes"
-        if not base_themes_dir.is_dir():
-            return
+        bundled_themes_dir = Path(__file__).parent.parent.parent / "themes"
+        user_themes_dir = get_user_themes_dir(self.settings_manager)
 
-        for category_dir in base_themes_dir.iterdir():
-            if category_dir.is_dir():
+        for base_themes_dir in (bundled_themes_dir, user_themes_dir):
+            if not base_themes_dir.is_dir():
+                continue
+            for category_dir in base_themes_dir.iterdir():
+                if not category_dir.is_dir():
+                    continue
                 category = category_dir.name
-                self.themes[category] = {}
+                self.themes.setdefault(category, {})
                 for theme_file in category_dir.glob("*.toml"):
                     try:
-                        theme_data = toml.load(theme_file)
-                        theme_name = theme_file.stem
-                        self.themes[category][theme_name] = theme_data
+                        self.themes[category][theme_file.stem] = toml.load(theme_file)
                     except Exception as e:
                         logger.warning(f"加载主题文件失败 {theme_file}: {e}")
         
@@ -835,7 +865,7 @@ class SettingsDialog(QDialog):
             ui_combo.clear()
             ui_themes = self.themes.get('ui', {})
             for theme_name, theme_data in ui_themes.items():
-                display_name = theme_data.get('name', theme_name)
+                display_name = self._theme_display_name('ui', theme_name, theme_data)
                 ui_combo.addItem(display_name, theme_name)
             ui_combo.blockSignals(False)
         
@@ -850,7 +880,7 @@ class SettingsDialog(QDialog):
             self._ensure_custom_theme_exists('roi')
             
             for theme_name, theme_data in roi_themes.items():
-                display_name = theme_data.get('name', theme_name)
+                display_name = self._theme_display_name('roi', theme_name, theme_data)
                 roi_combo.addItem(display_name, theme_name)
             roi_combo.blockSignals(False)
         
@@ -865,9 +895,23 @@ class SettingsDialog(QDialog):
             self._ensure_custom_theme_exists('measurement')
             
             for theme_name, theme_data in measurement_themes.items():
-                display_name = theme_data.get('name', theme_name)
+                display_name = self._theme_display_name('measurement', theme_name, theme_data)
                 measurement_combo.addItem(display_name, theme_name)
             measurement_combo.blockSignals(False)
+
+    @staticmethod
+    def _theme_display_name(category: str, theme_name: str, theme_data: dict) -> str:
+        key = f"themes.{category}.{theme_name}"
+        known_names = {
+            "themes.ui.dark",
+            "themes.ui.light",
+            "themes.roi.default",
+            "themes.roi.custom",
+            "themes.roi.radiant",
+            "themes.measurement.default",
+            "themes.measurement.custom",
+        }
+        return t(key) if key in known_names else str(theme_data.get('name', theme_name))
 
     def _apply_theme(self, category: str, theme_name: str):
         """应用主题到控件"""
@@ -1152,7 +1196,7 @@ class SettingsDialog(QDialog):
             field_name = key.split('.')[-1]  # 获取最后一部分作为字段名
             
             if isinstance(widget, ColorButton):
-                theme_data[field_name] = widget.color().name()
+                theme_data[field_name] = qcolor_to_theme(widget.color())
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 theme_data[field_name] = widget.value()
             elif isinstance(widget, QCheckBox):
@@ -1160,7 +1204,7 @@ class SettingsDialog(QDialog):
         
         # 保存到TOML文件
         try:
-            base_themes_dir = Path(__file__).parent.parent.parent / "themes"
+            base_themes_dir = get_user_themes_dir(self.settings_manager)
             theme_file = base_themes_dir / category / f"{theme_name}.toml"
             theme_file.parent.mkdir(parents=True, exist_ok=True)
             
@@ -1176,39 +1220,13 @@ class SettingsDialog(QDialog):
             logger.warning(f"保存主题文件失败 ({category}/{theme_name}): {e}")
 
     def _ensure_custom_theme_exists(self, category: str):
-        """确保自定义主题文件存在"""
-        try:
-            base_themes_dir = Path(__file__).parent.parent.parent / "themes"
-            custom_theme_file = base_themes_dir / category / "custom.toml"
-            
-            if not custom_theme_file.exists():
-                # 如果自定义主题文件不存在，从默认主题创建
-                default_theme_file = base_themes_dir / category / "default.toml"
-                custom_theme_data = {'name': '自定义'}
-                
-                if default_theme_file.exists():
-                    # 从默认主题复制设置
-                    try:
-                        default_data = toml.load(default_theme_file)
-                        custom_theme_data.update(default_data)
-                        custom_theme_data['name'] = t("settingsdialog.custom")  # 确保名称是"自定义"
-                    except Exception as e:
-                        logger.warning(f"读取默认主题失败: {e}")
-                
-                # 创建自定义主题文件
-                custom_theme_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(custom_theme_file, 'w', encoding='utf-8') as f:
-                    toml.dump(custom_theme_data, f)
-                
-
-                
-                # 将新创建的主题添加到内存中的主题数据
-                if category not in self.themes:
-                    self.themes[category] = {}
-                self.themes[category]['custom'] = custom_theme_data
-                
-        except Exception as e:
-            logger.warning(f"创建自定义主题文件失败 ({category}): {e}")
+        """Ensure an in-memory custom theme without writing the install tree."""
+        category_themes = self.themes.setdefault(category, {})
+        if 'custom' in category_themes:
+            return
+        custom_theme_data = dict(category_themes.get('default', {}))
+        custom_theme_data['name'] = t("settingsdialog.custom")
+        category_themes['custom'] = custom_theme_data
     
     def _enable_roi_custom_controls(self, enabled: bool):
         """启用/禁用ROI自定义控件"""

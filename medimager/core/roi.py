@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Tuple, TYPE_CHECKING
 import uuid
+import math
 
 import numpy as np
 import logging
@@ -11,12 +12,18 @@ from ..utils.theme_colors import qcolor_from_theme
 
 if TYPE_CHECKING:
     from PySide6.QtGui import QPainter, QTransform
-    from PySide6.QtCore import QPointF, QRectF, Qt
 
 
 def _get_settings():
     """延迟获取全局设置管理器，避免模块导入时过早实例化"""
     return get_settings_manager()
+
+
+def _transform_scale_magnitude(transform: 'QTransform') -> float:
+    """Return a positive scale magnitude that remains valid after rotation."""
+    x_scale = math.hypot(transform.m11(), transform.m12())
+    y_scale = math.hypot(transform.m21(), transform.m22())
+    return max(x_scale, y_scale, 1e-9)
 
 
 def _create_circle_mask(center_y: int, center_x: int, radius: int, height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
@@ -33,6 +40,9 @@ def _create_circle_mask(center_y: int, center_x: int, radius: int, height: int, 
     Returns:
         (rr, cc): 圆形区域内的行列坐标数组
     """
+    if height <= 0 or width <= 0 or radius < 0:
+        empty = np.asarray([], dtype=np.intp)
+        return empty, empty
     y, x = np.ogrid[:height, :width]
     mask = (x - center_x) ** 2 + (y - center_y) ** 2 <= radius ** 2
     rr, cc = np.where(mask)
@@ -54,6 +64,9 @@ def _create_ellipse_mask(center_y: int, center_x: int, radius_y: int, radius_x: 
     Returns:
         (rr, cc): 椭圆区域内的行列坐标数组
     """
+    if height <= 0 or width <= 0 or radius_x <= 0 or radius_y <= 0:
+        empty = np.asarray([], dtype=np.intp)
+        return empty, empty
     y, x = np.ogrid[:height, :width]
     mask = ((x - center_x) / radius_x) ** 2 + ((y - center_y) / radius_y) ** 2 <= 1
     rr, cc = np.where(mask)
@@ -214,7 +227,7 @@ class EllipseROI(BaseROI):
 
         if self.selected:
             # 锚点大小不受视图缩放影响
-            pixel_size = 1.0 / view_transform.m11()
+            pixel_size = 1.0 / _transform_scale_magnitude(view_transform)
             scaled_anchor_size = anchor_size * pixel_size
             
             painter.setBrush(qcolor_from_theme(anchor_color_str))
@@ -274,7 +287,7 @@ class EllipseROI(BaseROI):
         self._resize_ry = self.radius_y
 
     def resize(self, anchor_idx: int, new_pos: tuple[int, int]) -> None:
-        import logging; logging.getLogger(__name__).debug(f"EllipseROI.resize: anchor_idx={anchor_idx}, new_pos={new_pos}")
+        logging.getLogger(__name__).debug(f"EllipseROI.resize: anchor_idx={anchor_idx}, new_pos={new_pos}")
         if not hasattr(self, '_resize_anchors'):
             self.start_resize(anchor_idx)
         anchors = list(self._resize_anchors)
@@ -336,7 +349,7 @@ class CircleROI(EllipseROI):
         painter.drawEllipse(center_point, self.radius, self.radius)
 
         if self.selected:
-            pixel_size = 1.0 / view_transform.m11()
+            pixel_size = 1.0 / _transform_scale_magnitude(view_transform)
             scaled_anchor_size = anchor_size * pixel_size
             
             painter.setBrush(qcolor_from_theme(anchor_color_str))
@@ -475,7 +488,7 @@ class RectangleROI(BaseROI):
         painter.drawRect(rect)
 
         if self.selected:
-            pixel_size = 1.0 / view_transform.m11()
+            pixel_size = 1.0 / _transform_scale_magnitude(view_transform)
             scaled_anchor_size = anchor_size * pixel_size
             
             painter.setBrush(qcolor_from_theme(anchor_color_str))
@@ -505,8 +518,14 @@ class RectangleROI(BaseROI):
     def get_mask(self, height: int, width: int) -> np.ndarray:
         """生成矩形的布尔掩码"""
         mask = np.zeros((height, width), dtype=bool)
+        if height <= 0 or width <= 0:
+            return mask
         y1, x1 = self.top_left
         y2, x2 = self.bottom_right
+
+        # Do not clamp a fully outside rectangle onto a border pixel.
+        if y2 < 0 or x2 < 0 or y1 >= height or x1 >= width:
+            return mask
         
         # 确保坐标是整数并且在图像范围内
         y1 = max(0, min(int(y1), height - 1))

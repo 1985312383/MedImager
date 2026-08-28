@@ -1,154 +1,157 @@
-"""
-面板切换条组件
+"""Keyboard-accessible side-panel toggle strip."""
 
-在软件边缘显示一个细长的垂直条，中间有一个箭头按钮，
-用于快速展开/收起侧边面板。
-"""
-
-from PySide6.QtWidgets import QWidget, QSizePolicy
-from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QPolygonF
+from PySide6.QtCore import QPointF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen, QPolygonF
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from medimager.utils.logger import get_logger
+from medimager.utils.theme_manager import get_theme_settings, normalize_ui_theme
+
 
 logger = get_logger(__name__)
 
 
 class PanelToggleStrip(QWidget):
-    """面板切换条
-
-    一个从上到下的细条，中间有一个箭头按钮，
-    用于切换侧边面板的显示/隐藏。
-
-    Args:
-        side: 面板所在侧 'left' 或 'right'
-        tooltip: 提示文本
-
-    Signals:
-        toggled (bool): 切换时发出，True 表示展开面板
-    """
+    """A 28 px edge target that expands or collapses a side panel."""
 
     toggled = Signal(bool)
 
-    def __init__(self, side: str = 'right', tooltip: str = "", parent=None):
+    def __init__(self, side: str = "right", tooltip: str = "", parent=None):
         super().__init__(parent)
-        self._side = side  # 'left' 或 'right'
-        self._panel_visible = True if side == 'left' else False
-        self._theme_name = 'light'
+        if side not in {"left", "right"}:
+            raise ValueError("side must be 'left' or 'right'")
+        self._side = side
+        self._panel_visible = side == "left"
+        self._theme_name = "light"
+        self._theme_tokens = normalize_ui_theme(
+            get_theme_settings("ui", self._theme_name)
+        )
         self._setup_ui(tooltip)
-        self._apply_theme()
         self._register_to_theme_manager()
 
-    def _setup_ui(self, tooltip: str):
-        """设置UI"""
-        self.setFixedWidth(16)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setCursor(Qt.PointingHandCursor)
+    def _setup_ui(self, tooltip: str) -> None:
+        self.setFixedWidth(28)
+        self.setMinimumHeight(28)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        accessible_name = tooltip or "Toggle side panel"
+        self.setAccessibleName(accessible_name)
+        self.setAccessibleDescription(accessible_name)
         if tooltip:
             self.setToolTip(tooltip)
+        self.setProperty("panelVisible", self._panel_visible)
 
-    def set_panel_visible(self, visible: bool):
-        """外部同步面板状态"""
-        if self._panel_visible != visible:
-            self._panel_visible = visible
-            self.update()
+    def sizeHint(self) -> QSize:
+        return QSize(28, 96)
 
-    def mousePressEvent(self, event):
-        """点击整个条都可以切换"""
-        if event.button() == Qt.LeftButton:
-            self._panel_visible = not self._panel_visible
-            self.toggled.emit(self._panel_visible)
-            self.update()
+    def set_panel_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        if self._panel_visible == visible:
+            return
+        self._panel_visible = visible
+        self.setProperty("panelVisible", visible)
+        self.update()
+
+    def _toggle(self) -> None:
+        self._panel_visible = not self._panel_visible
+        self.setProperty("panelVisible", self._panel_visible)
+        self.toggled.emit(self._panel_visible)
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._toggle()
             event.accept()
-        else:
-            super().mousePressEvent(event)
+            return
+        super().mousePressEvent(event)
 
-    def paintEvent(self, event):
-        """绘制背景和箭头"""
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._toggle()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        width, height = self.width(), self.height()
+        tokens = self._theme_tokens
+        background = QColor(tokens["surface_color"])
+        hover_background = QColor(tokens["surface_raised_color"])
+        arrow_color = QColor(tokens["text_secondary_color"])
+        painter.fillRect(
+            0,
+            0,
+            width,
+            height,
+            hover_background if self.underMouse() or self.hasFocus() else background,
+        )
 
-        # 主题颜色
-        if self._theme_name == 'dark':
-            bg = QColor("#3c3c3c")
-            arrow_color = QColor("#cccccc")
-            hover_bg = QColor("#4a4a4a")
-        else:
-            bg = QColor("#e8e8e8")
-            arrow_color = QColor("#555555")
-            hover_bg = QColor("#d0d0d0")
+        painter.setPen(QPen(QColor(tokens["border_color"]), 1))
+        edge_x = 0 if self._side == "right" else width - 1
+        painter.drawLine(edge_x, 0, edge_x, height)
 
-        under_mouse = self.underMouse()
-        painter.fillRect(0, 0, w, h, hover_bg if under_mouse else bg)
-
-        # 绘制分隔线
-        pen = QPen(arrow_color, 1)
-        painter.setPen(pen)
-        if self._side == 'right':
-            painter.drawLine(0, 0, 0, h)  # 左边缘
-        else:
-            painter.drawLine(w - 1, 0, w - 1, h)  # 右边缘
-
-        # 绘制箭头（居中）
         arrow_size = 6
-        cx = w // 2
-        cy = h // 2
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(arrow_color)
-
-        # 箭头方向逻辑：
-        # 右侧面板: 展开时 > (收起), 收起时 < (展开)
-        # 左侧面板: 展开时 < (收起), 收起时 > (展开)
-        if self._side == 'right':
-            point_right = self._panel_visible
-        else:
-            point_right = not self._panel_visible
-
+        center_x = width // 2
+        center_y = height // 2
+        point_right = (
+            self._panel_visible if self._side == "right" else not self._panel_visible
+        )
         if point_right:
-            # > 箭头
             points = [
-                QPointF(cx - arrow_size // 2, cy - arrow_size),
-                QPointF(cx + arrow_size // 2, cy),
-                QPointF(cx - arrow_size // 2, cy + arrow_size),
+                QPointF(center_x - arrow_size // 2, center_y - arrow_size),
+                QPointF(center_x + arrow_size // 2, center_y),
+                QPointF(center_x - arrow_size // 2, center_y + arrow_size),
             ]
         else:
-            # < 箭头
             points = [
-                QPointF(cx + arrow_size // 2, cy - arrow_size),
-                QPointF(cx - arrow_size // 2, cy),
-                QPointF(cx + arrow_size // 2, cy + arrow_size),
+                QPointF(center_x + arrow_size // 2, center_y - arrow_size),
+                QPointF(center_x - arrow_size // 2, center_y),
+                QPointF(center_x + arrow_size // 2, center_y + arrow_size),
             ]
-
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(arrow_color)
         painter.drawPolygon(QPolygonF(points))
+
+        if self.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(tokens["focus_color"]), 2))
+            painter.drawRect(1, 1, width - 3, height - 3)
         painter.end()
 
-    def enterEvent(self, event):
+    def enterEvent(self, event) -> None:
         self.update()
         super().enterEvent(event)
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, event) -> None:
         self.update()
         super().leaveEvent(event)
 
-    def update_theme(self, theme_name: str):
-        """主题更新接口"""
+    def focusInEvent(self, event) -> None:
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        self.update()
+        super().focusOutEvent(event)
+
+    def update_theme(self, theme_name: str) -> None:
         self._theme_name = theme_name
-        self._apply_theme()
+        if hasattr(self.window(), "theme_manager"):
+            self._theme_tokens = self.window().theme_manager.get_theme_tokens(theme_name)
+        else:
+            self._theme_tokens = normalize_ui_theme(get_theme_settings("ui", theme_name))
         self.update()
 
-    def _apply_theme(self):
-        pass
-
-    def _register_to_theme_manager(self):
-        """注册到主题管理器"""
+    def _register_to_theme_manager(self) -> None:
         try:
             main_window = self.window()
-            if hasattr(main_window, 'theme_manager'):
+            if hasattr(main_window, "theme_manager"):
                 theme_manager = main_window.theme_manager
                 theme_manager.register_component(self)
-                current_theme = theme_manager.get_current_theme()
-                self.update_theme(current_theme)
-        except Exception as e:
-            logger.debug(f"[PanelToggleStrip._register_to_theme_manager] 注册失败: {e}")
+                self._theme_tokens = theme_manager.get_theme_tokens()
+                self.update()
+        except Exception as error:
+            logger.debug("PanelToggleStrip theme registration failed: %s", error)

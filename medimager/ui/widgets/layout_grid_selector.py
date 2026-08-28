@@ -6,9 +6,9 @@
 
 from typing import Optional
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QFrame, QApplication, QGridLayout, QSizePolicy)
+                             QFrame, QApplication, QGridLayout)
 from PySide6.QtCore import Qt, Signal, QRect, QPoint, QByteArray
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QMouseEvent, QPaintEvent, QIcon, QPixmap
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QKeyEvent, QMouseEvent, QPaintEvent, QIcon, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
 from medimager.utils.logger import get_logger
@@ -59,7 +59,11 @@ class LayoutPresetButton(ThemeAwareMixin, QPushButton):
         self.layout_name = layout_name
         self.setFixedSize(60, 45)
         self.clicked.connect(self._on_clicked)
-        self.setToolTip(t(layout_name))
+        label = t(layout_name)
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self.setAccessibleDescription(label)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._colors = _load_ui_colors(self._theme_manager)
         self._setup_style()
@@ -245,6 +249,9 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
         layout.addWidget(self.title_label)
 
         self.grid_widget = QWidget()
+        self.grid_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.grid_widget.setAccessibleName(t("dynamiclayoutselector.custom_grid"))
+        self.grid_widget.setAccessibleDescription(t("dynamiclayoutselector.one_by_one_grid"))
         grid_width = self.max_cols * (self.cell_size + self.cell_spacing) - self.cell_spacing
         grid_height = self.max_rows * (self.cell_size + self.cell_spacing) - self.cell_spacing
         self.grid_widget.setFixedSize(grid_width, grid_height)
@@ -260,6 +267,9 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
         self.grid_widget.mouseMoveEvent = self._on_mouse_move
         self.grid_widget.mousePressEvent = self._on_mouse_press
         self.grid_widget.leaveEvent = self._on_mouse_leave
+        self.grid_widget.keyPressEvent = self._on_key_press
+        self.grid_widget.focusInEvent = self._on_grid_focus_in
+        self.grid_widget.focusOutEvent = self._on_grid_focus_out
         self.grid_widget.paintEvent = self._paint_grid
 
         self.setStyleSheet(f"""
@@ -287,30 +297,78 @@ class DynamicLayoutSelector(ThemeAwareMixin, QFrame):
                     painter.setBrush(QBrush(QColor(cell_bg)))
                     painter.setPen(QPen(QColor(c['border_color']), 1))
                 painter.drawRect(rect)
+        if self.grid_widget.hasFocus():
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(c.get('focus_color', c['highlight_color'])), 2))
+            painter.drawRect(self.grid_widget.rect().adjusted(1, 1, -2, -2))
         painter.end()
+
+    def _set_grid_selection(self, rows: int, cols: int) -> None:
+        rows = max(1, min(int(rows), self.max_rows))
+        cols = max(1, min(int(cols), self.max_cols))
+        self.hovered_rows = rows
+        self.hovered_cols = cols
+        label = t("dynamiclayoutselector.grid_size").replace("%1", str(rows)).replace("%2", str(cols))
+        self.selection_label.setText(label)
+        self.grid_widget.setAccessibleDescription(label)
+        self.grid_widget.update()
 
     def _on_mouse_move(self, event: QMouseEvent) -> None:
         pos = event.position().toPoint()
         col = max(1, min(int(pos.x() // (self.cell_size + self.cell_spacing)) + 1, self.max_cols))
         row = max(1, min(int(pos.y() // (self.cell_size + self.cell_spacing)) + 1, self.max_rows))
         if self.hovered_rows != row or self.hovered_cols != col:
-            self.hovered_rows = row
-            self.hovered_cols = col
-            self.selection_label.setText(
-                t("dynamiclayoutselector.grid_size").replace("%1", str(row)).replace("%2", str(col))
-            )
-            self.grid_widget.update()
+            self._set_grid_selection(row, col)
 
     def _on_mouse_press(self, event: QMouseEvent) -> None:
+        self.grid_widget.setFocus(Qt.FocusReason.MouseFocusReason)
         if event.button() == Qt.LeftButton and self.hovered_rows > 0 and self.hovered_cols > 0:
             logger.debug(f"选择动态布局: {self.hovered_rows}x{self.hovered_cols}")
             self.layout_selected.emit(self.hovered_rows, self.hovered_cols)
 
-    def _on_mouse_leave(self, event) -> None:
-        self.hovered_rows = 0
-        self.hovered_cols = 0
-        self.selection_label.setText(t("dynamiclayoutselector.one_by_one_grid"))
+    def _on_key_press(self, event: QKeyEvent) -> None:
+        rows = self.hovered_rows or 1
+        cols = self.hovered_cols or 1
+        key = event.key()
+        if key == Qt.Key.Key_Left:
+            cols -= 1
+        elif key == Qt.Key.Key_Right:
+            cols += 1
+        elif key == Qt.Key.Key_Up:
+            rows -= 1
+        elif key == Qt.Key.Key_Down:
+            rows += 1
+        elif key == Qt.Key.Key_Home:
+            rows, cols = 1, 1
+        elif key == Qt.Key.Key_End:
+            rows, cols = self.max_rows, self.max_cols
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.layout_selected.emit(rows, cols)
+            event.accept()
+            return
+        else:
+            event.ignore()
+            return
+        self._set_grid_selection(rows, cols)
+        event.accept()
+
+    def _on_grid_focus_in(self, event) -> None:
+        if self.hovered_rows == 0 or self.hovered_cols == 0:
+            self._set_grid_selection(1, 1)
         self.grid_widget.update()
+        QWidget.focusInEvent(self.grid_widget, event)
+
+    def _on_grid_focus_out(self, event) -> None:
+        self.grid_widget.update()
+        QWidget.focusOutEvent(self.grid_widget, event)
+
+    def _on_mouse_leave(self, event) -> None:
+        if not self.grid_widget.hasFocus():
+            self.hovered_rows = 0
+            self.hovered_cols = 0
+            self.selection_label.setText(t("dynamiclayoutselector.one_by_one_grid"))
+            self.grid_widget.setAccessibleDescription(self.selection_label.text())
+            self.grid_widget.update()
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +489,7 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         c = self._colors
         self.setFrameStyle(QFrame.Box | QFrame.Raised)
         self.setLineWidth(1)
+        self.setAccessibleName(t("mainwindow.select_view_layout"))
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
         self.setStyleSheet(f"""
             LayoutDropdown {{
@@ -481,14 +540,17 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
             self.update_theme(self._theme_manager.get_current_theme())
 
         self.adjustSize()
-        screen = QApplication.primaryScreen().geometry()
+        target_screen = QApplication.screenAt(global_pos) or QApplication.primaryScreen()
+        screen = target_screen.availableGeometry()
         x = global_pos.x()
         y = global_pos.y()
-        if x + self.width() > screen.right():
-            x = screen.right() - self.width()
-        if y + self.height() > screen.bottom():
+        if x + self.width() > screen.right() + 1:
+            x = screen.right() + 1 - self.width()
+        if y + self.height() > screen.bottom() + 1:
             y = global_pos.y() - self.height()
-        self.move(max(0, x), max(0, y))
+        x = max(screen.left(), x)
+        y = max(screen.top(), y)
+        self.move(x, y)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -507,6 +569,8 @@ class LayoutSelectorButton(ThemeAwareMixin, QPushButton):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("LayoutSelectorButton")
+        self.setAccessibleName(t("mainwindow.select_view_layout"))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._create_layout_icon()
         self.setToolTip(t("layoutselectorbutton.select_view_layout"))

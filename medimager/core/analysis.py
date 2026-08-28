@@ -1,7 +1,7 @@
-# 处理统计计算 (HU 值统计等) 
+# 处理统计计算 (HU 值统计等)
 
 import numpy as np
-from typing import Optional, Dict, Union, Any
+from typing import Optional, Dict, Any
 
 # These imports will be conditionally available due to the project structure.
 # We expect them to be available when run from the main application.
@@ -15,7 +15,9 @@ except ImportError:
     BaseROI = None
 
 
-def calculate_roi_statistics(model: 'ImageDataModel', roi: 'BaseROI') -> Optional[Dict[str, float]]:
+def calculate_roi_statistics(
+    model: "ImageDataModel", roi: "BaseROI"
+) -> Optional[Dict[str, float]]:
     """
     Calculates statistics for a given ROI from the raw pixel data.
 
@@ -36,16 +38,21 @@ def calculate_roi_statistics(model: 'ImageDataModel', roi: 'BaseROI') -> Optiona
 
     height, width = slice_data.shape[:2]
     mask = roi.get_mask(height, width)
+    valid_mask = model.get_valid_pixel_mask(roi.slice_index, slice_data)
+    if valid_mask.shape == mask.shape:
+        mask &= valid_mask
 
-    # Check if the mask covers any pixels
     if not np.any(mask):
         return None
 
     pixels_in_roi = slice_data[mask]
     if pixels_in_roi.ndim > 1:
         pixels_in_roi = pixels_in_roi.mean(axis=-1)
+    pixels_in_roi = pixels_in_roi[np.isfinite(pixels_in_roi)]
+    if pixels_in_roi.size == 0:
+        return None
 
-    pixel_count = int(np.sum(mask))
+    pixel_count = int(pixels_in_roi.size)
 
     stats = {
         "max": float(np.max(pixels_in_roi)),
@@ -56,16 +63,16 @@ def calculate_roi_statistics(model: 'ImageDataModel', roi: 'BaseROI') -> Optiona
         "area_px": float(pixel_count),
     }
 
-    pixel_spacing = _get_pixel_spacing(model.dicom_header)
+    pixel_spacing = model.get_measurement_pixel_spacing(roi.slice_index)
     if pixel_spacing:
         row_spacing, col_spacing = pixel_spacing
         stats["area_mm2"] = float(pixel_count * row_spacing * col_spacing)
 
-    return stats 
+    return stats
 
 
 def _get_pixel_spacing(metadata: Dict[str, Any]) -> Optional[tuple[float, float]]:
-    for key in ("PixelSpacing", "Pixel Spacing", "ImagerPixelSpacing", "Imager Pixel Spacing"):
+    for key in ("PixelSpacing", "Pixel Spacing"):
         value = metadata.get(key)
         if value is None:
             continue

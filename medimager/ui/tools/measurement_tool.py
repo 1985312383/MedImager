@@ -3,8 +3,8 @@ from medimager.ui.tools.base_tool import BaseTool, point_distance, check_measure
 from medimager.core.image_data_model import MeasurementData
 from medimager.utils.logger import get_logger
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtGui import QMouseEvent, QCursor, QKeyEvent
-from PySide6.QtCore import Qt, QPointF, QRectF
+from PySide6.QtGui import QMouseEvent, QKeyEvent
+from PySide6.QtCore import Qt, QPointF
 from typing import Optional
 import math
 import uuid
@@ -17,9 +17,10 @@ class MeasurementTool(BaseTool):
     测量工具，用于测量两个像素点之间的实际距离。
     """
 
-    def __init__(self, viewer: QGraphicsView):
+    def __init__(self, viewer: QGraphicsView, *, creation_only: bool = False):
         super().__init__(viewer)
         self.logger = get_logger(__name__)
+        self.creation_only = creation_only
         self.measuring = False
         self.start_point = None
         self.end_point = None
@@ -27,6 +28,7 @@ class MeasurementTool(BaseTool):
         self.dragging_anchor = None
         self.drag_offset = QPointF()
         self.measurement_completed = False
+        self._measurement_interaction_changed = False
         
         # 当前编辑的测量ID（用于拖拽编辑已有测量）
         self.editing_measurement_id: Optional[str] = None
@@ -48,6 +50,7 @@ class MeasurementTool(BaseTool):
                 theme_data.get('anchor_size', 8),
                 theme_data.get('font_size', 14),
             )
+
         except Exception:
             # 默认设置
             return (
@@ -60,6 +63,20 @@ class MeasurementTool(BaseTool):
                 14,         # font_size
             )
 
+    def _effective_scale(self) -> float:
+        """Return a positive zoom magnitude, including rotated views."""
+        if hasattr(self.viewer, "effective_scale"):
+            try:
+                return max(float(self.viewer.effective_scale()), 1e-9)
+            except (TypeError, ValueError):
+                pass
+        transform = self.viewer.transform()
+        return max(
+            math.hypot(transform.m11(), transform.m12()),
+            math.hypot(transform.m21(), transform.m22()),
+            1e-9,
+        )
+
     def activate(self):
         """激活测量工具"""
         self.viewer.setCursor(Qt.CrossCursor)
@@ -67,8 +84,19 @@ class MeasurementTool(BaseTool):
     def deactivate(self):
         """停用测量工具"""
         self.viewer.setCursor(Qt.ArrowCursor)
+        self.finalize_interaction()
+        if hasattr(self.viewer, 'clear_measurement_line'):
+            self.viewer.clear_measurement_line()
+
+    def finalize_interaction(self) -> None:
+        """提交尚未收到 mouseRelease 的既有测量锚点拖动。"""
         if self.dragging:
             self._stop_dragging()
+
+    def cancel_interaction(self) -> None:
+        if self.dragging:
+            self._stop_dragging()
+        self._reset_measurement()
 
     def _reset_measurement(self):
         """重置测量状态"""
@@ -79,6 +107,7 @@ class MeasurementTool(BaseTool):
         self.dragging_anchor = None
         self.drag_offset = QPointF(0, 0)
         self.measurement_completed = False
+        self._measurement_interaction_changed = False
         self.editing_measurement_id = None  # 清除编辑状态
         
         if hasattr(self, '_preview_point'):
@@ -105,8 +134,13 @@ class MeasurementTool(BaseTool):
                 
             click_pos = self.viewer.last_mouse_scene_pos
             
-            # 检查是否点击了现有测量的锚点
-            clicked_measurement_index, anchor_type = self._check_measurement_anchor_hit(click_pos)
+            # Editing is owned by the pointer tool in the application.  The
+            # legacy mode remains available to external callers for API
+            # compatibility while MainWindow creates tools with
+            # ``creation_only=True``.
+            clicked_measurement_index, anchor_type = (None, None)
+            if not self.creation_only:
+                clicked_measurement_index, anchor_type = self._check_measurement_anchor_hit(click_pos)
             
             if clicked_measurement_index is not None:
                 # 选中该测量并开始拖拽
@@ -124,7 +158,11 @@ class MeasurementTool(BaseTool):
                 return
             
             # 检查是否点击了现有测量（非锚点区域）
-            clicked_measurement_index = check_measurement_hit(self.viewer, click_pos)
+            clicked_measurement_index = (
+                None
+                if self.creation_only
+                else check_measurement_hit(self.viewer, click_pos)
+            )
             
             if clicked_measurement_index is not None:
                 # 选中该测量
@@ -197,6 +235,12 @@ class MeasurementTool(BaseTool):
             model = self.viewer.model
             if not model:
                 return
+
+            if self.creation_only:
+                if self.measuring or self.start_point or self.end_point:
+                    self._reset_measurement()
+                    event.accept()
+                return
             
             deleted_something = False
             
@@ -226,8 +270,7 @@ class MeasurementTool(BaseTool):
         if not self.end_point or not self.start_point:
             return None
         
-        transform = self.viewer.transform()
-        scale_factor = transform.m11()
+        scale_factor = self._effective_scale()
         screen_detection_radius = 20
         scene_detection_radius = screen_detection_radius / scale_factor
             
@@ -257,6 +300,7 @@ class MeasurementTool(BaseTool):
         self.dragging = True
         self.dragging_anchor = anchor
         self.drag_offset = QPointF(0, 0)
+        self._measurement_interaction_changed = False
         self.viewer.setCursor(Qt.ClosedHandCursor)
 
     def _update_dragging(self, event: QMouseEvent):
@@ -271,8 +315,12 @@ class MeasurementTool(BaseTool):
         current_pos = self.viewer.last_mouse_scene_pos
         
         if self.dragging_anchor == 'start':
+            if current_pos != self.start_point:
+                self._measurement_interaction_changed = True
             self.start_point = current_pos
         elif self.dragging_anchor == 'end':
+            if current_pos != self.end_point:
+                self._measurement_interaction_changed = True
             self.end_point = current_pos
         
         # 如果正在编辑现有测量，实时更新距离
@@ -288,10 +336,6 @@ class MeasurementTool(BaseTool):
                     measurement.unit = unit
                     model.data_changed.emit()
         
-        if hasattr(self.viewer, 'set_measurement_line'):
-            real_distance, unit = self._calculate_real_distance(self.start_point, self.end_point)
-            self.viewer.set_measurement_line(self.start_point, self.end_point, real_distance, unit)
-        
         self.viewer.viewport().update()
 
     def _stop_dragging(self):
@@ -299,10 +343,23 @@ class MeasurementTool(BaseTool):
         if not self.dragging:
             return
             
+        edited_existing_measurement = self.editing_measurement_id is not None
         self.dragging = False
         self.dragging_anchor = None
         self.drag_offset = QPointF(0, 0)
+        if (
+            edited_existing_measurement
+            and self._measurement_interaction_changed
+            and self.viewer.model
+        ):
+            self.viewer.model.mark_annotations_dirty()
         self.editing_measurement_id = None  # 完成编辑
+        self.start_point = None
+        self.end_point = None
+        self.measurement_completed = False
+        self._measurement_interaction_changed = False
+        if hasattr(self.viewer, 'clear_measurement_line'):
+            self.viewer.clear_measurement_line()
         self.viewer.setCursor(Qt.CrossCursor)
 
     def _update_cursor_for_hover(self):
@@ -338,12 +395,13 @@ class MeasurementTool(BaseTool):
                 measurement.distance = real_distance
                 measurement.unit = unit
                 model.data_changed.emit()
+                model.mark_annotations_dirty()
         else:
             # 创建新测量
             measurement_id = str(uuid.uuid4())
             measurement_data = MeasurementData(
                 id=measurement_id,
-                slice_index=model.current_slice_index,
+                slice_index=self.current_slice_index(),
                 start_point=self.start_point,
                 end_point=self.end_point,
                 distance=real_distance,
@@ -376,19 +434,9 @@ class MeasurementTool(BaseTool):
         dx = point2.x() - point1.x()
         dy = point2.y() - point1.y()
 
-        dicom_header = model.dicom_header
-        if not dicom_header:
-            # 无DICOM头信息，返回像素距离
-            pixel_distance = math.sqrt(dx * dx + dy * dy)
-            return pixel_distance, "px"
-
-        pixel_spacing = dicom_header.get('Pixel Spacing', None)
-        if not pixel_spacing or len(pixel_spacing) < 2:
-            pixel_spacing = dicom_header.get('Imager Pixel Spacing', None)
-
-        if pixel_spacing and len(pixel_spacing) >= 2:
-            row_spacing = float(pixel_spacing[0])  # dy方向
-            col_spacing = float(pixel_spacing[1])  # dx方向
+        pixel_spacing = self.measurement_pixel_spacing()
+        if pixel_spacing is not None:
+            row_spacing, col_spacing = pixel_spacing
             real_distance = math.sqrt((dx * col_spacing) ** 2 + (dy * row_spacing) ** 2)
             return real_distance, "mm"
 
@@ -402,10 +450,11 @@ class MeasurementTool(BaseTool):
         if not model:
             return None, None
             
-        current_slice_measurements = model.get_measurements_for_slice(model.current_slice_index)
+        current_slice_measurements = model.get_measurements_for_slice(
+            self.current_slice_index()
+        )
         
-        transform = self.viewer.transform()
-        scale_factor = transform.m11()
+        scale_factor = self._effective_scale()
         screen_detection_radius = 15  # 屏幕像素
         scene_detection_radius = screen_detection_radius / scale_factor
         
@@ -429,7 +478,7 @@ class MeasurementTool(BaseTool):
             return
             
         from PySide6.QtGui import QPen, QFont
-        from PySide6.QtCore import QPointF, QRectF, Qt
+        from PySide6.QtCore import Qt
             
         line_color, anchor_color, text_color, bg_color, line_width, anchor_size, font_size = self._get_style_from_settings()
         
@@ -452,7 +501,7 @@ class MeasurementTool(BaseTool):
                 # 绘制锚点
                 painter.setBrush(qcolor_from_theme(anchor_color))
                 painter.setPen(Qt.NoPen)
-                pixel_size = 1.0 / self.viewer.transform().m11()
+                pixel_size = 1.0 / self._effective_scale()
                 scaled_anchor_size = anchor_size * pixel_size
                 
                 painter.drawEllipse(self.start_point, scaled_anchor_size / 2, scaled_anchor_size / 2)
@@ -464,16 +513,18 @@ class MeasurementTool(BaseTool):
                 else:
                     real_distance, unit = self._calculate_real_distance(self.start_point, draw_end_point)
                 
+                text = f"{real_distance:.2f} {unit}"
+                mid_point = (self.start_point + draw_end_point) / 2
+                device_mid_point = self.viewer.mapFromScene(mid_point)
+
+                painter.save()
+                painter.resetTransform()
                 font = QFont()
                 font.setPixelSize(font_size)
                 painter.setFont(font)
-
-                text = f"{real_distance:.2f} {unit}"
                 metrics = painter.fontMetrics()
                 text_rect = metrics.boundingRect(text).adjusted(-4, -2, 4, 2)
-                
-                mid_point = (self.start_point + draw_end_point) / 2
-                text_rect.moveCenter(mid_point.toPoint())
+                text_rect.moveCenter(device_mid_point)
                 
                 painter.setBrush(qcolor_from_theme(bg_color))
                 painter.setPen(Qt.NoPen)
@@ -481,5 +532,6 @@ class MeasurementTool(BaseTool):
 
                 painter.setPen(qcolor_from_theme(text_color))
                 painter.drawText(text_rect, Qt.AlignCenter, text)
+                painter.restore()
 
         painter.restore()

@@ -17,6 +17,16 @@ def test_rgb_image_loads_as_single_rgb_slice():
     assert model.get_display_slice().shape == (4, 5, 3)
 
 
+def test_rgb_pixel_value_returns_channel_tuple():
+    rgb = np.zeros((3, 4, 3), dtype=np.uint8)
+    rgb[1, 2] = [12, 34, 56]
+    model = ImageDataModel()
+
+    assert model.load_single_image(rgb)
+
+    assert model.get_pixel_value(2, 1) == (12.0, 34.0, 56.0)
+
+
 def test_rgba_image_loads_as_single_rgb_slice_with_alpha():
     rgba = np.zeros((4, 5, 4), dtype=np.uint8)
     rgba[..., 3] = 128

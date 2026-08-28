@@ -5,10 +5,10 @@
 缩放/平移同步、交叉参考线同步等高级功能。
 """
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple, Any
 from enum import Enum, Flag
 from dataclasses import dataclass
-from PySide6.QtCore import QObject, Signal, QPointF, QRectF
+from PySide6.QtCore import QObject, Signal, QPointF
 from PySide6.QtGui import QTransform
 
 from medimager.core.multi_series_manager import MultiSeriesManager
@@ -23,15 +23,19 @@ class SyncMode(Flag):
     NONE = 0
     WINDOW_LEVEL = 1        # 窗宽窗位同步
     SLICE = 2               # 切片同步
-    ZOOM_PAN = 4            # 缩放平移同步
+    ZOOM = 4                # 缩放同步
     CROSS_REFERENCE = 8     # 交叉参考线同步
     ROI = 16                # ROI同步
     MEASUREMENT = 32        # 测量工具同步
+    PAN = 64                # 平移同步
+    ZOOM_PAN = ZOOM | PAN   # 向后兼容旧的组合名称
     
     # 组合模式
     BASIC = WINDOW_LEVEL | SLICE
     ADVANCED = BASIC | ZOOM_PAN
-    FULL = ADVANCED | CROSS_REFERENCE | ROI | MEASUREMENT
+    # ROI/measurement persistence is series-local and is not silently copied
+    # between datasets. FULL therefore means every currently safe view sync.
+    FULL = ADVANCED | CROSS_REFERENCE
 
 
 class SyncGroup(Enum):
@@ -135,7 +139,8 @@ class SyncManager(QObject):
         
         # 同步配置
         self._sync_mode = SyncMode.NONE
-        self._sync_group = SyncGroup.ALL_VIEWS
+        # 医学数据默认只在同一检查内联动，避免不同患者之间误同步切片。
+        self._sync_group = SyncGroup.SAME_STUDY
         
         # 视图同步状态
         self._view_states: Dict[str, ViewSyncState] = {}
@@ -183,6 +188,16 @@ class SyncManager(QObject):
                 return view_frame.image_viewer
         return None
 
+    def _get_view_slice_index(self, view_id: str, model: ImageDataModel) -> int:
+        """Return the pane-local slice, falling back to legacy model state."""
+        viewer = self._get_image_viewer(view_id)
+        if viewer is not None and getattr(viewer, "model", None) is model:
+            try:
+                return int(viewer.current_slice_index)
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return int(model.current_slice_index)
+
     def set_sync_mode(self, mode: SyncMode) -> None:
         """设置同步模式
 
@@ -201,6 +216,12 @@ class SyncManager(QObject):
                 self._cross_reference.enabled = True
             else:
                 self._cross_reference.enabled = False
+                self._cross_reference.source_view_id = None
+                self._cross_reference.cursor_scene_pos = QPointF(-1, -1)
+                for view_id in self._series_manager.get_all_view_ids():
+                    viewer = self._get_image_viewer(view_id)
+                    if viewer:
+                        viewer.hide_cross_reference()
     
     def set_sync_group(self, group: SyncGroup) -> None:
         """设置同步分组
@@ -212,6 +233,8 @@ class SyncManager(QObject):
         
         if self._sync_group != group:
             self._sync_group = group
+            # 分组变化后旧目标可能不再属于同步集合，先清除过期参考线。
+            self.clear_cross_reference()
             logger.info(f"[SyncManager.set_sync_group] 同步分组已更新: {group}")
             self.sync_group_changed.emit(group)
     
@@ -243,7 +266,7 @@ class SyncManager(QObject):
             logger.error(f"[SyncManager.create_custom_group] 创建自定义分组失败: {e}", exc_info=True)
             return False
     
-    def sync_window_level(self, source_view_id: str, window_width: int, window_level: int) -> None:
+    def sync_window_level(self, source_view_id: str, window_width: float, window_level: float) -> None:
         """同步窗宽窗位
         
         Args:
@@ -292,6 +315,10 @@ class SyncManager(QObject):
         """
         logger.debug(f"[SyncManager.sync_slice] 同步切片: "
                     f"source={source_view_id}, slice={slice_index}")
+
+        # 参考点投影依赖源/靶当前切片平面。任何切片变化都会使旧投影
+        # 失效，即使当前未启用切片联动也必须先清除。
+        self.clear_cross_reference()
         
         if self._sync_lock or SyncMode.SLICE not in self._sync_mode:
             return
@@ -303,14 +330,23 @@ class SyncManager(QObject):
             target_views = self._get_sync_targets(source_view_id)
             
             for target_view_id in target_views:
+                target_slice = self._find_corresponding_slice(
+                    source_view_id, target_view_id, slice_index
+                )
+                if target_slice is None:
+                    logger.debug(
+                        "[SyncManager.sync_slice] 缺少兼容的患者空间信息，跳过: %s -> %s",
+                        source_view_id, target_view_id,
+                    )
+                    continue
                 # 更新视图状态
                 if target_view_id not in self._view_states:
                     self._view_states[target_view_id] = ViewSyncState(target_view_id)
                 
-                self._view_states[target_view_id].slice_index = slice_index
+                self._view_states[target_view_id].slice_index = target_slice
                 
                 # 应用到图像模型
-                self._apply_slice_to_view(target_view_id, slice_index)
+                self._apply_slice_to_view(target_view_id, target_slice)
                 
                 logger.debug(f"[SyncManager.sync_slice] 切片同步完成: "
                            f"{source_view_id} -> {target_view_id}")
@@ -334,7 +370,9 @@ class SyncManager(QObject):
         logger.debug(f"[SyncManager.sync_zoom_pan] 同步缩放平移: "
                     f"source={source_view_id}, zoom={zoom_factor}")
         
-        if self._sync_lock or SyncMode.ZOOM_PAN not in self._sync_mode:
+        sync_zoom = SyncMode.ZOOM in self._sync_mode
+        sync_pan = SyncMode.PAN in self._sync_mode
+        if self._sync_lock or not (sync_zoom or sync_pan):
             return
         
         try:
@@ -344,16 +382,32 @@ class SyncManager(QObject):
             target_views = self._get_sync_targets(source_view_id)
             
             for target_view_id in target_views:
+                target_center = None
+                target_sync_pan = sync_pan
+                if sync_pan:
+                    target_center = self._convert_position_between_views(
+                        source_view_id, target_view_id, pan_offset
+                    )
+                    if target_center.x() < 0 or target_center.y() < 0:
+                        # 平移中心是图像坐标，跨序列时必须能用患者坐标转换。
+                        target_sync_pan = False
                 # 更新视图状态
                 if target_view_id not in self._view_states:
                     self._view_states[target_view_id] = ViewSyncState(target_view_id)
                 
                 self._view_states[target_view_id].zoom_factor = zoom_factor
-                self._view_states[target_view_id].pan_offset = QPointF(pan_offset)
+                if target_sync_pan and target_center is not None:
+                    self._view_states[target_view_id].pan_offset = QPointF(target_center)
                 self._view_states[target_view_id].view_transform = QTransform(transform)
                 
                 # 应用到视图
-                self._apply_zoom_pan_to_view(target_view_id, zoom_factor, pan_offset, transform)
+                self._apply_zoom_pan_to_view(
+                    target_view_id,
+                    zoom_factor,
+                    target_center,
+                    sync_zoom=sync_zoom,
+                    sync_pan=target_sync_pan,
+                )
                 
                 logger.debug(f"[SyncManager.sync_zoom_pan] 缩放平移同步完成: "
                            f"{source_view_id} -> {target_view_id}")
@@ -387,16 +441,38 @@ class SyncManager(QObject):
             for target_view_id in target_views:
                 # 计算目标视图中的对应位置
                 target_pos = self._convert_position_between_views(
-                    source_view_id, target_view_id, cursor_pos
+                    source_view_id,
+                    target_view_id,
+                    cursor_pos,
+                    require_on_target_plane=True,
                 )
                 
                 if target_pos.x() >= 0 and target_pos.y() >= 0:
                     self.cross_reference_updated.emit(target_view_id, target_pos)
                     logger.debug(f"[SyncManager.update_cross_reference] 交叉参考线更新: "
                                f"{source_view_id} -> {target_view_id}")
+                else:
+                    viewer = self._get_image_viewer(target_view_id)
+                    if viewer:
+                        viewer.hide_cross_reference()
             
         except Exception as e:
             logger.error(f"[SyncManager.update_cross_reference] 更新交叉参考线失败: {e}", exc_info=True)
+
+    def clear_cross_reference(self, source_view_id: Optional[str] = None) -> None:
+        """清除交叉参考线；指定源时只清理由该视图产生的状态。"""
+        if (
+            source_view_id
+            and self._cross_reference.source_view_id
+            and self._cross_reference.source_view_id != source_view_id
+        ):
+            return
+        self._cross_reference.source_view_id = None
+        self._cross_reference.cursor_scene_pos = QPointF(-1, -1)
+        for view_id in self._series_manager.get_all_view_ids():
+            viewer = self._get_image_viewer(view_id)
+            if viewer:
+                viewer.hide_cross_reference()
     
     def sync_roi(self, source_view_id: str, roi_data: Dict) -> None:
         """同步ROI
@@ -559,7 +635,7 @@ class SyncManager(QObject):
             else:
                 return set()
             
-            if not source_value:
+            if not self._is_meaningful_identifier(source_value):
                 return set()
             
             # 查找具有相同条件值的视图
@@ -574,11 +650,11 @@ class SyncManager(QObject):
                     continue
                 
                 # 比较条件值
-                if criteria == 'patient_id' and series_info.patient_id == source_value:
+                if criteria == 'patient_id' and self._is_meaningful_identifier(series_info.patient_id) and series_info.patient_id == source_value:
                     matching_views.add(view_id)
-                elif criteria == 'study_instance_uid' and series_info.study_instance_uid == source_value:
+                elif criteria == 'study_instance_uid' and self._is_meaningful_identifier(series_info.study_instance_uid) and series_info.study_instance_uid == source_value:
                     matching_views.add(view_id)
-                elif criteria == 'modality' and series_info.modality == source_value:
+                elif criteria == 'modality' and self._is_meaningful_identifier(series_info.modality) and series_info.modality == source_value:
                     matching_views.add(view_id)
             
             return matching_views
@@ -587,14 +663,19 @@ class SyncManager(QObject):
             logger.error(f"[SyncManager._get_views_by_criteria] 获取视图失败: {e}", exc_info=True)
             return set()
     
-    def _apply_window_level_to_view(self, view_id: str, window_width: int, window_level: int) -> None:
+    def _apply_window_level_to_view(self, view_id: str, window_width: float, window_level: float) -> None:
         """应用窗宽窗位到视图"""
         try:
             binding = self._series_manager.get_view_binding(view_id)
             if binding and binding.series_id:
                 image_model = self._series_manager.get_series_model(binding.series_id)
                 if image_model:
-                    image_model.set_window(window_width, window_level)
+                    viewer = self._get_image_viewer(view_id)
+                    if viewer is not None and getattr(viewer, "model", None) is image_model:
+                        viewer.set_view_window(window_width, window_level, emit=True)
+                    else:
+                        # Compatibility for headless integrations that have no pane.
+                        image_model.set_window(window_width, window_level)
                     logger.debug(f"[SyncManager._apply_window_level_to_view] "
                                f"窗宽窗位应用成功: {view_id}")
         except Exception as e:
@@ -607,22 +688,45 @@ class SyncManager(QObject):
             if binding and binding.series_id:
                 image_model = self._series_manager.get_series_model(binding.series_id)
                 if image_model:
-                    # 确保切片索引在有效范围内
                     max_slice = image_model.get_slice_count() - 1
                     valid_index = max(0, min(slice_index, max_slice))
-                    image_model.set_current_slice(valid_index)
+                    viewer = self._get_image_viewer(view_id)
+                    if viewer is not None and getattr(viewer, "model", None) is image_model:
+                        viewer.set_view_slice(valid_index, emit=True)
+                    else:
+                        # Compatibility for headless integrations that have no pane.
+                        image_model.set_current_slice(valid_index)
                     logger.debug(f"[SyncManager._apply_slice_to_view] "
                                f"切片应用成功: {view_id}, slice={valid_index}")
         except Exception as e:
             logger.error(f"[SyncManager._apply_slice_to_view] 应用切片失败: {e}")
     
-    def _apply_zoom_pan_to_view(self, view_id: str, zoom_factor: float,
-                               pan_offset: QPointF, transform: QTransform) -> None:
+    def _apply_zoom_pan_to_view(
+        self,
+        view_id: str,
+        zoom_factor: float,
+        center_scene: Optional[QPointF],
+        *,
+        sync_zoom: bool,
+        sync_pan: bool,
+    ) -> None:
         """应用缩放平移到视图"""
         try:
             viewer = self._get_image_viewer(view_id)
             if viewer:
-                viewer.setTransform(QTransform(transform))
+                if hasattr(viewer, 'set_synced_view_state'):
+                    viewer.set_synced_view_state(
+                        zoom_factor,
+                        center_scene,
+                        sync_zoom=sync_zoom,
+                        sync_pan=sync_pan,
+                    )
+                else:
+                    if sync_zoom:
+                        current = max(1e-6, abs(viewer.transform().determinant()) ** 0.5)
+                        viewer.scale(zoom_factor / current, zoom_factor / current)
+                    if sync_pan and center_scene is not None:
+                        viewer.centerOn(center_scene)
                 logger.debug(f"[SyncManager._apply_zoom_pan_to_view] "
                            f"缩放平移应用成功: {view_id}, zoom={zoom_factor:.2f}")
             else:
@@ -696,8 +800,246 @@ class SyncManager(QObject):
             logger.error(f"[SyncManager._create_roi_from_data] 创建ROI失败: {e}")
             return None
     
-    def _convert_position_between_views(self, source_view_id: str, target_view_id: str, 
-                                      source_pos: QPointF) -> QPointF:
+    @staticmethod
+    def _is_meaningful_identifier(value: Any) -> bool:
+        text = str(value or '').strip()
+        return bool(text) and text.lower() not in {'unknown', 'n/a', 'none', 'null'}
+
+    def _get_view_model(self, view_id: str) -> Optional[ImageDataModel]:
+        binding = self._series_manager.get_view_binding(view_id)
+        if not binding or not binding.series_id:
+            return None
+        return self._series_manager.get_series_model(binding.series_id)
+
+    def _get_view_series_info(self, view_id: str):
+        binding = self._series_manager.get_view_binding(view_id)
+        if not binding or not binding.series_id:
+            return None
+        return self._series_manager.get_series_info(binding.series_id)
+
+    @staticmethod
+    def _vector(values: Any, expected: int) -> Optional[Tuple[float, ...]]:
+        try:
+            result = tuple(float(values[index]) for index in range(expected))
+            if all(value == value and abs(value) != float('inf') for value in result):
+                return result
+        except (TypeError, ValueError, IndexError):
+            pass
+        return None
+
+    @staticmethod
+    def _dot(left: Tuple[float, ...], right: Tuple[float, ...]) -> float:
+        return sum(a * b for a, b in zip(left, right))
+
+    @staticmethod
+    def _cross(left: Tuple[float, float, float], right: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        return (
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        )
+
+    @classmethod
+    def _normalise(cls, vector: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+        length = cls._dot(vector, vector) ** 0.5
+        if length <= 1e-8:
+            return None
+        return tuple(value / length for value in vector)
+
+    @staticmethod
+    def _functional_group_item(dataset: Any, frame_index: int, sequence_name: str):
+        """读取 per-frame/shared functional group 中的首个序列项。"""
+        containers = []
+        per_frame = getattr(dataset, 'PerFrameFunctionalGroupsSequence', None)
+        if per_frame:
+            try:
+                containers.append(per_frame[min(max(frame_index, 0), len(per_frame) - 1)])
+            except (IndexError, TypeError):
+                pass
+        shared = getattr(dataset, 'SharedFunctionalGroupsSequence', None)
+        if shared:
+            try:
+                containers.append(shared[0])
+            except (IndexError, TypeError):
+                pass
+        for container in containers:
+            sequence = getattr(container, sequence_name, None)
+            if sequence:
+                try:
+                    return sequence[0]
+                except (IndexError, TypeError):
+                    continue
+        return None
+
+    def _frame_geometry(self, model: ImageDataModel, slice_index: int) -> Optional[Dict[str, Any]]:
+        """返回一帧从像素坐标映射到患者坐标所需的几何信息。"""
+        dataset = model.get_dicom_file(slice_index)
+        if dataset is None:
+            return None
+        datasets = getattr(model, 'dicom_files', None) or []
+        frame_index = slice_index if len(datasets) == 1 and model.get_slice_count() > 1 else 0
+
+        orientation_item = self._functional_group_item(
+            dataset, frame_index, 'PlaneOrientationSequence'
+        )
+        position_item = self._functional_group_item(
+            dataset, frame_index, 'PlanePositionSequence'
+        )
+        measures_item = self._functional_group_item(
+            dataset, frame_index, 'PixelMeasuresSequence'
+        )
+
+        orientation = self._vector(
+            getattr(orientation_item, 'ImageOrientationPatient', None)
+            or getattr(dataset, 'ImageOrientationPatient', None),
+            6,
+        )
+        position = self._vector(
+            getattr(position_item, 'ImagePositionPatient', None)
+            or getattr(dataset, 'ImagePositionPatient', None),
+            3,
+        )
+        spacing = self._vector(
+            getattr(measures_item, 'PixelSpacing', None)
+            or getattr(dataset, 'PixelSpacing', None),
+            2,
+        )
+        if not orientation or not position or not spacing or spacing[0] <= 0 or spacing[1] <= 0:
+            return None
+
+        column_axis = self._normalise(tuple(orientation[:3]))
+        row_axis = self._normalise(tuple(orientation[3:]))
+        if not column_axis or not row_axis:
+            return None
+        normal = self._normalise(self._cross(column_axis, row_axis))
+        if not normal:
+            return None
+
+        return {
+            'origin': position,
+            'column_axis': column_axis,
+            'row_axis': row_axis,
+            'normal': normal,
+            'row_spacing': spacing[0],
+            'column_spacing': spacing[1],
+            'slice_thickness': (
+                getattr(measures_item, 'SliceThickness', None)
+                or getattr(dataset, 'SliceThickness', None)
+            ),
+            'spacing_between_slices': (
+                getattr(measures_item, 'SpacingBetweenSlices', None)
+                or getattr(dataset, 'SpacingBetweenSlices', None)
+            ),
+            'frame_of_reference_uid': str(getattr(dataset, 'FrameOfReferenceUID', '') or ''),
+        }
+
+    def _patients_compatible(self, source_view_id: str, target_view_id: str) -> bool:
+        source = self._get_view_series_info(source_view_id)
+        target = self._get_view_series_info(target_view_id)
+        if not source or not target:
+            return False
+        source_id, target_id = source.patient_id, target.patient_id
+        if self._is_meaningful_identifier(source_id) and self._is_meaningful_identifier(target_id):
+            return str(source_id) == str(target_id)
+        source_study, target_study = source.study_instance_uid, target.study_instance_uid
+        return (
+            self._is_meaningful_identifier(source_study)
+            and self._is_meaningful_identifier(target_study)
+            and str(source_study) == str(target_study)
+        )
+
+    @staticmethod
+    def _frames_compatible(source: Dict[str, Any], target: Dict[str, Any]) -> bool:
+        source_uid = source.get('frame_of_reference_uid')
+        target_uid = target.get('frame_of_reference_uid')
+        # 不同 model 间只有双方明确声明同一患者坐标系时才允许映射。
+        if not source_uid or not target_uid or source_uid != target_uid:
+            return False
+        return abs(SyncManager._dot(source['normal'], target['normal'])) >= 0.99
+
+    def _find_corresponding_slice(
+        self,
+        source_view_id: str,
+        target_view_id: str,
+        source_index: int,
+    ) -> Optional[int]:
+        source_model = self._get_view_model(source_view_id)
+        target_model = self._get_view_model(target_view_id)
+        if not source_model or not target_model or target_model.get_slice_count() <= 0:
+            return None
+        if source_model is target_model:
+            return max(0, min(source_index, target_model.get_slice_count() - 1))
+        if not self._patients_compatible(source_view_id, target_view_id):
+            return None
+
+        source_geometry = self._frame_geometry(source_model, source_index)
+        if not source_geometry:
+            return None
+        source_origin = source_geometry['origin']
+        best_index = None
+        best_distance = float('inf')
+        for target_index in range(target_model.get_slice_count()):
+            target_geometry = self._frame_geometry(target_model, target_index)
+            if not target_geometry or not self._frames_compatible(source_geometry, target_geometry):
+                continue
+            delta = tuple(
+                source_origin[index] - target_geometry['origin'][index]
+                for index in range(3)
+            )
+            distance = abs(self._dot(delta, target_geometry['normal']))
+            if distance < best_distance:
+                best_index, best_distance = target_index, distance
+        if best_index is None:
+            return None
+        best_geometry = self._frame_geometry(target_model, best_index)
+        if not best_geometry:
+            return None
+        tolerance = self._slice_plane_tolerance(target_model, best_index, best_geometry)
+        return best_index if best_distance <= tolerance else None
+
+    def _slice_plane_tolerance(
+        self,
+        model: ImageDataModel,
+        slice_index: int,
+        geometry: Dict[str, Any],
+    ) -> float:
+        """返回当前切片可接受的半层厚；缺失标签时由相邻层间距推导。"""
+        candidates = []
+        for key in ('slice_thickness', 'spacing_between_slices'):
+            try:
+                value = abs(float(geometry.get(key) or 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 1e-6:
+                candidates.append(value)
+
+        for neighbour_index in (slice_index - 1, slice_index + 1):
+            if not 0 <= neighbour_index < model.get_slice_count():
+                continue
+            neighbour = self._frame_geometry(model, neighbour_index)
+            if not neighbour:
+                continue
+            if abs(self._dot(geometry['normal'], neighbour['normal'])) < 0.99:
+                continue
+            delta = tuple(
+                neighbour['origin'][axis] - geometry['origin'][axis]
+                for axis in range(3)
+            )
+            distance = abs(self._dot(delta, geometry['normal']))
+            if distance > 1e-6:
+                candidates.append(distance)
+
+        # 单张二次捕获图像经常没有层厚；此时只接受确实位于平面上的点。
+        return max(max(candidates, default=0.0) * 0.5, 1e-3)
+
+    def _convert_position_between_views(
+        self,
+        source_view_id: str,
+        target_view_id: str,
+        source_pos: QPointF,
+        *,
+        require_on_target_plane: bool = False,
+    ) -> QPointF:
         """在视图间转换位置坐标
         
         Args:
@@ -709,9 +1051,53 @@ class SyncManager(QObject):
             目标位置
         """
         try:
-            # 简化实现：假设图像坐标系相同
-            # 实际应用中需要根据图像的空间信息进行坐标转换
-            return QPointF(source_pos)
+            source_model = self._get_view_model(source_view_id)
+            target_model = self._get_view_model(target_view_id)
+            if not source_model or not target_model:
+                return QPointF(-1, -1)
+            if source_model is target_model:
+                return QPointF(source_pos)
+            if not self._patients_compatible(source_view_id, target_view_id):
+                return QPointF(-1, -1)
+
+            source_index = self._get_view_slice_index(source_view_id, source_model)
+            target_index = self._get_view_slice_index(target_view_id, target_model)
+            source_geometry = self._frame_geometry(source_model, source_index)
+            target_geometry = self._frame_geometry(target_model, target_index)
+            if not source_geometry or not target_geometry:
+                return QPointF(-1, -1)
+            source_uid = source_geometry.get('frame_of_reference_uid')
+            target_uid = target_geometry.get('frame_of_reference_uid')
+            if not source_uid or not target_uid or source_uid != target_uid:
+                return QPointF(-1, -1)
+
+            origin = source_geometry['origin']
+            patient_point = tuple(
+                origin[index]
+                + source_pos.x() * source_geometry['column_spacing'] * source_geometry['column_axis'][index]
+                + source_pos.y() * source_geometry['row_spacing'] * source_geometry['row_axis'][index]
+                for index in range(3)
+            )
+            delta = tuple(
+                patient_point[index] - target_geometry['origin'][index]
+                for index in range(3)
+            )
+            if require_on_target_plane:
+                plane_distance = abs(self._dot(delta, target_geometry['normal']))
+                tolerance = self._slice_plane_tolerance(
+                    target_model,
+                    target_index,
+                    target_geometry,
+                )
+                if plane_distance > tolerance:
+                    return QPointF(-1, -1)
+            target_x = self._dot(delta, target_geometry['column_axis']) / target_geometry['column_spacing']
+            target_y = self._dot(delta, target_geometry['row_axis']) / target_geometry['row_spacing']
+
+            shape = target_model.get_image_shape()
+            if not shape or not (0 <= target_x < shape[2] and 0 <= target_y < shape[1]):
+                return QPointF(-1, -1)
+            return QPointF(target_x, target_y)
             
         except Exception as e:
             logger.error(f"[SyncManager._convert_position_between_views] 位置转换失败: {e}")
@@ -720,6 +1106,9 @@ class SyncManager(QObject):
     def _on_binding_changed(self, view_id: str, series_id: str) -> None:
         """处理绑定变更事件"""
         logger.debug(f"[SyncManager._on_binding_changed] 绑定变更: view_id={view_id}, series_id={series_id}")
+
+        # 源或靶序列一旦替换，旧患者空间投影不再属于当前图像。
+        self.clear_cross_reference()
         
         # 更新视图状态
         if view_id not in self._view_states:
@@ -783,4 +1172,4 @@ class SyncManager(QObject):
     
     def get_sync_targets_for_view(self, view_id: str) -> Set[str]:
         """获取指定视图的同步目标"""
-        return self._get_sync_targets(view_id) 
+        return self._get_sync_targets(view_id)

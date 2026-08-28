@@ -191,7 +191,7 @@ def create_gammex_phantom_dcm(output_dir: Path, num_slices: int) -> None:
         except Exception as e:
             print(f"保存 DICOM 文件 {output_filename} 时出错: {e}")
 
-    print(f"序列已成功生成完毕。")
+    print("序列已成功生成完毕。")
 
 def main():
     """主函数，生成并保存模体"""

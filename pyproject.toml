@@ -11,6 +11,10 @@ dependencies = [
     "numpy>=2.3.1",
     "pillow>=10.0.0",
     "pydicom>=3.0.1",
+    "pylibjpeg>=2.0",
+    "pylibjpeg-libjpeg>=2.2",
+    "pylibjpeg-openjpeg>=2.4",
+    "pyjpegls>=1.5",
     "pyside6>=6.9.1",
     "toml>=0.10.2"
 ]
@@ -19,6 +23,25 @@ dependencies = [
 Homepage = "https://github.com/1985312383/MedImager"
 Repository = "https://github.com/1985312383/MedImager"
 Issues = "https://github.com/1985312383/MedImager/issues"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+medimager = [
+    "icons/*.svg",
+    "icons/logo.png",
+    "themes/ui/*.toml",
+    "themes/roi/*.toml",
+    "themes/measurement/*.toml",
+    "i18n/compiled/*.json",
+    "i18n/manifest.yml",
+]
+
+[tool.setuptools.packages.find]
+include = ["medimager*"]
+exclude = ["medimager.tests*"]
 
 [dependency-groups]
 dev = [

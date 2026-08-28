@@ -1,11 +1,41 @@
 # 深色主题配置
 
-# 基础颜色
+# 兼容旧主题读取器的基础颜色
 background_color = "#2B2B2B"
-text_color = "#FFFFFF"
-highlight_color = "#3498DB"
-border_color = "#1B1B1B"
+text_color = "#F4F6F8"
+highlight_color = "#0063B1"
+border_color = "#3B414B"
+
+# 语义表面。医学影像画布在 ThemeManager 中固定为中性黑色。
+window_color = "#1B1E23"
+canvas_color = "#080A0C"
+surface_color = "#24282E"
+surface_raised_color = "#303640"
+surface_sunken_color = "#171A1F"
+border_subtle_color = "#30353D"
+
+# 文本与图标状态
+text_secondary_color = "#B7BEC8"
+text_disabled_color = "#737B86"
+icon_color = "#E6EAF0"
+icon_active_color = "#69B7FF"
+icon_selected_color = "#FFFFFF"
+
+# 交互和状态
+highlight_hover_color = "#1678C4"
+highlight_pressed_color = "#004D8A"
+focus_color = "#4DA3FF"
+success_color = "#3CC47C"
+warning_color = "#F0B429"
+error_color = "#F05B61"
+
+# 影像叠加与标注
+overlay_background_color = "#000000B8"
+image_text_color = "#F7F9FB"
+annotation_color = "#FFD740"
+measurement_color = "#42D9FF"
+reference_line_color = "#F063FF"
 
 # 主题描述
 name = "dark"
-description = "护眼的深色界面主题" 
+description = "护眼的深色界面主题"

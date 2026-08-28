@@ -16,6 +16,18 @@ def test_compiled_catalogs_have_expected_messages():
     assert payload["messages"]["viewer.active_view"] == "Active view: {position}"
 
 
+def test_checked_in_compiled_catalogs_match_locale_sources(tmp_path):
+    generated_dir = tmp_path / "compiled"
+    generated = compile_catalogs(Path("medimager/i18n/locales"), generated_dir)
+
+    checked_in_dir = Path("medimager/i18n/compiled")
+    for generated_path in generated:
+        checked_in_path = checked_in_dir / generated_path.name
+        assert checked_in_path.read_text(encoding="utf-8") == generated_path.read_text(
+            encoding="utf-8"
+        )
+
+
 def test_runtime_default_language_is_english():
     assert DEFAULT_LANGUAGE == "en_US"
 
@@ -57,6 +69,7 @@ def test_migrated_main_window_key_uses_stable_catalog_key(qapp):
     try:
         assert manager.set_language("en_US")
         assert manager.t("mainwindow.file_f") == "File (&F)"
+        assert manager.t("mainwindow.toggle_series_panel") == "Toggle series panel"
     finally:
         manager.set_language(original_language)
 
@@ -67,6 +80,7 @@ def test_migrated_settings_dialog_key_uses_stable_catalog_key(qapp):
     try:
         assert manager.set_language("en_US")
         assert manager.t("settingsdialog.settings") == "Settings"
+        assert manager.t("settingsdialog.sync_scope_same_study") == "Same study (recommended)"
     finally:
         manager.set_language(original_language)
 

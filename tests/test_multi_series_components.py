@@ -6,7 +6,6 @@
 """
 
 import sys
-import os
 import numpy as np
 from typing import Optional
 from pathlib import Path
@@ -20,7 +19,7 @@ try:
     from PySide6.QtCore import QObject
     
     from medimager.core.multi_series_manager import (
-        MultiSeriesManager, SeriesInfo, ViewPosition, ViewBinding
+        MultiSeriesManager, SeriesInfo, ViewPosition
     )
     from medimager.core.series_view_binding import (
         SeriesViewBindingManager, BindingStrategy, SortOrder
@@ -158,7 +157,7 @@ def test_multi_series_manager():
         
         new_view_ids = manager.get_all_view_ids()
         for view_id in new_view_ids:
-            unbind_success = manager.unbind_series_from_view(view_id)
+            manager.unbind_series_from_view(view_id)
             # 注意：可能有些视图没有绑定，所以不一定都返回True
         
         # 测试移除序列
@@ -219,7 +218,7 @@ def test_series_view_binding_manager():
         # 测试智能绑定
         logger.debug("[test_series_view_binding_manager] 测试智能绑定")
         
-        smart_bind_success = binding_manager.smart_bind_series(
+        binding_manager.smart_bind_series(
             "test_series_1", 
             ViewPosition.TOP_RIGHT
         )
@@ -284,7 +283,7 @@ def test_integration():
             logger.debug(f"[test_integration] 测试布局: {rows}x{cols}")
             
             series_manager.set_layout(rows, cols)
-            assigned = binding_manager.auto_assign_series_to_views()
+            binding_manager.auto_assign_series_to_views()
             
             current_layout = series_manager.get_current_layout()
             assert current_layout == (rows, cols), f"布局应为{rows}x{cols}"
@@ -308,7 +307,7 @@ def main():
     
     try:
         # 创建QApplication (Qt组件需要)
-        app = QApplication(sys.argv)
+        _app = QApplication(sys.argv)
         
         # 配置日志级别以显示调试信息
         import logging

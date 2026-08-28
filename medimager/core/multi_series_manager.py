@@ -10,6 +10,10 @@ from enum import Enum
 from PySide6.QtCore import QObject, Signal
 
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.annotation_persistence import (
+    get_annotation_counts,
+    has_unsaved_annotations,
+)
 from medimager.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -69,6 +73,23 @@ class ViewBinding:
         """数据类初始化后的处理"""
         logger.debug(f"[ViewBinding.__post_init__] 创建视图绑定: view_id={self.view_id}, "
                     f"position={self.position}, series_id={self.series_id}")
+
+
+@dataclass(frozen=True)
+class SeriesRemovalSummary:
+    """Read-only preflight information for a potentially destructive removal."""
+
+    series_id: str
+    exists: bool
+    bound_view_count: int = 0
+    roi_count: int = 0
+    measurement_count: int = 0
+    angle_measurement_count: int = 0
+    has_unsaved_annotations: bool = False
+
+    @property
+    def annotation_count(self) -> int:
+        return self.roi_count + self.measurement_count + self.angle_measurement_count
 
 
 class MultiSeriesManager(QObject):
@@ -171,11 +192,14 @@ class MultiSeriesManager(QObject):
             logger.error(f"[MultiSeriesManager.add_series] 添加序列失败: {e}", exc_info=True)
             raise
     
-    def remove_series(self, series_id: str) -> bool:
+    def remove_series(
+        self, series_id: str, *, allow_unsaved_annotations: bool = False
+    ) -> bool:
         """移除序列
         
         Args:
             series_id: 序列ID
+            allow_unsaved_annotations: 调用方已明确确认丢弃未保存标注时设为 True
             
         Returns:
             是否成功移除
@@ -183,8 +207,15 @@ class MultiSeriesManager(QObject):
         logger.debug(f"[MultiSeriesManager.remove_series] 开始移除序列: {series_id}")
         
         try:
-            if series_id not in self._series_info:
+            summary = self.get_series_removal_summary(series_id)
+            if not summary.exists:
                 logger.warning(f"[MultiSeriesManager.remove_series] 序列不存在: {series_id}")
+                return False
+            if summary.has_unsaved_annotations and not allow_unsaved_annotations:
+                logger.warning(
+                    "[MultiSeriesManager.remove_series] 拒绝静默移除包含未保存标注的序列: "
+                    f"{series_id}"
+                )
                 return False
             
             # 解除所有视图绑定
@@ -274,12 +305,6 @@ class MultiSeriesManager(QObject):
             # 建立新绑定
             old_binding.series_id = series_id
             self._series_to_views[series_id].add(view_id)
-            
-            # 清理序列模型中的ROI数据，确保每次绑定都是干净的状态
-            series_model = self._series_models.get(series_id)
-            if series_model and hasattr(series_model, 'clear_all_rois'):
-                series_model.clear_all_rois()
-                logger.debug(f"[MultiSeriesManager.bind_series_to_view] 清理序列ROI数据: {series_id}")
             
             logger.info(f"[MultiSeriesManager.bind_series_to_view] 绑定成功: "
                        f"view_id={view_id}, series_id={series_id}")
@@ -518,6 +543,29 @@ class MultiSeriesManager(QObject):
     def get_series_count(self) -> int:
         """获取序列总数"""
         return len(self._series_info)
+
+    def get_series_removal_summary(self, series_id: str) -> SeriesRemovalSummary:
+        """Return reusable confirmation data without mutating the series."""
+        if series_id not in self._series_info:
+            return SeriesRemovalSummary(series_id=series_id, exists=False)
+
+        model = self._series_models.get(series_id)
+        counts = get_annotation_counts(model) if model is not None else {
+            "rois": 0,
+            "measurements": 0,
+            "angle_measurements": 0,
+        }
+        return SeriesRemovalSummary(
+            series_id=series_id,
+            exists=True,
+            bound_view_count=len(self._series_to_views.get(series_id, set())),
+            roi_count=counts["rois"],
+            measurement_count=counts["measurements"],
+            angle_measurement_count=counts["angle_measurements"],
+            has_unsaved_annotations=(
+                has_unsaved_annotations(model) if model is not None else False
+            ),
+        )
     
     def get_loaded_series_count(self) -> int:
         """获取已加载序列数"""

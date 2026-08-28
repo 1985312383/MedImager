@@ -6,9 +6,10 @@
 """
 
 import json
-import os
 import gc
+import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +27,9 @@ class PerformanceManager:
         self._thread_pool: Optional[ThreadPoolExecutor] = None
         self._cache_size_mb: int = 256
         self._thread_count: int = 4
-        self._cache_data: Dict[str, Any] = {}
+        self._cache_data: "OrderedDict[str, Any]" = OrderedDict()
+        self._cache_sizes: Dict[str, int] = {}
+        self._cache_usage_bytes: int = 0
         self._cache_lock = threading.Lock()
         self.logger = get_logger(__name__)
         
@@ -45,7 +48,8 @@ class PerformanceManager:
         
         # 重新创建线程池
         if self._thread_pool is not None:
-            self._thread_pool.shutdown(wait=True)
+            # 设置对话框运行在 GUI 线程，不能等待正在解码的大序列。
+            self._thread_pool.shutdown(wait=False, cancel_futures=True)
             
         self._thread_pool = ThreadPoolExecutor(max_workers=self._thread_count)
         self.logger.debug(f"线程数量已设置为: {self._thread_count}")
@@ -103,15 +107,23 @@ class PerformanceManager:
             key: 缓存键
             data: 缓存数据
         """
+        item_size = self._estimate_size_bytes(data)
+        max_bytes = self._cache_limit_bytes
+
         with self._cache_lock:
+            if key in self._cache_data:
+                self._cache_usage_bytes -= self._cache_sizes.pop(key, 0)
+                del self._cache_data[key]
+
+            # An item larger than the configured budget can never be retained.
+            if item_size > max_bytes:
+                return
+
             self._cache_data[key] = data
-            
-            # 简单的缓存大小控制（基于条目数量）
-            max_items = self._cache_size_mb * 10  # 简单映射：1MB = 10个条目
-            if len(self._cache_data) > max_items:
-                # 移除最旧的条目（简单FIFO）
-                oldest_key = next(iter(self._cache_data))
-                del self._cache_data[oldest_key]
+            self._cache_sizes[key] = item_size
+            self._cache_usage_bytes += item_size
+            self._cache_data.move_to_end(key)
+            self._evict_to_limit_locked(max_bytes)
                 
     def get_from_cache(self, key: str) -> Optional[Any]:
         """从缓存获取数据
@@ -123,22 +135,73 @@ class PerformanceManager:
             Optional[Any]: 缓存数据，不存在返回None
         """
         with self._cache_lock:
-            return self._cache_data.get(key)
+            data = self._cache_data.get(key)
+            if data is not None:
+                # A cache hit makes this the most recently used item.
+                self._cache_data.move_to_end(key)
+            return data
             
     def clear_cache(self) -> None:
         """清空缓存"""
         with self._cache_lock:
             self._cache_data.clear()
-            gc.collect()  # 强制垃圾回收
+            self._cache_sizes.clear()
+            self._cache_usage_bytes = 0
+        gc.collect()  # 强制垃圾回收
             
     def _cleanup_cache(self) -> None:
         """清理超出大小限制的缓存"""
-        max_items = self._cache_size_mb * 10
         with self._cache_lock:
-            while len(self._cache_data) > max_items:
-                oldest_key = next(iter(self._cache_data))
-                del self._cache_data[oldest_key]
-            gc.collect()
+            self._evict_to_limit_locked(self._cache_limit_bytes)
+        gc.collect()
+
+    @property
+    def _cache_limit_bytes(self) -> int:
+        return int(self._cache_size_mb * 1024 * 1024)
+
+    def _evict_to_limit_locked(self, max_bytes: int) -> None:
+        """Evict least-recently-used entries while holding the cache lock."""
+        while self._cache_data and self._cache_usage_bytes > max_bytes:
+            oldest_key, _ = self._cache_data.popitem(last=False)
+            self._cache_usage_bytes -= self._cache_sizes.pop(oldest_key, 0)
+
+    @classmethod
+    def _estimate_size_bytes(cls, data: Any, seen: Optional[set[int]] = None) -> int:
+        """Return a conservative byte count for cache accounting.
+
+        Display cache entries are normally NumPy arrays, for which nbytes is
+        exact. Container handling keeps this utility safe for the other small
+        objects accepted by the public cache API.
+        """
+        if seen is None:
+            seen = set()
+
+        object_id = id(data)
+        if object_id in seen:
+            return 0
+        seen.add(object_id)
+
+        try:
+            import numpy as np
+            if isinstance(data, np.ndarray):
+                return int(data.nbytes)
+        except ImportError:
+            pass
+
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            return len(data)
+        if isinstance(data, str):
+            return len(data.encode("utf-8"))
+
+        size = sys.getsizeof(data)
+        if isinstance(data, dict):
+            size += sum(
+                cls._estimate_size_bytes(key, seen) + cls._estimate_size_bytes(value, seen)
+                for key, value in data.items()
+            )
+        elif isinstance(data, (list, tuple, set, frozenset)):
+            size += sum(cls._estimate_size_bytes(value, seen) for value in data)
+        return int(size)
             
     def get_cache_info(self) -> Dict[str, Any]:
         """获取缓存信息
@@ -150,13 +213,18 @@ class PerformanceManager:
             return {
                 'size_mb': self._cache_size_mb,
                 'item_count': len(self._cache_data),
-                'estimated_usage_mb': len(self._cache_data) / 10  # 简单估算
+                # Keep the legacy key for UI compatibility, but report the
+                # actual accounted memory rather than an item-count estimate.
+                'estimated_usage_mb': self._cache_usage_bytes / (1024 * 1024),
+                'usage_bytes': self._cache_usage_bytes,
+                'limit_bytes': self._cache_limit_bytes,
             }
             
     def shutdown(self) -> None:
         """关闭性能管理器"""
         if self._thread_pool is not None:
-            self._thread_pool.shutdown(wait=True)
+            self._thread_pool.shutdown(wait=False, cancel_futures=True)
+            self._thread_pool = None
         self.clear_cache()
 
 
@@ -503,4 +571,4 @@ def shutdown_settings_manager() -> None:
     global _settings_manager
     if _settings_manager is not None:
         _settings_manager.shutdown()
-        _settings_manager = None 
+        _settings_manager = None

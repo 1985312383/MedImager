@@ -1,10 +1,41 @@
 # 浅色主题配置
 
-# 基础颜色
+# 兼容旧主题读取器的基础颜色
 background_color = "#F0F0F0"
-text_color = "#000000"
-highlight_color = "#3498DB"
+text_color = "#15191E"
+highlight_color = "#0063B1"
+border_color = "#C7CDD5"
+
+# 语义表面。医学影像画布在 ThemeManager 中固定为中性黑色。
+window_color = "#E9EDF2"
+canvas_color = "#080A0C"
+surface_color = "#F8F9FB"
+surface_raised_color = "#FFFFFF"
+surface_sunken_color = "#E7EBF0"
+border_subtle_color = "#D9DEE5"
+
+# 文本与图标状态
+text_secondary_color = "#59636F"
+text_disabled_color = "#929AA4"
+icon_color = "#303943"
+icon_active_color = "#0063B1"
+icon_selected_color = "#FFFFFF"
+
+# 交互和状态
+highlight_hover_color = "#1678C4"
+highlight_pressed_color = "#004D8A"
+focus_color = "#006FC9"
+success_color = "#197A48"
+warning_color = "#9A6500"
+error_color = "#B4232A"
+
+# 影像叠加与标注
+overlay_background_color = "#000000B8"
+image_text_color = "#F7F9FB"
+annotation_color = "#FFD740"
+measurement_color = "#00B8E6"
+reference_line_color = "#D441E8"
 
 # 主题描述
 name = "light"
-description = "明亮清爽的浅色界面主题" 
+description = "明亮清爽的浅色界面主题"

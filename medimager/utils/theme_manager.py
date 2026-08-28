@@ -9,15 +9,102 @@
 import toml
 import weakref
 from pathlib import Path
-from PySide6.QtWidgets import QApplication, QWidget
-from PySide6.QtCore import QObject, Signal, QByteArray, Qt
-from PySide6.QtGui import QIcon, QPixmap, QPainter
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QObject, Signal, QStandardPaths
+from PySide6.QtGui import QColor, QIcon
 from typing import Dict, Any, Optional
 from medimager.utils.settings import SettingsManager, get_settings_manager
 from medimager.utils.logger import get_logger
+from medimager.utils.icon_registry import IconRegistry
 
 logger = get_logger(__name__)
+
+
+# Medical image pixels must not inherit a bright application theme. Keeping
+# this invariant here makes custom/legacy UI themes safe by construction.
+MEDICAL_CANVAS_COLOR = "#080A0C"
+
+
+def _shift_color(color_text: str, delta: int) -> str:
+    color = QColor(str(color_text))
+    if not color.isValid():
+        color = QColor("#808080")
+    return QColor(
+        max(0, min(255, color.red() + delta)),
+        max(0, min(255, color.green() + delta)),
+        max(0, min(255, color.blue() + delta)),
+    ).name(QColor.NameFormat.HexRgb)
+
+
+def normalize_ui_theme(theme_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a complete semantic UI palette while accepting legacy themes.
+
+    Older themes only define background/text/highlight/border. All semantic
+    values are derived from those keys, so user themes remain usable without
+    migration. Explicit semantic values take precedence except for the image
+    canvas, which intentionally remains neutral black in every theme.
+    """
+    raw = dict(theme_data or {})
+    background = str(raw.get("background_color", "#F0F0F0"))
+    text = str(raw.get("text_color", "#111418"))
+    highlight = str(raw.get("highlight_color", "#0063B1"))
+    border = str(raw.get("border_color", "#C8C8C8"))
+    color = QColor(background)
+    is_dark = color.isValid() and color.lightness() < 128
+    direction = 1 if is_dark else -1
+
+    defaults = {
+        "background_color": background,
+        "window_color": background,
+        "canvas_color": MEDICAL_CANVAS_COLOR,
+        "surface_color": _shift_color(background, 6 * direction),
+        "surface_raised_color": _shift_color(background, 14 * direction),
+        "surface_sunken_color": _shift_color(background, -6 * direction),
+        "text_color": text,
+        "text_secondary_color": _shift_color(text, -58 if is_dark else 70),
+        "text_disabled_color": _shift_color(text, -112 if is_dark else 128),
+        "icon_color": str(raw.get("icon_color", text)),
+        "icon_active_color": str(raw.get("icon_active_color", highlight)),
+        "icon_selected_color": str(raw.get("icon_selected_color", "#FFFFFF")),
+        "border_color": border,
+        "border_subtle_color": _shift_color(border, 12 * direction),
+        "highlight_color": highlight,
+        "highlight_hover_color": _shift_color(highlight, 18),
+        "highlight_pressed_color": _shift_color(highlight, -18),
+        "focus_color": str(raw.get("focus_color", "#42A5F5")),
+        "success_color": str(raw.get("success_color", "#2EAD67")),
+        "warning_color": str(raw.get("warning_color", "#E5A50A")),
+        "error_color": str(raw.get("error_color", "#D64545")),
+        "overlay_background_color": str(raw.get("overlay_background_color", "#000000B8")),
+        "annotation_color": str(raw.get("annotation_color", "#FFD740")),
+        "measurement_color": str(raw.get("measurement_color", "#38D9FF")),
+        "reference_line_color": str(raw.get("reference_line_color", "#E757FF")),
+        "image_text_color": str(raw.get("image_text_color", "#F5F7FA")),
+    }
+    normalized = {
+        **raw,
+        **{key: raw.get(key, value) for key, value in defaults.items()},
+    }
+    normalized["canvas_color"] = MEDICAL_CANVAS_COLOR
+    normalized["highlight_text_color"] = str(
+        raw.get("highlight_text_color", ThemeManager._contrasting_text_color(highlight))
+    )
+    return normalized
+
+
+def get_user_themes_dir(settings_manager: Optional[SettingsManager] = None) -> Path:
+    """Return a writable per-user theme directory.
+
+    JSON-backed test/portable settings already expose a concrete config
+    directory. Native QSettings may be registry-backed on Windows, so the
+    cross-platform AppConfigLocation is the reliable filesystem fallback.
+    """
+    if settings_manager is not None and getattr(settings_manager, "use_json", False):
+        return settings_manager.get_config_directory() / "themes"
+    config_location = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+    if not config_location:
+        config_location = str(Path.home() / ".config" / "MedImager")
+    return Path(config_location) / "themes"
 
 
 class ThemeAwareMixin:
@@ -120,17 +207,17 @@ def get_theme_settings(category: str, theme_name: str = None) -> Dict[str, Any]:
             settings_manager = get_settings_manager()
             theme_name = settings_manager.get_setting(f'{category}_theme', 'default')
         
-        # 加载主题文件
-        themes_dir = Path(__file__).parent.parent / "themes" / category
-        theme_file = themes_dir / f"{theme_name}.toml"
-        
-        if theme_file.exists():
-            return toml.load(theme_file)
-        else:
-            # 如果主题文件不存在，尝试加载默认主题
-            default_theme_file = themes_dir / "default.toml"
-            if default_theme_file.exists():
-                return toml.load(default_theme_file)
+        bundled_dir = Path(__file__).parent.parent / "themes" / category
+        user_dir = get_user_themes_dir(settings_manager) / category
+
+        # A user theme intentionally shadows the bundled read-only preset.
+        for theme_file in (
+            user_dir / f"{theme_name}.toml",
+            bundled_dir / f"{theme_name}.toml",
+            bundled_dir / "default.toml",
+        ):
+            if theme_file.exists():
+                return toml.load(theme_file)
             
     except Exception as e:
         print(f"加载{category}主题文件失败: {e}")
@@ -149,6 +236,7 @@ class ThemeManager(QObject):
         self.settings_manager = settings_manager
         self.available_themes = self._load_ui_themes()
         self.current_theme = self.get_current_theme()
+        self.icon_registry = IconRegistry(self)
         
         # 注册的主题组件列表 - 使用WeakSet防止内存泄漏
         # 当Qt组件被销毁时，弱引用自动失效，不会保留悬空引用
@@ -213,21 +301,21 @@ class ThemeManager(QObject):
     
     def _load_ui_themes(self):
         """加载UI主题文件"""
-        themes_dir = Path(__file__).parent.parent / "themes" / "ui"
         themes = {}
-        
-        if not themes_dir.exists():
-            logger.warning(f"UI主题目录不存在: {themes_dir}")
-            return themes
-        
-        for theme_file in themes_dir.glob("*.toml"):
-            try:
-                theme_data = toml.load(theme_file)
-                theme_name = theme_file.stem
-                themes[theme_name] = theme_data
-                logger.info(f"加载UI主题: {theme_name}")
-            except Exception as e:
-                logger.error(f"加载主题文件失败 {theme_file}: {e}")
+        bundled_dir = Path(__file__).parent.parent / "themes" / "ui"
+        user_dir = get_user_themes_dir(self.settings_manager) / "ui"
+
+        for themes_dir in (bundled_dir, user_dir):
+            if not themes_dir.exists():
+                continue
+            for theme_file in themes_dir.glob("*.toml"):
+                try:
+                    theme_data = normalize_ui_theme(toml.load(theme_file))
+                    theme_name = theme_file.stem
+                    themes[theme_name] = theme_data
+                    logger.info(f"加载UI主题: {theme_name}")
+                except Exception as e:
+                    logger.error(f"加载主题文件失败 {theme_file}: {e}")
         
         self.themes = themes  # 保持向后兼容
         return themes
@@ -250,14 +338,14 @@ class ThemeManager(QObject):
         
         self.current_theme = theme_name
         self.settings_manager.set_setting('ui_theme', theme_name)
-        logger.info(f"[ThemeManager.set_theme] 应用全局主题样式")
+        logger.info("[ThemeManager.set_theme] 应用全局主题样式")
         self.apply_current_theme()
         
         # 为所有注册的组件应用新主题
-        logger.info(f"[ThemeManager.set_theme] 开始为注册组件应用主题")
+        logger.info("[ThemeManager.set_theme] 开始为注册组件应用主题")
         self._apply_theme_to_all_components(theme_name)
         
-        logger.info(f"[ThemeManager.set_theme] 发送主题变更信号")
+        logger.info("[ThemeManager.set_theme] 发送主题变更信号")
         self.theme_changed.emit(theme_name)
         logger.info(f"[ThemeManager.set_theme] 主题设置完成: {theme_name}")
     
@@ -284,27 +372,26 @@ class ThemeManager(QObject):
     
     def _generate_stylesheet(self, theme_data: Dict[str, Any]) -> str:
         """生成样式表"""
-        logger.debug(f"[ThemeManager._generate_stylesheet] 生成样式表: {theme_data.get('name', 'unknown')}")
-        
-        # 获取基本颜色
-        bg_color = theme_data.get('background_color', '#F0F0F0')
-        text_color = theme_data.get('text_color', '#000000')
-        border_color = theme_data.get('border_color', '#CCCCCC')
-        highlight_color = theme_data.get('highlight_color', '#0078D4')
-        
-        # 计算背景色亮度来决定悬浮效果方向
-        bg_brightness = self._get_color_brightness(bg_color)
-        is_dark_bg = bg_brightness < 128  # 亮度小于128认为是深色背景
-        
-        # 根据背景色亮度决定悬浮效果方向
-        hover_brightness_delta = 30 if is_dark_bg else -30
-        pressed_brightness_delta = 50 if is_dark_bg else -50
-        checked_brightness_delta = 40 if is_dark_bg else -40
-        checked_hover_brightness_delta = 60 if is_dark_bg else -60
-        border_hover_delta = 40 if is_dark_bg else -40
-        border_pressed_delta = 60 if is_dark_bg else -60
-        border_checked_delta = 50 if is_dark_bg else -50
-        border_checked_hover_delta = 70 if is_dark_bg else -70
+        tokens = normalize_ui_theme(theme_data)
+        logger.debug(f"[ThemeManager._generate_stylesheet] 生成样式表: {tokens.get('name', 'unknown')}")
+        bg_color = tokens['window_color']
+        surface_color = tokens['surface_color']
+        surface_raised_color = tokens['surface_raised_color']
+        surface_sunken_color = tokens['surface_sunken_color']
+        canvas_color = tokens['canvas_color']
+        text_color = tokens['text_color']
+        text_disabled_color = tokens['text_disabled_color']
+        border_color = tokens['border_color']
+        border_subtle_color = tokens['border_subtle_color']
+        highlight_color = tokens['highlight_color']
+        highlight_hover_color = tokens['highlight_hover_color']
+        highlight_pressed_color = tokens['highlight_pressed_color']
+        highlight_text_color = tokens['highlight_text_color']
+        focus_color = tokens['focus_color']
+        success_color = tokens['success_color']
+        warning_color = tokens['warning_color']
+        is_dark_bg = self._get_color_brightness(bg_color) < 128
+        hover_brightness_delta = 18 if is_dark_bg else -18  # legacy selector fallback
 
         # 下拉箭头图标路径（根据主题亮度选择）
         from medimager.utils.resource_path import get_icon_path
@@ -319,13 +406,17 @@ class ThemeManager(QObject):
         }}
         
         QWidget {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             color: {text_color};
+        }}
+
+        QGraphicsView {{
+            background-color: {canvas_color};
         }}
         
         /* 菜单栏 */
         QMenuBar {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             color: {text_color};
             border-bottom: 1px solid {border_color};
         }}
@@ -337,11 +428,11 @@ class ThemeManager(QObject):
         
         QMenuBar::item:selected {{
             background-color: {highlight_color};
-            color: white;
+            color: {highlight_text_color};
         }}
         
         QMenu {{
-            background-color: {bg_color};
+            background-color: {surface_raised_color};
             color: {text_color};
             border: 1px solid {border_color};
         }}
@@ -352,19 +443,19 @@ class ThemeManager(QObject):
         
         QMenu::item:selected {{
             background-color: {highlight_color};
-            color: white;
+            color: {highlight_text_color};
         }}
         
         /* 工具栏 */
         QToolBar {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             border: 1px solid {border_color};
             spacing: 4px;
         }}
 
         /* 工具栏按钮 */
         QToolButton {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             color: {text_color};
             border: 1px solid {border_color};
             border-radius: 4px;
@@ -373,33 +464,45 @@ class ThemeManager(QObject):
         }}
         
         QToolButton:hover {{
-            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+            background-color: {surface_raised_color};
             color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_hover_delta)};
+            border: 1px solid {highlight_hover_color};
         }}
         
         QToolButton:pressed {{
-            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
+            background-color: {highlight_pressed_color};
             color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_pressed_delta)};
+            border: 1px solid {highlight_pressed_color};
         }}
         
         QToolButton:checked {{
-            background-color: {self._adjust_color_brightness(bg_color, checked_brightness_delta)};
-            color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_delta)};
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+            border: 1px solid {highlight_color};
         }}
         
         QToolButton:checked:hover {{
-            background-color: {self._adjust_color_brightness(bg_color, checked_hover_brightness_delta)};
-            color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_checked_hover_delta)};
+            background-color: {highlight_color};
+            color: {highlight_text_color};
+            border: 1px solid {highlight_text_color};
         }}
         
         QToolButton:disabled {{
-            background-color: {self._adjust_color_brightness(bg_color, -10)};
-            color: {self._adjust_color_brightness(text_color, 50)};
-            border: 1px solid {self._adjust_color_brightness(border_color, 20)};
+            background-color: {surface_sunken_color};
+            color: {text_disabled_color};
+            border: 1px solid {border_subtle_color};
+        }}
+
+        QToolButton:focus, QPushButton:focus {{
+            border: 2px solid {focus_color};
+        }}
+
+        QToolButton[syncState="partial"] {{
+            border: 1px solid {warning_color};
+        }}
+
+        QToolButton[syncState="all"] {{
+            border: 1px solid {success_color};
         }}
         
         /* 工具栏下拉按钮 - 右侧箭头条 */
@@ -440,7 +543,7 @@ class ThemeManager(QObject):
         
         /* 布局选择器按钮 - 与工具栏按钮样式保持一致 */
         QPushButton[objectName="LayoutSelectorButton"] {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             color: {text_color};
             border: 1px solid {border_color};
             border-radius: 4px;
@@ -453,15 +556,15 @@ class ThemeManager(QObject):
         }}
         
         QPushButton[objectName="LayoutSelectorButton"]:hover {{
-            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+            background-color: {surface_raised_color};
             color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_hover_delta)};
+            border: 1px solid {highlight_hover_color};
         }}
         
         QPushButton[objectName="LayoutSelectorButton"]:pressed {{
-            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
+            background-color: {highlight_pressed_color};
             color: {text_color};
-            border: 1px solid {self._adjust_color_brightness(border_color, border_pressed_delta)};
+            border: 1px solid {highlight_pressed_color};
         }}
         
 
@@ -503,28 +606,28 @@ class ThemeManager(QObject):
         
         /* 按钮 */
         QPushButton {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             border: 1px solid {border_color};
             padding: 6px 12px;
             border-radius: 4px;
         }}
         
         QPushButton:hover {{
-            background-color: {self._adjust_color_brightness(bg_color, hover_brightness_delta)};
+            background-color: {surface_raised_color};
         }}
         
         QPushButton:pressed {{
-            background-color: {self._adjust_color_brightness(bg_color, pressed_brightness_delta)};
+            background-color: {highlight_pressed_color};
         }}
         
         QPushButton:disabled {{
-            color: gray;
-            border-color: gray;
+            color: {text_disabled_color};
+            border-color: {border_subtle_color};
         }}
         
         /* 输入框 */
         QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-            background-color: {bg_color};
+            background-color: {surface_sunken_color};
             border: 1px solid {border_color};
             padding: 4px;
             border-radius: 2px;
@@ -546,16 +649,17 @@ class ThemeManager(QObject):
         }}
         
         QComboBox QAbstractItemView {{
-            background-color: {bg_color};
+            background-color: {surface_raised_color};
             border: 1px solid {border_color};
             selection-background-color: {highlight_color};
+            selection-color: {highlight_text_color};
         }}
         
         /* 列表 */
         QListWidget {{
-            background-color: {bg_color};
+            background-color: {surface_sunken_color};
             border: 1px solid {border_color};
-            alternate-background-color: {self._adjust_color_brightness(bg_color, 5)};
+            alternate-background-color: {surface_color};
         }}
         
         QListWidget::item {{
@@ -565,7 +669,7 @@ class ThemeManager(QObject):
         
         QListWidget::item:selected {{
             background-color: {highlight_color};
-            color: white;
+            color: {highlight_text_color};
         }}
         
         QListWidget::item:hover {{
@@ -578,7 +682,7 @@ class ThemeManager(QObject):
         }}
         
         QTabBar::tab {{
-            background-color: {bg_color};
+            background-color: {surface_color};
             border: 1px solid {border_color};
             padding: 6px 12px;
             margin-right: 2px;
@@ -586,7 +690,7 @@ class ThemeManager(QObject):
         
         QTabBar::tab:selected {{
             background-color: {highlight_color};
-            color: white;
+            color: {highlight_text_color};
         }}
         
         QTabBar::tab:hover {{
@@ -595,7 +699,7 @@ class ThemeManager(QObject):
         
         /* 滚动条 */
         QScrollBar:vertical {{
-            background-color: {bg_color};
+            background-color: {surface_sunken_color};
             width: 12px;
             border: 1px solid {border_color};
         }}
@@ -611,7 +715,7 @@ class ThemeManager(QObject):
         }}
         
         QScrollBar:horizontal {{
-            background-color: {bg_color};
+            background-color: {surface_sunken_color};
             height: 12px;
             border: 1px solid {border_color};
         }}
@@ -628,12 +732,12 @@ class ThemeManager(QObject):
         
         /* 对话框 */
         QDialog {{
-            background-color: {bg_color};
+            background-color: {surface_color};
         }}
         
         /* 设置对话框特殊样式 */
         QListWidget#settings_nav {{
-            background-color: {self._adjust_color_brightness(bg_color, -5)};
+            background-color: {surface_sunken_color};
             border: 1px solid {border_color};
             border-radius: 4px;
         }}
@@ -645,7 +749,7 @@ class ThemeManager(QObject):
         
         QListWidget#settings_nav::item:selected {{
             background-color: {highlight_color};
-            color: white;
+            color: {highlight_text_color};
         }}
         """
         
@@ -696,6 +800,26 @@ class ThemeManager(QObject):
         # 使用感知亮度公式 (ITU-R BT.709)
         brightness = 0.2126 * r + 0.7152 * g + 0.0722 * b
         return int(brightness)
+
+    @staticmethod
+    def _contrasting_text_color(background: str) -> str:
+        """Choose black or white with the higher WCAG contrast ratio."""
+        color = QColor(background)
+        if not color.isValid():
+            return "#000000"
+
+        def luminance(channel: int) -> float:
+            value = channel / 255.0
+            return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+        relative = (
+            0.2126 * luminance(color.red())
+            + 0.7152 * luminance(color.green())
+            + 0.0722 * luminance(color.blue())
+        )
+        white_contrast = 1.05 / (relative + 0.05)
+        black_contrast = (relative + 0.05) / 0.05
+        return "#FFFFFF" if white_contrast >= black_contrast else "#000000"
     
     def get_available_themes(self) -> list:
         """获取可用主题列表"""
@@ -715,53 +839,20 @@ class ThemeManager(QObject):
             # 对于UI主题，使用内部的themes字典
             if theme_name is None:
                 theme_name = self.current_theme
-            return self.themes.get(theme_name, {})
+            return normalize_ui_theme(self.themes.get(theme_name, {}))
         else:
             # 对于其他类别，使用全局函数
             return get_theme_settings(category, theme_name)
     
     def create_themed_icon(self, svg_path: str) -> QIcon:
-        """根据当前主题创建合适颜色的图标
-        
-        Args:
-            svg_path: SVG图标文件路径
-            
-        Returns:
-            主题适配的QIcon对象
-        """
-        try:
-            # 获取当前主题颜色
-            theme_data = get_theme_settings('ui', self.get_current_theme())
-            bg_color = theme_data.get('background_color', '#F0F0F0')
-            
-            # 计算背景色亮度
-            bg_brightness = self._get_color_brightness(bg_color)
-            
-            # 根据背景色亮度选择图标颜色
-            icon_color = "#FFFFFF" if bg_brightness < 128 else "#000000"
-            
-            # 读取SVG内容并替换颜色
-            with open(svg_path, 'r', encoding='utf-8') as f:
-                svg_content = f.read()
-            
-            # 替换currentColor为具体颜色
-            svg_content = svg_content.replace('currentColor', icon_color)
-            
-            # 使用QSvgRenderer创建图标
-            svg_bytes = QByteArray(svg_content.encode('utf-8'))
-            renderer = QSvgRenderer(svg_bytes)
-            
-            # 创建QPixmap
-            pixmap = QPixmap(24, 24)
-            pixmap.fill(Qt.transparent)
-            
-            painter = QPainter(pixmap)
-            renderer.render(painter)
-            painter.end()
-            
-            return QIcon(pixmap)
-            
-        except Exception as e:
-            logger.warning(f"[ThemeManager.create_themed_icon] 创建主题图标失败: {e}")
-            # 回退到原始图标
-            return QIcon(svg_path)
+        """Create a semantic, high-DPI vector icon from an SVG path."""
+        return self.icon_registry.icon_from_path(svg_path)
+
+    def create_icon(self, semantic_name: str) -> QIcon:
+        """Create an icon by a stable semantic registry name."""
+        return self.icon_registry.icon(semantic_name)
+
+    def get_theme_tokens(self, theme_name: Optional[str] = None) -> Dict[str, Any]:
+        """Return the complete semantic token set for the selected UI theme."""
+        selected = theme_name or self.current_theme
+        return normalize_ui_theme(self.themes.get(selected, {}))

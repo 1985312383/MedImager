@@ -5,12 +5,12 @@
 包括自动分配、智能绑定保持、绑定冲突解决等功能。
 """
 
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Callable, Dict, List, Optional, Tuple
 from enum import Enum
 from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
-from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition, SeriesInfo
+from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition
 from medimager.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -67,6 +67,7 @@ class SeriesViewBindingManager(QObject):
     binding_strategy_changed = Signal(str)
     auto_assignment_completed = Signal(int)
     binding_conflict_detected = Signal(str, str)  # view_id, conflicting_series_id
+    binding_failed = Signal(str, str)  # series_id, stable reason code
     
     def __init__(self, series_manager: MultiSeriesManager, parent: Optional[QObject] = None) -> None:
         """初始化绑定管理器
@@ -85,6 +86,10 @@ class SeriesViewBindingManager(QObject):
         # 绑定历史记录
         self._binding_history: List[BindingOperation] = []
         self._max_history_size = 100
+        self._binding_timestamps: Dict[str, float] = {}
+        self._target_view_selector: Optional[
+            Callable[[str, List[str], Optional[str]], Optional[str]]
+        ] = None
         
         # 连接信号
         self._connect_signals()
@@ -97,6 +102,21 @@ class SeriesViewBindingManager(QObject):
         
         self._series_manager.series_added.connect(self._on_series_added)
         self._series_manager.layout_changed.connect(self._on_layout_changed)
+        self._series_manager.binding_changed.connect(self._on_binding_changed)
+
+    def set_target_view_selector(
+        self,
+        selector: Optional[
+            Callable[[str, List[str], Optional[str]], Optional[str]]
+        ],
+    ) -> None:
+        """Install the synchronous UI chooser used by ``ASK_USER``.
+
+        The chooser receives ``(series_id, candidate_view_ids,
+        preferred_view_id)`` and returns a view id or ``None``. Keeping it
+        injectable avoids a QtWidgets dependency in this core manager.
+        """
+        self._target_view_selector = selector
     
     def set_binding_strategy(self, strategy: BindingStrategy) -> None:
         """设置绑定策略
@@ -170,8 +190,8 @@ class SeriesViewBindingManager(QObject):
             assigned_count = 0
             for i, series_id in enumerate(sorted_series):
                 if i >= len(available_views):
-                    logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
-                               f"可用视图已用完，停止分配")
+                    logger.info("[SeriesViewBindingManager.auto_assign_series_to_views] "
+                               "可用视图已用完，停止分配")
                     break
                 
                 view_id = available_views[i]
@@ -186,6 +206,7 @@ class SeriesViewBindingManager(QObject):
                 else:
                     logger.warning(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
                                   f"绑定失败: series_id={series_id}, view_id={view_id}")
+                    self._emit_binding_failure(series_id, "binding_rejected")
             
             logger.info(f"[SeriesViewBindingManager.auto_assign_series_to_views] "
                        f"自动分配完成: 成功分配{assigned_count}个序列")
@@ -221,6 +242,7 @@ class SeriesViewBindingManager(QObject):
             if not self._series_manager.get_series_info(series_id):
                 logger.error(f"[SeriesViewBindingManager.smart_bind_series] "
                            f"序列不存在: {series_id}")
+                self._emit_binding_failure(series_id, "series_not_found")
                 return False
             
             # 查找目标视图
@@ -229,6 +251,12 @@ class SeriesViewBindingManager(QObject):
             if not target_view_id:
                 logger.warning(f"[SeriesViewBindingManager.smart_bind_series] "
                              f"未找到合适的目标视图: series_id={series_id}")
+                reason = (
+                    "selection_cancelled"
+                    if self._binding_strategy == BindingStrategy.ASK_USER
+                    else "no_target_view"
+                )
+                self._emit_binding_failure(series_id, reason)
                 return False
             
             # 执行绑定
@@ -238,11 +266,14 @@ class SeriesViewBindingManager(QObject):
                 logger.info(f"[SeriesViewBindingManager.smart_bind_series] "
                            f"智能绑定成功: series_id={series_id}, view_id={target_view_id}")
             
+            if not success:
+                self._emit_binding_failure(series_id, "binding_rejected")
             return success
             
         except Exception as e:
             logger.error(f"[SeriesViewBindingManager.smart_bind_series] "
                         f"智能绑定失败: {e}", exc_info=True)
+            self._emit_binding_failure(series_id, "unexpected_error")
             return False
     
     def preserve_bindings_on_layout_change(self, old_layout: Tuple[int, int], 
@@ -364,7 +395,7 @@ class SeriesViewBindingManager(QObject):
                 return ""
             
             sorted_series = sorted(series_ids, key=get_sort_key)
-            logger.debug(f"[SeriesViewBindingManager._sort_series] 排序完成")
+            logger.debug("[SeriesViewBindingManager._sort_series] 排序完成")
             
             return sorted_series
             
@@ -378,6 +409,33 @@ class SeriesViewBindingManager(QObject):
         logger.debug(f"[SeriesViewBindingManager._find_target_view] "
                     f"查找目标视图: series_id={series_id}, preferred_position={preferred_position}")
         
+        preferred_view_id = None
+        if preferred_position:
+            for view_id in self._series_manager.get_all_view_ids():
+                binding = self._series_manager.get_view_binding(view_id)
+                if binding and binding.position == preferred_position:
+                    preferred_view_id = view_id
+                    break
+
+        # ASK_USER is intentionally handled before automatic empty-view
+        # selection: selecting this policy must always produce a real choice.
+        if self._binding_strategy == BindingStrategy.ASK_USER:
+            candidates = self._series_manager.get_all_view_ids()
+            if not candidates or self._target_view_selector is None:
+                return None
+            selected = self._target_view_selector(
+                series_id, list(candidates), preferred_view_id
+            )
+            if selected is None:
+                return None
+            if selected not in candidates:
+                logger.warning(
+                    "[SeriesViewBindingManager._find_target_view] "
+                    "选择器返回无效视图: %s", selected,
+                )
+                return None
+            return selected
+
         # 首先尝试首选位置
         if preferred_position:
             for view_id in self._series_manager.get_all_view_ids():
@@ -387,10 +445,8 @@ class SeriesViewBindingManager(QObject):
                         logger.debug(f"[SeriesViewBindingManager._find_target_view] "
                                    f"找到首选位置的空视图: {view_id}")
                         return view_id
-                    elif self._binding_strategy == BindingStrategy.REPLACE_OLDEST:
-                        logger.debug(f"[SeriesViewBindingManager._find_target_view] "
-                                   f"使用替换策略选择首选位置: {view_id}")
-                        return view_id
+                    # An occupied preferred pane must not bypass the
+                    # REPLACE_OLDEST policy; selection continues below.
         
         # 查找任何可用视图
         available_views = self._get_available_views()
@@ -410,16 +466,22 @@ class SeriesViewBindingManager(QObject):
     def _find_oldest_binding_view(self) -> Optional[str]:
         """查找最旧绑定的视图"""
         logger.debug("[SeriesViewBindingManager._find_oldest_binding_view] 查找最旧绑定视图")
-        
-        # 简化实现：返回第一个有绑定的视图
-        for view_id in self._series_manager.get_all_view_ids():
+
+        bound_views = []
+        for order, view_id in enumerate(self._series_manager.get_all_view_ids()):
             binding = self._series_manager.get_view_binding(view_id)
             if binding and binding.series_id:
-                logger.debug(f"[SeriesViewBindingManager._find_oldest_binding_view] "
-                           f"选择视图进行替换: {view_id}")
-                return view_id
-        
-        return None
+                timestamp = self._binding_timestamps.get(view_id, float("-inf"))
+                bound_views.append((timestamp, order, view_id))
+
+        if not bound_views:
+            return None
+        _, _, oldest_view_id = min(bound_views)
+        logger.debug(
+            "[SeriesViewBindingManager._find_oldest_binding_view] "
+            "选择最旧绑定视图: %s", oldest_view_id,
+        )
+        return oldest_view_id
     
     def _execute_binding(self, view_id: str, series_id: str) -> bool:
         """执行绑定操作"""
@@ -448,6 +510,27 @@ class SeriesViewBindingManager(QObject):
             logger.error(f"[SeriesViewBindingManager._execute_binding] "
                         f"绑定执行失败: {e}", exc_info=True)
             return False
+
+    def bind_series_to_view(self, view_id: str, series_id: str) -> bool:
+        """Bind an explicit pair while retaining history and failure signals."""
+        if view_id not in self._series_manager.get_all_view_ids():
+            self._emit_binding_failure(series_id, "view_not_found")
+            return False
+        if self._series_manager.get_series_info(series_id) is None:
+            self._emit_binding_failure(series_id, "series_not_found")
+            return False
+        success = self._execute_binding(view_id, series_id)
+        if not success:
+            self._emit_binding_failure(series_id, "binding_rejected")
+        return success
+
+    def _emit_binding_failure(self, series_id: str, reason: str) -> None:
+        logger.warning(
+            "[SeriesViewBindingManager] 绑定失败: series_id=%s, reason=%s",
+            series_id,
+            reason,
+        )
+        self.binding_failed.emit(series_id, reason)
     
     def _record_binding_operation(self, operation_type: str, view_id: str, 
                                 series_id: Optional[str], 
@@ -472,7 +555,7 @@ class SeriesViewBindingManager(QObject):
         
         # 不在序列添加时自动分配，让用户手动控制
         # 如果需要自动分配，用户可以点击"自动分配"按钮
-        logger.debug(f"[SeriesViewBindingManager._on_series_added] 跳过自动分配，等待用户手动操作")
+        logger.debug("[SeriesViewBindingManager._on_series_added] 跳过自动分配，等待用户手动操作")
     
     def _on_layout_changed(self, layout: Tuple[int, int]) -> None:
         """处理布局变更事件"""
@@ -481,6 +564,15 @@ class SeriesViewBindingManager(QObject):
         # 布局变更后的绑定已经由 MultiSeriesManager 处理
         # 这里可以添加额外的逻辑，如通知用户等
         pass
+
+    def _on_binding_changed(self, view_id: str, series_id: str) -> None:
+        """Track when the current binding in a pane became active."""
+        import time
+
+        if series_id:
+            self._binding_timestamps[view_id] = time.monotonic()
+        else:
+            self._binding_timestamps.pop(view_id, None)
     
     # 查询方法
     
@@ -511,4 +603,4 @@ class SeriesViewBindingManager(QObject):
                 return view_id
         
         logger.debug("[SeriesViewBindingManager.get_first_bound_view] 没有找到有绑定的视图")
-        return None 
+        return None

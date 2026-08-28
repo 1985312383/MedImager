@@ -9,7 +9,6 @@
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 from medimager.utils.logger import get_logger
 

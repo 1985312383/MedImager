@@ -2,6 +2,7 @@ name = "default"
 line_color = "#00ff00"
 line_width = 2
 anchor_color = "#00ff00"
+selected_color = "#ffd54f"
 anchor_size = 8
 text_color = "#ffffff"
 background_color = "#000080"

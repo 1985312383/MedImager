@@ -1,10 +1,9 @@
-import math
 from abc import abstractmethod
 from medimager.ui.tools.base_tool import BaseTool
 from PySide6.QtWidgets import QGraphicsView
-from PySide6.QtGui import QMouseEvent, QWheelEvent, QPen, QColor
+from PySide6.QtGui import QMouseEvent, QPen, QColor
 
-from PySide6.QtCore import Qt, QPointF, QRectF, QRect
+from PySide6.QtCore import Qt, QPointF, QRectF
 
 from medimager.core.roi import EllipseROI, CircleROI, RectangleROI, BaseROI
 from medimager.core.analysis import calculate_roi_statistics
@@ -65,7 +64,7 @@ class BaseROITool(BaseTool):
             if model and model.has_image():
                 rect = QRectF(self.start_point, self.end_point).normalized()
                 if rect.width() > 1 and rect.height() > 1:
-                    roi = self._create_roi(rect, model.current_slice_index)
+                    roi = self._create_roi(rect, self.current_slice_index())
                     if roi is not None:
                         model.add_roi(roi)
                         self._place_stats_box(roi)
@@ -117,22 +116,8 @@ class BaseROITool(BaseTool):
         font.setPointSize(_get_stats_box_settings()['font_size'])
         stats_text = get_stats_text(stats)
         size_rect = calculate_stats_box_size_rect(stats_text, font)
-        box_width = size_rect.width()
-        box_height = size_rect.height()
-
-        roi_center_scene = QPointF(roi.center[1], roi.center[0])
-        half_x = self._get_roi_half_extent_x(roi)
-
-        initial_x = roi_center_scene.x() + half_x + 10
-        initial_y = roi_center_scene.y() - box_height / 2
-        stats_box_rect = QRect(int(initial_x), int(initial_y), int(box_width), int(box_height))
-
-        view_rect_scene = viewer.mapToScene(viewer.viewport().rect()).boundingRect()
-        if stats_box_rect.right() > view_rect_scene.right():
-            initial_x = roi_center_scene.x() - half_x - 10 - box_width
-            stats_box_rect.moveLeft(int(initial_x))
-
-        viewer.stats_box_positions[roi.id] = stats_box_rect
+        stats_box_rect = viewer.create_stats_box_viewport_rect(roi, size_rect.size())
+        viewer.set_stats_box_viewport_rect(roi.id, stats_box_rect)
 
     # ------------------------------------------------------------------
     # 子类必须实现

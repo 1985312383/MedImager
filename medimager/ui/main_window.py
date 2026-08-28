@@ -7,23 +7,36 @@
 
 import os
 import uuid
+import copy
+import json
+import hashlib
+import tempfile
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Set
+from concurrent.futures import CancelledError
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
-    QButtonGroup, QPushButton, QComboBox, QProgressBar, QToolButton
+    QMainWindow, QWidget, QVBoxLayout, QLabel, QStatusBar, QFileDialog, QMessageBox, QDialog, QToolBar,
+    QPushButton, QProgressBar, QToolButton,
+    QAbstractItemView, QListView, QTreeView, QLineEdit, QTextEdit,
+    QPlainTextEdit, QDockWidget, QInputDialog,
 )
-from PySide6.QtCore import Qt, QDir, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence, QIcon, QActionGroup
+from PySide6.QtCore import Qt, QDir, QEvent, QTimer, Signal
+from PySide6.QtGui import QAction, QKeySequence, QActionGroup
 from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
 from medimager.core.image_data_model import ImageDataModel
-from medimager.core.annotation_persistence import import_annotations, save_annotations
+from medimager.core.annotation_persistence import (
+    import_annotations,
+    export_annotations,
+    save_annotations,
+    AnnotationSeriesMismatchError,
+    InvalidAnnotationError,
+    has_unsaved_annotations,
+)
 from medimager.core.dicom_parser import DicomParser
 from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
@@ -31,28 +44,145 @@ from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
 from medimager.ui.dialogs.custom_wl_dialog import CustomWLDialog
-from medimager.ui.widgets.panel_toggle_strip import PanelToggleStrip
 from medimager.ui.dialogs.settings_dialog import SettingsDialog
+from medimager.ui.shortcut_registry import ShortcutRegistry
 from medimager.utils.logger import get_logger
-from medimager.utils.settings import SettingsManager, get_settings_manager, get_performance_manager
+from medimager.utils.settings import get_settings_manager, get_performance_manager
 from medimager.utils.theme_manager import ThemeManager
 from medimager.ui.tools.default_tool import DefaultTool
 from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
 from medimager.ui.tools.measurement_tool import MeasurementTool
+from medimager.ui.tools.angle_tool import AngleTool
 from medimager.ui.main_toolbar import create_main_toolbar
 from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
 
 
+# Drafts from the same process are not crash-recovery candidates.  Marking
+# every draft with a process-session id keeps a second MainWindow (tests,
+# previews, or an in-process restart) from importing another live window's
+# unsaved work, while a later application process can still recover it.
+_ANNOTATION_DRAFT_SESSION_ID = uuid.uuid4().hex
+
+
+class _DockAwareDicomTagPanel(DicomTagPanel):
+    """Preserve the old panel.show()/setVisible(True) public behavior."""
+
+    dock_visibility_requested = Signal()
+
+    def show(self) -> None:
+        super().show()
+        self.dock_visibility_requested.emit()
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self.dock_visibility_requested.emit()
+
+
 class _SeriesLoadResult:
     """序列加载结果容器"""
-    __slots__ = ('series_id', 'image_model', 'success')
+    __slots__ = (
+        'series_id', 'image_model', 'success', 'error', 'error_key',
+        'error_args', 'metadata',
+    )
 
     def __init__(self, series_id: str):
         self.series_id = series_id
         self.image_model: Optional[ImageDataModel] = None
         self.success = False
+        self.error = ''
+        self.error_key = ''
+        self.error_args: Dict = {}
+        self.metadata: Dict = {}
+
+
+class _FolderScanResult:
+    """后台文件夹扫描结果；仅包含可安全跨线程传递的 Python 数据。"""
+    __slots__ = ('folder_path', 'series', 'candidate_count', 'skipped_count', 'error')
+
+    def __init__(self, folder_path: str):
+        self.folder_path = folder_path
+        self.series: List[Dict] = []
+        self.candidate_count = 0
+        self.skipped_count = 0
+        self.error = ''
+
+
+def _scan_dicom_folder_task(
+    folder_path: str,
+    recursive: bool,
+    include_extensionless: bool,
+    strict_metadata: bool,
+) -> _FolderScanResult:
+    """在工作线程扫描、分组并预读元数据，避免阻塞 GUI。"""
+    result = _FolderScanResult(folder_path)
+    try:
+        folder = Path(folder_path)
+        if not folder.is_dir():
+            raise ValueError(f"目录不存在: {folder_path}")
+        suffixes = {'.dcm', '.dicom', '.ima'}
+        if include_extensionless:
+            suffixes.add('')
+        candidates = folder.rglob('*') if recursive else folder.glob('*')
+        files = [
+            str(path) for path in candidates
+            if path.is_file() and path.suffix.lower() in suffixes
+        ]
+        result.candidate_count = len(files)
+        if not files:
+            return result
+
+        parser = DicomParser()
+        groups = parser._group_files_by_series(files)
+        import pydicom
+
+        required_tags = (
+            'SeriesInstanceUID', 'StudyInstanceUID', 'Modality',
+            'Rows', 'Columns', 'PhotometricInterpretation',
+        )
+        for _group_key, series_files in groups.items():
+            if not series_files:
+                continue
+            try:
+                first = pydicom.dcmread(series_files[0], stop_before_pixels=True, force=True)
+                missing = [tag for tag in required_tags if not getattr(first, tag, None)]
+                if strict_metadata and missing:
+                    result.skipped_count += 1
+                    logger.warning(
+                        "[_scan_dicom_folder_task] 严格模式跳过缺少 %s 的序列: %s",
+                        missing, series_files[0],
+                    )
+                    continue
+                if len(series_files) == 1:
+                    try:
+                        slice_count = max(1, int(getattr(first, 'NumberOfFrames', 1) or 1))
+                    except (TypeError, ValueError):
+                        slice_count = 1
+                else:
+                    slice_count = len(series_files)
+                result.series.append({
+                    'patient_name': str(getattr(first, 'PatientName', 'Unknown Patient')),
+                    'patient_id': str(getattr(first, 'PatientID', '') or ''),
+                    'study_description': str(getattr(first, 'StudyDescription', '') or ''),
+                    'series_description': str(getattr(first, 'SeriesDescription', '') or ''),
+                    'modality': str(getattr(first, 'Modality', '') or ''),
+                    'acquisition_date': str(getattr(first, 'AcquisitionDate', '') or ''),
+                    'acquisition_time': str(getattr(first, 'AcquisitionTime', '') or ''),
+                    'slice_count': slice_count,
+                    'series_number': str(getattr(first, 'SeriesNumber', 0)),
+                    'study_instance_uid': str(getattr(first, 'StudyInstanceUID', '') or ''),
+                    'series_instance_uid': str(getattr(first, 'SeriesInstanceUID', '') or ''),
+                    'file_paths': list(series_files),
+                })
+            except Exception as error:
+                result.skipped_count += 1
+                logger.warning("[_scan_dicom_folder_task] 预读序列失败: %s", error)
+    except Exception as error:
+        result.error = str(error)
+        logger.error("[_scan_dicom_folder_task] 文件夹扫描失败: %s", error, exc_info=True)
+    return result
 
 
 def _load_series_task(file_paths: List[str], series_id: str) -> _SeriesLoadResult:
@@ -62,13 +192,132 @@ def _load_series_task(file_paths: List[str], series_id: str) -> _SeriesLoadResul
         image_model = ImageDataModel()
         success = image_model.load_dicom_series(file_paths)
         if success:
+            # QObject 必须在其所属线程内迁移。加载结束后、交给 GUI 前迁回主线程，
+            # 避免后续信号与销毁发生在线程池线程。
+            app = QApplication.instance()
+            if app is not None and image_model.thread() is not app.thread():
+                if image_model.moveToThread(app.thread()) is False:
+                    result.error_key = 'mainwindow.model_thread_transfer_failed'
+                    return result
             result.image_model = image_model
             result.success = True
             logger.info(f"[_load_series_task] 序列加载成功: {series_id}")
         else:
+            result.error_key = 'mainwindow.dicom_decode_failed'
+            result.error = str(getattr(getattr(image_model, 'parser', None), 'last_error', '') or '')
             logger.error(f"[_load_series_task] 序列加载失败: {series_id}")
     except Exception as e:
+        result.error = str(e)
+        result.error_key = 'mainwindow.background_load_failed'
         logger.error(f"[_load_series_task] 序列加载异常: {e}", exc_info=True)
+    return result
+
+
+def _load_single_image_task(
+    file_path: str,
+    series_id: str,
+    strict_metadata: bool = False,
+) -> _SeriesLoadResult:
+    """在工作线程读取单个 DICOM、NumPy 或常规图像文件。"""
+    result = _SeriesLoadResult(series_id)
+    image_model = ImageDataModel()
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    is_dicom = suffix in {'.dcm', '.dicom', '.ima'}
+    prefetched_dataset = None
+    if not is_dicom and suffix not in {'.npy', '.png', '.jpg', '.jpeg', '.bmp'}:
+        try:
+            import pydicom
+
+            prefetched_dataset = pydicom.dcmread(
+                file_path,
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=[
+                    'SOPClassUID', 'Rows', 'Columns', 'Modality',
+                    'SeriesInstanceUID', 'StudyInstanceUID',
+                    'PhotometricInterpretation',
+                ],
+            )
+            is_dicom = bool(
+                getattr(prefetched_dataset, 'Rows', None)
+                and getattr(prefetched_dataset, 'Columns', None)
+                and (
+                    getattr(prefetched_dataset, 'SOPClassUID', None)
+                    or getattr(prefetched_dataset, 'Modality', None)
+                )
+            )
+        except Exception:
+            prefetched_dataset = None
+    try:
+        dataset = prefetched_dataset
+        if is_dicom:
+            if strict_metadata:
+                import pydicom
+
+                dataset = dataset or pydicom.dcmread(
+                    file_path, stop_before_pixels=True, force=True
+                )
+                required_tags = (
+                    'SeriesInstanceUID', 'StudyInstanceUID', 'Modality',
+                    'Rows', 'Columns', 'PhotometricInterpretation',
+                )
+                missing = [tag for tag in required_tags if not getattr(dataset, tag, None)]
+                if missing:
+                    result.error_key = 'mainwindow.strict_metadata_missing_tags'
+                    result.error_args = {'tags': ', '.join(missing)}
+                    return result
+            success = image_model.load_dicom_series([file_path])
+            if success:
+                dataset = image_model.get_dicom_file(0) or dataset
+        elif suffix == '.npy':
+            data = np.load(file_path, allow_pickle=False)
+            success = image_model.load_single_image(data)
+        else:
+            from PIL import Image
+
+            with Image.open(file_path) as image:
+                if image.mode not in ('L', 'I', 'F', 'RGB', 'RGBA'):
+                    image = image.convert('RGB')
+                data = np.array(image)
+            success = image_model.load_single_image(data)
+
+        if not success:
+            result.error_key = (
+                'mainwindow.dicom_decode_failed'
+                if is_dicom else 'mainwindow.image_decode_failed'
+            )
+            result.error = str(getattr(getattr(image_model, 'parser', None), 'last_error', '') or '')
+            return result
+
+        app = QApplication.instance()
+        if app is not None and image_model.thread() is not app.thread():
+            if image_model.moveToThread(app.thread()) is False:
+                result.error_key = 'mainwindow.model_thread_transfer_failed'
+                return result
+
+        if dataset is not None:
+            result.metadata = {
+                'patient_name': str(getattr(dataset, 'PatientName', '') or ''),
+                'patient_id': str(getattr(dataset, 'PatientID', '') or ''),
+                'study_description': str(getattr(dataset, 'StudyDescription', '') or ''),
+                'series_description': str(getattr(dataset, 'SeriesDescription', '') or path.name),
+                'modality': str(getattr(dataset, 'Modality', '') or 'DICOM'),
+                'acquisition_date': str(getattr(dataset, 'AcquisitionDate', '') or ''),
+                'acquisition_time': str(getattr(dataset, 'AcquisitionTime', '') or ''),
+                'series_number': str(getattr(dataset, 'SeriesNumber', '') or ''),
+                'study_instance_uid': str(getattr(dataset, 'StudyInstanceUID', '') or ''),
+                'series_instance_uid': str(getattr(dataset, 'SeriesInstanceUID', '') or ''),
+                'slice_count': image_model.get_slice_count(),
+            }
+        else:
+            result.metadata = {'slice_count': image_model.get_slice_count()}
+        result.image_model = image_model
+        result.success = True
+    except Exception as error:
+        result.error = str(error)
+        result.error_key = 'mainwindow.background_load_failed'
+        logger.error("[_load_single_image_task] 单文件加载异常: %s", error, exc_info=True)
     return result
 
 
@@ -80,6 +329,7 @@ class MainWindow(QMainWindow):
 
     # 线程安全信号：从工作线程通知主线程序列加载完成
     _series_load_done = Signal(str, object)  # (series_id, future)
+    _folder_scan_done = Signal(str, object)  # (folder_path, future)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """初始化主窗口"""
@@ -88,6 +338,7 @@ class MainWindow(QMainWindow):
 
         # 连接线程安全的序列加载完成信号
         self._series_load_done.connect(self._on_series_loading_finished)
+        self._folder_scan_done.connect(self._on_folder_scan_finished)
 
         # 布局切换守卫标志（必须在信号连接之前初始化）
         self._setting_layout = False
@@ -96,11 +347,52 @@ class MainWindow(QMainWindow):
         self.settings_manager = get_settings_manager()
         self.theme_manager = ThemeManager(self.settings_manager, self)
 
+        # UI 创建和首次状态刷新会访问这些字段，必须先于工具栏初始化。
+        self._loading_futures: Dict[str, object] = {}
+        self._folder_scan_futures: Dict[str, object] = {}
+        self._loading_errors: List[str] = []
+        self._load_requests: Dict[str, Dict] = {}
+        self._failed_load_requests: Dict[str, Dict] = {}
+        self._failed_folder_requests: Dict[str, Dict] = {}
+        self._last_loading_errors: List[str] = []
+        self._cancelled_load_ids: Set[str] = set()
+        self._cancelled_folder_scans: Set[str] = set()
+        self._load_batch_counts = {
+            'submitted': 0, 'succeeded': 0, 'failed': 0, 'cancelled': 0
+        }
+        self._closing = False
+        self._cine_timer = QTimer(self)
+        self._cine_timer.timeout.connect(self._cine_advance)
+        self._cine_playing = False
+        self._cine_fps = self._int_setting('cine.default_fps', 10, 1, 60)
+        self._cine_configured_fps = self._cine_fps
+        self._cine_source_view_id: Optional[str] = None
+        self._cine_source_series_id: Optional[str] = None
+        self._cine_source_model: Optional[ImageDataModel] = None
+        self._cine_metadata_timing = False
+
         # 初始化核心组件
         self._init_core_components()
+
+        # 每个序列独立维护标注快照历史；只记录内容变化，不记录选择状态。
+        self._annotation_histories: Dict[str, Dict] = {}
+        self._annotation_sidecar_paths: Dict[str, Path] = {}
+        self._annotation_draft_timers: Dict[str, QTimer] = {}
+        self._default_presentation_by_series: Dict[
+            str, Tuple[float, float, bool, Optional[int]]
+        ] = {}
+        self._dicom_tag_update_timer = QTimer(self)
+        self._dicom_tag_update_timer.setSingleShot(True)
+        self._dicom_tag_update_timer.timeout.connect(
+            self._flush_pending_dicom_tags
+        )
+        self._image_required_actions: List[QAction] = []
+        self._image_required_widgets: List[QWidget] = []
         
         # 初始化UI
         self._init_ui()
+        self.shortcut_registry = ShortcutRegistry(self)
+        self._init_shortcuts()
         
         # 连接信号和槽（在UI创建之后）
         self._connect_signals()
@@ -118,15 +410,6 @@ class MainWindow(QMainWindow):
         logger.info("[MainWindow.__init__] 准备进行初始工具传播")
         self._propagate_tool_to_viewers()
         logger.info("[MainWindow.__init__] 初始工具传播完成")
-
-        # 序列加载状态（future 对象由线程池管理）
-        self._loading_futures: Dict[str, object] = {}
-
-        # Cine 播放状态
-        self._cine_timer = QTimer(self)
-        self._cine_timer.timeout.connect(self._cine_advance)
-        self._cine_playing = False
-        self._cine_fps = self._int_setting('cine.default_fps', 10, 1, 60)
 
         logger.info("[MainWindow.__init__] 主窗口初始化完成")
     
@@ -158,9 +441,21 @@ class MainWindow(QMainWindow):
             "none": SyncMode.NONE,
             "basic": SyncMode.BASIC,
             "advanced": SyncMode.ADVANCED,
-            "full": SyncMode.ADVANCED | SyncMode.CROSS_REFERENCE,
+            "full": SyncMode.FULL,
         }
         return mapping.get(str(value), SyncMode.BASIC)
+
+    def _sync_group_from_setting(self):
+        from medimager.core.sync_manager import SyncGroup
+
+        value = str(self.settings_manager.get_setting("multiview.sync_group", "same_study"))
+        mapping = {
+            "same_study": SyncGroup.SAME_STUDY,
+            "same_patient": SyncGroup.SAME_PATIENT,
+            "same_modality": SyncGroup.SAME_MODALITY,
+            "all_views": SyncGroup.ALL_VIEWS,
+        }
+        return mapping.get(value, SyncGroup.SAME_STUDY)
 
     def _int_setting(self, key: str, default: int, minimum: int, maximum: int) -> int:
         try:
@@ -188,9 +483,13 @@ class MainWindow(QMainWindow):
         
         # 按设置启用默认同步模式
         self.sync_manager.set_sync_mode(self._sync_mode_from_setting())
+        self.sync_manager.set_sync_group(self._sync_group_from_setting())
         
         # 序列视图绑定管理器
         self.binding_manager = SeriesViewBindingManager(self.series_manager, self)
+        self.binding_manager.set_target_view_selector(
+            self._select_binding_target_view
+        )
         
         # 设置默认绑定策略
         self.binding_manager.set_binding_strategy(BindingStrategy.AUTO_ASSIGN)
@@ -205,55 +504,68 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._init_ui] 初始化主窗口UI")
         
         self.setGeometry(100, 100, 1800, 1000)
-        self.setWindowTitle(t("mainwindow.medimager_pro_multi_sequence_dicom_viewer_and_analysis"))
+        self.setWindowTitle(
+            t("mainwindow.medimager_pro_multi_sequence_dicom_viewer_and_analysis")
+            + " [*]"
+        )
         
-        # 中央组件
+        # 中央组件只承载影像网格；侧栏使用原生 Dock，可调整大小、浮动，
+        # 并由 QMainWindow.saveState/restoreState 自动持久化。
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
         
-        # 水平容器：序列面板 + 左切换条 + 视图网格 + 右切换条 + 信息面板
-        content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        main_layout.addLayout(content_layout)
-
         # 左侧序列面板
         self.series_panel = SeriesPanel(
             self.series_manager,
             self.binding_manager,
             self
         )
-        self.series_panel.setMinimumWidth(300)
-        self.series_panel.setMaximumWidth(500)
-        content_layout.addWidget(self.series_panel)
-
-        # 左侧切换条（序列面板默认可见）
-        self.left_toggle_strip = PanelToggleStrip(
-            side='left', tooltip=t("mainwindow.toggle_series_panel"), parent=self)
-        self.left_toggle_strip.toggled.connect(self._on_left_toggle_strip_clicked)
-        content_layout.addWidget(self.left_toggle_strip)
+        self.series_panel.setMinimumWidth(240)
+        self.series_panel.set_series_removal_handler(self._request_remove_series)
+        self.series_dock = QDockWidget(t("mainwindow.show_hide_sequence_panel"), self)
+        self.series_dock.setObjectName("SeriesDock")
+        self.series_dock.setAllowedAreas(
+            Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+        )
+        self.series_dock.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.series_dock.setWidget(self.series_panel)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.series_dock)
 
         # 中央多视图网格
         self.multi_viewer_grid = MultiViewerGrid(self.series_manager, self)
-        content_layout.addWidget(self.multi_viewer_grid, 1)
-
-        # 右侧切换条（信息面板默认隐藏）
-        self.panel_toggle_strip = PanelToggleStrip(
-            side='right', tooltip=t("mainwindow.toggle_info_panel_f2"), parent=self)
-        self.panel_toggle_strip.toggled.connect(self._on_toggle_strip_clicked)
-        content_layout.addWidget(self.panel_toggle_strip)
+        main_layout.addWidget(self.multi_viewer_grid, 1)
 
         # 右侧信息面板
-        self.dicom_tag_panel = DicomTagPanel()
-        self.dicom_tag_panel.setMinimumWidth(250)
-        self.dicom_tag_panel.setMaximumWidth(400)
-        content_layout.addWidget(self.dicom_tag_panel)
-
-        # 默认隐藏右侧面板
+        self.dicom_tag_panel = _DockAwareDicomTagPanel()
+        self.dicom_tag_panel.setMinimumWidth(220)
+        self.dicom_tag_panel.installEventFilter(self)
+        self.info_dock = QDockWidget(t("mainwindow.show_hide_information_panel"), self)
+        self.info_dock.setObjectName("DicomInfoDock")
+        self.info_dock.setAllowedAreas(
+            Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+        )
+        self.info_dock.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        self.info_dock.setWidget(self.dicom_tag_panel)
+        self.dicom_tag_panel.dock_visibility_requested.connect(
+            self.info_dock.show
+        )
+        self.addDockWidget(Qt.RightDockWidgetArea, self.info_dock)
+        # Keep the child explicitly hidden whenever its dock is closed.  This
+        # also lets legacy callers that invoke ``dicom_tag_panel.show()``
+        # request the information dock through eventFilter().
         self.dicom_tag_panel.hide()
+        self.info_dock.hide()
         
         # 初始化菜单、工具栏和状态栏
         self._init_menus()
@@ -275,11 +587,13 @@ class MainWindow(QMainWindow):
         # 核心组件信号
         self.series_manager.series_added.connect(self._on_series_added)
         self.series_manager.series_loaded.connect(self._on_series_loaded)
+        self.series_manager.series_removed.connect(self._on_series_removed)
         self.series_manager.binding_changed.connect(self._on_binding_changed)
         self.series_manager.layout_changed.connect(self._on_layout_changed)
         
         # 绑定管理器信号
         self.binding_manager.auto_assignment_completed.connect(self._on_auto_assignment_completed)
+        self.binding_manager.binding_failed.connect(self._on_binding_failed)
         
         # 序列面板信号
         self.series_panel.series_selected.connect(self._on_series_selected)
@@ -299,6 +613,12 @@ class MainWindow(QMainWindow):
         
         # 主题管理器信号
         self.theme_manager.theme_changed.connect(self._on_theme_changed)
+        self.series_dock.visibilityChanged.connect(
+            self._on_series_dock_visibility_changed
+        )
+        self.info_dock.visibilityChanged.connect(
+            self._on_info_dock_visibility_changed
+        )
         
         # 连接已加载序列的切片变化信号（合并到现有方法中）
         
@@ -357,21 +677,21 @@ class MainWindow(QMainWindow):
         
         # 打开多个DICOM文件夹
         open_multiple_folders_action = QAction(t("mainwindow.open_multiple_dicom_folders_m"), self)
-        open_multiple_folders_action.setShortcut("Ctrl+Shift+O")
+        open_multiple_folders_action.setShortcut("Ctrl+Shift+D")
         open_multiple_folders_action.setStatusTip(t("mainwindow.open_multiple_folders_containing_dicom_sequences_at_the"))
         open_multiple_folders_action.triggered.connect(self._open_multiple_dicom_folders)
         file_menu.addAction(open_multiple_folders_action)
         
         # 打开DICOM文件夹
         open_folder_action = QAction(t("mainwindow.open_dicom_folder_d"), self)
-        open_folder_action.setShortcut(QKeySequence.Open)
+        open_folder_action.setShortcut("Ctrl+D")
         open_folder_action.setStatusTip(t("mainwindow.open_the_folder_containing_the_dicom_sequence"))
         open_folder_action.triggered.connect(self._open_dicom_folder)
         file_menu.addAction(open_folder_action)
         
         # 打开图像文件
         open_image_action = QAction(t("mainwindow.open_image_file_i"), self)
-        open_image_action.setShortcut("Ctrl+O")
+        open_image_action.setShortcut(QKeySequence.Open)
         open_image_action.setStatusTip(t("mainwindow.open_a_single_image_file"))
         open_image_action.triggered.connect(self._open_image_file)
         file_menu.addAction(open_image_action)
@@ -388,36 +708,51 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
 
         # 导出当前视图
-        export_action = QAction(t("mainwindow.export_current_view_e"), self)
-        export_action.setShortcut("Ctrl+E")
-        export_action.setStatusTip(t("mainwindow.export_current_view_as_image"))
-        export_action.triggered.connect(self._export_current_view)
-        file_menu.addAction(export_action)
+        self.export_view_action = QAction(t("mainwindow.export_current_view_e"), self)
+        self.export_view_action.setShortcut("Ctrl+E")
+        self.export_view_action.setStatusTip(t("mainwindow.export_current_view_as_image"))
+        self.export_view_action.triggered.connect(self._export_current_view)
+        file_menu.addAction(self.export_view_action)
 
-        export_slice_action = QAction(t("mainwindow.export_current_slice_image_s"), self)
-        export_slice_action.setShortcut("Ctrl+Shift+E")
-        export_slice_action.setStatusTip(t("mainwindow.export_current_slice_image_without_chrome"))
-        export_slice_action.triggered.connect(self._export_current_slice_image)
-        file_menu.addAction(export_slice_action)
+        self.export_slice_action = QAction(t("mainwindow.export_current_slice_image_s"), self)
+        self.export_slice_action.setShortcut("Ctrl+Shift+E")
+        self.export_slice_action.setStatusTip(t("mainwindow.export_current_slice_image_without_chrome"))
+        self.export_slice_action.triggered.connect(self._export_current_slice_image)
+        file_menu.addAction(self.export_slice_action)
 
         file_menu.addSeparator()
 
-        import_annotations_action = QAction(t("mainwindow.import_annotations_a"), self)
-        import_annotations_action.setStatusTip(t("mainwindow.import_roi_measurements_from_json"))
-        import_annotations_action.triggered.connect(self._import_annotations)
-        file_menu.addAction(import_annotations_action)
+        self.import_annotations_action = QAction(t("mainwindow.import_annotations_a"), self)
+        self.import_annotations_action.setStatusTip(t("mainwindow.import_roi_measurements_from_json"))
+        self.import_annotations_action.triggered.connect(self._import_annotations)
+        file_menu.addAction(self.import_annotations_action)
 
-        export_annotations_action = QAction(t("mainwindow.export_annotations_n"), self)
-        export_annotations_action.setStatusTip(t("mainwindow.export_roi_measurements_to_json"))
-        export_annotations_action.triggered.connect(self._export_annotations)
-        file_menu.addAction(export_annotations_action)
+        self.save_annotations_action = QAction(t("mainwindow.save_annotations"), self)
+        self.save_annotations_action.setShortcut(QKeySequence.Save)
+        self.save_annotations_action.triggered.connect(self._save_active_annotations)
+        file_menu.addAction(self.save_annotations_action)
+
+        self.save_annotations_as_action = QAction(t("mainwindow.save_annotations_as"), self)
+        self.save_annotations_as_action.setShortcut(QKeySequence.SaveAs)
+        self.save_annotations_as_action.triggered.connect(self._save_active_annotations_as)
+        file_menu.addAction(self.save_annotations_as_action)
+
+        self.save_all_annotations_action = QAction(t("mainwindow.save_all_annotations"), self)
+        self.save_all_annotations_action.setShortcut("Ctrl+Alt+S")
+        self.save_all_annotations_action.triggered.connect(self._save_all_annotations)
+        file_menu.addAction(self.save_all_annotations_action)
+
+        self.export_annotations_action = QAction(t("mainwindow.export_annotations_n"), self)
+        self.export_annotations_action.setStatusTip(t("mainwindow.export_roi_measurements_to_json"))
+        self.export_annotations_action.triggered.connect(self._export_annotations)
+        file_menu.addAction(self.export_annotations_action)
 
         # 复制视图到剪贴板
-        copy_view_action = QAction(t("mainwindow.copy_view_to_clipboard_c"), self)
-        copy_view_action.setShortcut("Ctrl+Shift+C")
-        copy_view_action.setStatusTip(t("mainwindow.copy_current_view_to_clipboard"))
-        copy_view_action.triggered.connect(self._copy_view_to_clipboard)
-        file_menu.addAction(copy_view_action)
+        self.copy_view_action = QAction(t("mainwindow.copy_view_to_clipboard_c"), self)
+        self.copy_view_action.setShortcut("Ctrl+Shift+C")
+        self.copy_view_action.setStatusTip(t("mainwindow.copy_current_view_to_clipboard"))
+        self.copy_view_action.triggered.connect(self._copy_view_to_clipboard)
+        file_menu.addAction(self.copy_view_action)
 
         file_menu.addSeparator()
 
@@ -427,6 +762,30 @@ class MainWindow(QMainWindow):
         exit_action.setStatusTip(t("mainwindow.exit_the_application"))
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        # 编辑菜单：标注内容按活动序列分别撤销/重做。
+        edit_menu = menubar.addMenu(t("mainwindow.edit_e"))
+        self.undo_annotation_action = QAction(t("mainwindow.undo_annotation_change"), self)
+        self.undo_annotation_action.setShortcut(QKeySequence.Undo)
+        self.undo_annotation_action.triggered.connect(self._undo_annotation_change)
+        self.undo_annotation_action.setEnabled(False)
+        edit_menu.addAction(self.undo_annotation_action)
+
+        self.redo_annotation_action = QAction(t("mainwindow.redo_annotation_change"), self)
+        self.redo_annotation_action.setShortcut(QKeySequence.Redo)
+        self.redo_annotation_action.triggered.connect(self._redo_annotation_change)
+        self.redo_annotation_action.setEnabled(False)
+        edit_menu.addAction(self.redo_annotation_action)
+
+        self._image_required_actions.extend([
+            self.export_view_action,
+            self.export_slice_action,
+            self.import_annotations_action,
+            self.save_annotations_action,
+            self.save_annotations_as_action,
+            self.export_annotations_action,
+            self.copy_view_action,
+        ])
         
         # 查看菜单
         view_menu = menubar.addMenu(t("mainwindow.view"))
@@ -472,15 +831,14 @@ class MainWindow(QMainWindow):
         series_menu.addSeparator()
         
         # 自动分配序列
-        auto_assign_action = QAction(t("mainwindow.automatically_assign_all_sequences"), self)
-        auto_assign_action.setShortcut("Ctrl+A")
-        auto_assign_action.triggered.connect(self._auto_assign_all_series)
-        series_menu.addAction(auto_assign_action)
+        self.auto_assign_action = QAction(t("mainwindow.automatically_assign_all_sequences"), self)
+        self.auto_assign_action.triggered.connect(self._auto_assign_all_series)
+        series_menu.addAction(self.auto_assign_action)
         
         # 清除所有绑定
-        clear_bindings_action = QAction(t("mainwindow.clear_all_bindings"), self)
-        clear_bindings_action.triggered.connect(self._clear_all_bindings)
-        series_menu.addAction(clear_bindings_action)
+        self.clear_bindings_action = QAction(t("mainwindow.clear_all_bindings"), self)
+        self.clear_bindings_action.triggered.connect(self._clear_all_bindings)
+        series_menu.addAction(self.clear_bindings_action)
         
         # 窗位菜单
         wl_menu = menubar.addMenu(t("mainwindow.window_position_w"))
@@ -499,7 +857,9 @@ class MainWindow(QMainWindow):
             action = QAction(name, self)
             action.setStatusTip(t("mainwindow.set_window_level_for_value").replace("%1", name).replace("%2", str(width)).replace("%3", str(level)))
             action.triggered.connect(
-                lambda checked=False, w=width, l=level: self._set_window_level_preset(w, l)
+                lambda checked=False, width=width, level=level: (
+                    self._set_window_level_preset(width, level)
+                )
             )
             wl_menu.addAction(action)
         
@@ -536,9 +896,10 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._init_toolbars] 初始化主窗口工具栏")
         
         # 使用统一的主工具栏创建函数（包含所有工具和按钮）
-        from medimager.ui.main_toolbar import create_main_toolbar
         main_toolbar = create_main_toolbar(self)
+        self.main_toolbar = main_toolbar
         self.addToolBar(main_toolbar)
+        self._connect_viewer_toolbar(main_toolbar)
         
         # 获取同步按钮的引用（工具栏创建时已添加）
         for widget in main_toolbar.children():
@@ -547,6 +908,116 @@ class MainWindow(QMainWindow):
                 break
         
         logger.debug("[MainWindow._init_toolbars] 主窗口工具栏初始化完成")
+
+    def _connect_viewer_toolbar(self, toolbar) -> None:
+        """Connect the optional richer toolbar API without breaking older bars."""
+        connections = (
+            ('interaction_mode_requested', self._on_viewer_interaction_mode_requested),
+            ('viewer_command_requested', self._on_viewer_command_requested),
+            ('voi_option_requested', self._on_toolbar_voi_option_requested),
+            ('voi_menu_about_to_show', self._refresh_toolbar_dicom_voi_options),
+        )
+        for signal_name, handler in connections:
+            signal = getattr(toolbar, signal_name, None)
+            connect = getattr(signal, 'connect', None)
+            if callable(connect):
+                connect(handler)
+
+    def _on_viewer_interaction_mode_requested(self, mode: str) -> None:
+        mode = str(mode)
+        if mode not in {'default', 'pan', 'zoom', 'window_level'}:
+            return
+        if (
+            self._current_tool == 'default'
+            and getattr(self, '_default_interaction_mode', 'default') == mode
+        ):
+            return
+        self._on_tool_selected('default', interaction_mode=mode)
+
+    def _on_viewer_command_requested(self, command: str) -> None:
+        operations = {
+            'fit': 'fit_to_window',
+            'actual_size': 'actual_size',
+            'reset_view': 'reset_view',
+        }
+        viewer = self._active_viewer()
+        operation = getattr(viewer, operations.get(str(command), ''), None)
+        if callable(operation):
+            operation()
+
+    def _refresh_toolbar_dicom_voi_options(self) -> None:
+        toolbar = getattr(self, 'main_toolbar', None)
+        setter = getattr(toolbar, 'set_dicom_voi_options', None)
+        if not callable(setter):
+            return
+        model = self._get_active_image_model()
+        viewer = self._active_viewer()
+        getter = getattr(model, 'get_dicom_voi_options', None) if model else None
+        if not callable(getter):
+            setter([], active_index=None)
+            return
+        slice_index = self._active_view_slice_index()
+        try:
+            options = list(getter(slice_index) or [])
+        except Exception:
+            logger.exception('[MainWindow] 读取 DICOM VOI 选项失败')
+            options = []
+        active_index = None
+        state = getattr(viewer, 'presentation_state', None)
+        if state is not None:
+            for index, option in enumerate(options):
+                if not isinstance(option, dict):
+                    continue
+                if (
+                    option.get('kind') == 'lut'
+                    and state.use_dicom_voi_lut
+                    and int(option.get('index', -1)) == state.voi_lut_index
+                ):
+                    active_index = index
+                    break
+                if option.get('kind') == 'window' and not state.use_dicom_voi_lut:
+                    try:
+                        if (
+                            abs(float(option['width']) - state.window_width) < 1e-6
+                            and abs(float(option['center']) - state.window_level) < 1e-6
+                        ):
+                            active_index = index
+                            break
+                    except (KeyError, TypeError, ValueError):
+                        pass
+        setter(options, active_index=active_index)
+
+    def _on_toolbar_voi_option_requested(self, option) -> None:
+        """Apply a validated DICOM VOI choice to the active pane only."""
+        if not isinstance(option, dict):
+            return
+        model = self._get_active_image_model()
+        viewer = self._active_viewer()
+        getter = getattr(model, "get_dicom_voi_options", None) if model else None
+        if viewer is None or not callable(getter):
+            return
+        try:
+            slice_index = self._active_view_slice_index()
+            candidates = list(getter(slice_index) or [])
+            selected = next(
+                (candidate for candidate in candidates if candidate == option),
+                None,
+            )
+            if selected is None:
+                return
+            if selected.get("kind") == "window":
+                setter = getattr(viewer, "set_view_window", None)
+                if callable(setter):
+                    setter(float(selected["width"]), float(selected["center"]))
+            elif selected.get("kind") == "lut":
+                setter = getattr(viewer, "set_view_voi_lut", None)
+                if callable(setter):
+                    setter(True, int(selected.get("index", 0)))
+            else:
+                return
+            self._refresh_toolbar_dicom_voi_options()
+        except Exception:
+            logger.exception("[MainWindow] 激活 DICOM VOI 选项失败: %r", option)
     
     def _init_default_tool(self) -> None:
         """初始化默认工具"""
@@ -555,12 +1026,16 @@ class MainWindow(QMainWindow):
         self.current_tool = DefaultTool(None)  # 稍后会传播到各个视图
         logger.debug("[MainWindow._init_default_tool] 默认工具初始化完成")
     
-    def _on_tool_selected(self, tool_name: str) -> None:
+    def _on_tool_selected(
+        self, tool_name: str, *, interaction_mode: Optional[str] = None
+    ) -> None:
         """处理工具选择事件"""
         logger.debug(f"[MainWindow._on_tool_selected] 工具选择: {tool_name}")
         
         # 保存当前工具状态
         self._current_tool = tool_name
+        if tool_name == 'default':
+            self._default_interaction_mode = interaction_mode or 'default'
         
         # 创建对应的工具实例
         self.current_tool = self._create_tool_instance(tool_name)
@@ -599,7 +1074,6 @@ class MainWindow(QMainWindow):
     def _create_tool_instance(self, tool_name: str):
         """根据工具名称创建工具实例"""
         from medimager.ui.tools.default_tool import DefaultTool
-        from medimager.ui.tools.roi_tool import EllipseROITool, RectangleROITool, CircleROITool
         from medimager.ui.tools.measurement_tool import MeasurementTool
         from medimager.ui.tools.angle_tool import AngleTool
 
@@ -613,6 +1087,12 @@ class MainWindow(QMainWindow):
         }
         
         tool_class = tool_map.get(tool_name, DefaultTool)
+        if tool_class is DefaultTool:
+            return tool_class(
+                None, getattr(self, '_default_interaction_mode', 'default')
+            )
+        if tool_class in (MeasurementTool, AngleTool):
+            return tool_class(None, creation_only=True)
         return tool_class(None)  # 临时创建，稍后会为每个viewer创建副本
     
     def _create_tool_copy(self, image_viewer) -> Optional:
@@ -620,6 +1100,13 @@ class MainWindow(QMainWindow):
         try:
             if self.current_tool:
                 tool_class = type(self.current_tool)
+                if tool_class is DefaultTool:
+                    return tool_class(
+                        image_viewer,
+                        getattr(self.current_tool, 'interaction_mode', 'default'),
+                    )
+                if tool_class in (MeasurementTool, AngleTool):
+                    return tool_class(image_viewer, creation_only=True)
                 return tool_class(image_viewer)
             return None
         except Exception as e:
@@ -659,16 +1146,128 @@ class MainWindow(QMainWindow):
         # 活动视图标签
         self.active_view_label = QLabel(t("mainwindow.event_view"))
         self.status_bar.addWidget(self.active_view_label)
+
+        self.non_diagnostic_label = QLabel(
+            t('mainwindow.non_diagnostic_notice')
+        )
+        self.non_diagnostic_label.setToolTip(
+            t('mainwindow.non_diagnostic_notice_tooltip')
+        )
+        self.status_bar.addPermanentWidget(self.non_diagnostic_label)
         
         # 加载进度条
         self.loading_progress = QProgressBar()
         self.loading_progress.setVisible(False)
         self.status_bar.addPermanentWidget(self.loading_progress)
+
+        self.loading_cancel_button = QPushButton(t('mainwindow.cancel_loading'))
+        self.loading_cancel_button.clicked.connect(self._cancel_pending_loads)
+        self.loading_cancel_button.hide()
+        self.status_bar.addPermanentWidget(self.loading_cancel_button)
+
+        self.loading_retry_button = QPushButton(t('mainwindow.retry_failed_loads'))
+        self.loading_retry_button.clicked.connect(self._retry_failed_loads)
+        self.loading_retry_button.hide()
+        self.status_bar.addPermanentWidget(self.loading_retry_button)
+
+        self.loading_details_button = QPushButton(t('mainwindow.loading_details'))
+        self.loading_details_button.clicked.connect(self._show_loading_details)
+        self.loading_details_button.hide()
+        self.status_bar.addPermanentWidget(self.loading_details_button)
+
+        self.empty_open_folder_button = QPushButton(
+            t('mainwindow.open_dicom_folder_d')
+        )
+        self.empty_open_folder_button.clicked.connect(self._open_dicom_folder)
+        self.status_bar.addPermanentWidget(self.empty_open_folder_button)
         
         # 准备状态
         self.status_bar.showMessage(t("mainwindow.ready"))
         
         logger.debug("[MainWindow._init_statusbar] 主窗口状态栏初始化完成")
+
+    def _init_shortcuts(self) -> None:
+        """Register focus-safe viewport shortcuts in one discoverable place."""
+        registry = self.shortcut_registry
+        registry.register('slice.previous', 'PgUp', t('shortcut.previous_slice'),
+                          lambda: self._step_active_slice(-1))
+        registry.register('slice.next', 'PgDown', t('shortcut.next_slice'),
+                          lambda: self._step_active_slice(1))
+        registry.register('slice.first', 'Home', t('shortcut.first_slice'),
+                          lambda: self._set_active_slice_boundary(first=True))
+        registry.register('slice.last', 'End', t('shortcut.last_slice'),
+                          lambda: self._set_active_slice_boundary(first=False))
+        registry.register('cine.toggle', 'Space', t('shortcut.cine_toggle'),
+                          self._cine_toggle_play)
+        registry.register('view.fit', 'F', t('shortcut.fit_to_window'),
+                          self._fit_active_view)
+        registry.register('view.actual_size', '1', t('shortcut.actual_size'),
+                          self._actual_size_active_view)
+        registry.register('interaction.cancel', 'Esc', t('shortcut.cancel_interaction'),
+                          self._cancel_active_interaction)
+        if hasattr(self, '_cine_play_btn'):
+            registry.apply_tooltip(
+                self._cine_play_btn, 'cine.toggle',
+                t('mainwindow.cine_play_pause')
+            )
+
+    def _active_viewer(self):
+        frame = self.multi_viewer_grid.get_active_view_frame()
+        return getattr(frame, 'image_viewer', None) if frame else None
+
+    def _active_view_slice_index(self) -> int:
+        viewer = self._active_viewer()
+        if viewer is not None:
+            accessor = getattr(viewer, 'current_slice_index', None)
+            if callable(accessor):
+                try:
+                    return int(accessor())
+                except (TypeError, ValueError):
+                    pass
+            state = getattr(viewer, 'presentation_state', None)
+            if state is not None and hasattr(state, 'slice_index'):
+                return int(state.slice_index)
+        model = self._get_active_image_model()
+        return int(getattr(model, 'current_slice_index', 0) or 0)
+
+    def _set_active_slice(self, index: int) -> None:
+        viewer = self._active_viewer()
+        model = self._get_active_image_model()
+        if model is None:
+            return
+        index = max(0, min(model.get_slice_count() - 1, int(index)))
+        setter = getattr(viewer, 'set_view_slice', None) if viewer else None
+        if callable(setter):
+            setter(index)
+        else:
+            model.set_current_slice(index)
+
+    def _step_active_slice(self, delta: int) -> None:
+        self._set_active_slice(self._active_view_slice_index() + delta)
+
+    def _set_active_slice_boundary(self, *, first: bool) -> None:
+        model = self._get_active_image_model()
+        if model is not None:
+            self._set_active_slice(0 if first else model.get_slice_count() - 1)
+
+    def _fit_active_view(self) -> None:
+        viewer = self._active_viewer()
+        operation = getattr(viewer, 'fit_to_window', None)
+        if callable(operation):
+            operation()
+
+    def _actual_size_active_view(self) -> None:
+        viewer = self._active_viewer()
+        operation = getattr(viewer, 'actual_size', None)
+        if callable(operation):
+            operation()
+
+    def _cancel_active_interaction(self) -> None:
+        viewer = self._active_viewer()
+        tool = getattr(viewer, 'current_tool', None) if viewer else None
+        cancel = getattr(tool, 'cancel_interaction', None)
+        if callable(cancel):
+            cancel()
     
     def _update_ui_state(self) -> None:
         """更新UI状态"""
@@ -681,20 +1280,380 @@ class MainWindow(QMainWindow):
         
         # 更新菜单和工具栏状态
         has_series = series_count > 0
-        # 可以在这里添加菜单项的启用/禁用逻辑
+        active_model = self._get_active_image_model()
+        has_active_image = bool(active_model and active_model.has_image())
+        has_cine_frames = bool(has_active_image and active_model.get_slice_count() > 1)
+        for action in self._image_required_actions:
+            action.setEnabled(has_active_image)
+        for widget in self._image_required_widgets:
+            widget.setEnabled(has_active_image)
+        if hasattr(self, 'empty_open_folder_button'):
+            self.empty_open_folder_button.setVisible(
+                not has_series
+                and not self._folder_scan_futures
+                and not self._loading_futures
+            )
+        self._refresh_toolbar_dicom_voi_options()
+        if hasattr(self, '_cine_play_btn'):
+            if not has_cine_frames and self._cine_playing:
+                self._cine_stop()
+            self._cine_play_btn.setEnabled(has_cine_frames)
+        if hasattr(self, '_cine_fps_spin'):
+            self._cine_fps_spin.setEnabled(has_cine_frames)
+        if hasattr(self, 'auto_assign_action'):
+            self.auto_assign_action.setEnabled(has_series)
+        if hasattr(self, 'clear_bindings_action'):
+            has_binding = any(
+                bool(self.series_manager.get_view_binding(view_id).series_id)
+                for view_id in self.series_manager.get_all_view_ids()
+                if self.series_manager.get_view_binding(view_id)
+            )
+            self.clear_bindings_action.setEnabled(has_binding)
+        self._update_annotation_history_actions()
+
+    def _active_series_id(self) -> Optional[str]:
+        view_id = self.series_manager.get_active_view_id()
+        binding = self.series_manager.get_view_binding(view_id) if view_id else None
+        return binding.series_id if binding and binding.series_id else None
+
+    def _register_annotation_history(self, series_id: str) -> None:
+        if series_id in self._annotation_histories:
+            return
+        model = self.series_manager.get_series_model(series_id)
+        if not model:
+            return
+        self._recover_annotation_state(series_id, model)
+        snapshot = export_annotations(model)
+        history = {
+            'model': model,
+            'current': copy.deepcopy(snapshot),
+            'saved': copy.deepcopy(snapshot) if not has_unsaved_annotations(model) else None,
+            'undo': [],
+            'redo': [],
+            'restoring': False,
+        }
+
+        def callback(sid=series_id):
+            self._on_annotation_content_changed(sid)
+
+        history['callback'] = callback
+        self._annotation_histories[series_id] = history
+        model.annotation_changed.connect(callback)
+
+    def _on_annotation_content_changed(self, series_id: str) -> None:
+        history = self._annotation_histories.get(series_id)
+        if not history or history['restoring']:
+            return
+        snapshot = export_annotations(history['model'])
+        if snapshot == history['current']:
+            return
+        history['undo'].append(copy.deepcopy(history['current']))
+        del history['undo'][:-100]
+        history['current'] = copy.deepcopy(snapshot)
+        history['redo'].clear()
+        self._schedule_annotation_draft(series_id)
+        self._update_annotation_history_actions()
+
+    def _mark_annotation_history_saved(self, model: ImageDataModel) -> None:
+        for history in self._annotation_histories.values():
+            if history['model'] is model:
+                snapshot = export_annotations(model)
+                history['current'] = copy.deepcopy(snapshot)
+                history['saved'] = copy.deepcopy(snapshot)
+                series_id = next(
+                    (
+                        candidate_id
+                        for candidate_id, candidate_history in self._annotation_histories.items()
+                        if candidate_history is history
+                    ),
+                    None,
+                )
+                if series_id:
+                    self._remove_annotation_draft(series_id)
+                break
+        self._update_annotation_history_actions()
+
+    def _update_annotation_history_actions(self) -> None:
+        if not hasattr(self, 'undo_annotation_action'):
+            return
+        history = self._annotation_histories.get(self._active_series_id() or '')
+        self.undo_annotation_action.setEnabled(bool(history and history['undo']))
+        self.redo_annotation_action.setEnabled(bool(history and history['redo']))
+        any_dirty = any(
+            has_unsaved_annotations(candidate['model'])
+            for candidate in self._annotation_histories.values()
+        )
+        self.setWindowModified(any_dirty)
+        if hasattr(self, 'save_annotations_action'):
+            self.save_annotations_action.setEnabled(bool(history))
+            self.save_annotations_as_action.setEnabled(bool(history))
+            self.save_all_annotations_action.setEnabled(any_dirty)
+
+    def _default_annotation_sidecar_path(self, series_id: str) -> Optional[Path]:
+        info = self.series_manager.get_series_info(series_id)
+        if info is None or not info.file_paths:
+            return None
+        first = Path(info.file_paths[0])
+        if len(info.file_paths) == 1:
+            return first.with_suffix(first.suffix + '.medimager.json')
+        uid = str(info.series_instance_uid or series_id)
+        safe_uid = ''.join(character for character in uid if character.isalnum())[-16:]
+        return first.parent / f'.medimager-{safe_uid}.annotations.json'
+
+    def _draft_path(self, series_id: str, model: ImageDataModel) -> Path:
+        identity = str(model.get_metadata('SeriesInstanceUID', '') or series_id)
+        digest = hashlib.sha256(identity.encode('utf-8')).hexdigest()[:20]
+        directory = self.settings_manager.get_config_directory() / 'annotation_drafts'
+        return directory / f'{digest}.json'
+
+    def _draft_recovery_enabled(self, series_id: str) -> bool:
+        """Drafts require a source that the next process can reopen."""
+        info = self.series_manager.get_series_info(series_id)
+        return bool(info and info.file_paths)
+
+    def _recover_annotation_state(self, series_id: str, model: ImageDataModel) -> None:
+        sidecar = self._default_annotation_sidecar_path(series_id)
+        if sidecar is not None:
+            self._annotation_sidecar_paths[series_id] = sidecar
+        if sidecar is not None and sidecar.is_file():
+            try:
+                import_annotations(model, sidecar, replace=True)
+                # Re-saving marks the imported sidecar as the saved baseline.
+                save_annotations(model, sidecar)
+            except Exception as error:
+                logger.warning(
+                    '[MainWindow] 自动载入标注 sidecar 失败: %s', error,
+                    exc_info=True,
+                )
+        if not self._draft_recovery_enabled(series_id):
+            return
+        draft = self._draft_path(series_id, model)
+        if draft.is_file():
+            try:
+                with draft.open('r', encoding='utf-8') as handle:
+                    document = json.load(handle)
+                draft_metadata = document.get('draft_metadata')
+                if not isinstance(draft_metadata, dict):
+                    logger.info(
+                        '[MainWindow] 忽略无法验证来源的旧版标注草稿: %s', draft
+                    )
+                    return
+                if draft_metadata.get('session_id') == _ANNOTATION_DRAFT_SESSION_ID:
+                    # The producer belongs to this still-running process; this
+                    # is not a previous-session crash draft.
+                    return
+                import_annotations(model, document, replace=True)
+                model.mark_annotations_dirty()
+                self.status_bar.showMessage(
+                    t('mainwindow.annotation_draft_recovered'), 5000
+                )
+            except Exception as error:
+                logger.warning(
+                    '[MainWindow] 恢复标注草稿失败: %s', error, exc_info=True
+                )
+
+    def _schedule_annotation_draft(self, series_id: str) -> None:
+        if not self._draft_recovery_enabled(series_id):
+            return
+        timer = self._annotation_draft_timers.get(series_id)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(
+                lambda sid=series_id: self._write_annotation_draft(sid)
+            )
+            self._annotation_draft_timers[series_id] = timer
+        timer.start(750)
+
+    def _write_annotation_draft(self, series_id: str) -> None:
+        history = self._annotation_histories.get(series_id)
+        if (
+            not history
+            or not self._draft_recovery_enabled(series_id)
+            or not has_unsaved_annotations(history['model'])
+        ):
+            return
+        path = self._draft_path(series_id, history['model'])
+        temporary_path = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            document = export_annotations(history['model'])
+            document['draft_metadata'] = {
+                'session_id': _ANNOTATION_DRAFT_SESSION_ID,
+            }
+            payload = json.dumps(document, ensure_ascii=False, indent=2) + '\n'
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='\n') as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        except Exception:
+            logger.exception('[MainWindow] 写入标注恢复草稿失败: %s', path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+    def _remove_annotation_draft(self, series_id: str) -> None:
+        history = self._annotation_histories.get(series_id)
+        timer = self._annotation_draft_timers.pop(series_id, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        if not history:
+            return
+        path = self._draft_path(series_id, history['model'])
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning('[MainWindow] 无法删除标注草稿: %s', path)
+
+    def _save_model_annotations(
+        self,
+        series_id: str,
+        model: ImageDataModel,
+        *,
+        save_as: bool = False,
+    ) -> bool:
+        path = self._annotation_sidecar_paths.get(series_id)
+        if save_as or path is None:
+            suggested = path or self._default_annotation_sidecar_path(series_id)
+            if suggested is None:
+                suggested = Path(QDir.homePath()) / 'MedImager_annotations.json'
+            selected, _ = QFileDialog.getSaveFileName(
+                self,
+                t('mainwindow.save_annotations_as'),
+                str(suggested),
+                t('mainwindow.annotation_json_filter'),
+            )
+            if not selected:
+                return False
+            path = Path(selected)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_annotations(model, path)
+            self._annotation_sidecar_paths[series_id] = path
+            self._mark_annotation_history_saved(model)
+            self.status_bar.showMessage(
+                t('mainwindow.annotations_saved_to', path=str(path)), 5000
+            )
+            return True
+        except Exception as error:
+            logger.exception('[MainWindow] 保存标注失败: %s', path)
+            QMessageBox.critical(
+                self,
+                t('mainwindow.error'),
+                t('mainwindow.export_annotations_failed_prefix') + str(error),
+            )
+            return False
+
+    def _save_active_annotations(self) -> None:
+        series_id = self._active_series_id()
+        model = self._get_active_image_model()
+        if series_id and model:
+            self._save_model_annotations(series_id, model)
+
+    def _save_active_annotations_as(self) -> None:
+        series_id = self._active_series_id()
+        model = self._get_active_image_model()
+        if series_id and model:
+            self._save_model_annotations(series_id, model, save_as=True)
+
+    def _save_all_annotations(self) -> bool:
+        dirty = [
+            (series_id, history['model'])
+            for series_id, history in self._annotation_histories.items()
+            if has_unsaved_annotations(history['model'])
+        ]
+        if not dirty:
+            self.status_bar.showMessage(t('mainwindow.nothing_to_save'), 2000)
+            return True
+        for series_id, model in dirty:
+            if not self._save_model_annotations(series_id, model):
+                return False
+        return True
+
+    def _rebuild_roi_dependent_state_for_model(self, model: ImageDataModel) -> None:
+        """清除旧 ROI 视图临时态，并立即为所有绑定窗格重建标签。"""
+        for view_id in self.series_manager.get_all_view_ids():
+            frame = self.multi_viewer_grid.get_view_frame(view_id)
+            viewer = (
+                getattr(frame, 'image_viewer', None)
+                or getattr(frame, '_image_viewer', None)
+            ) if frame else None
+            if not viewer or viewer.model is not model:
+                continue
+            viewer.clear_roi_dependent_state()
+            restore = getattr(frame, '_restore_roi_stats_positions', None)
+            if callable(restore):
+                restore()
+
+    def _restore_annotation_snapshot(self, history: Dict, snapshot: Dict) -> None:
+        model = history['model']
+        history['restoring'] = True
+        try:
+            import_annotations(
+                model,
+                copy.deepcopy(snapshot),
+                replace=True,
+                allow_identity_mismatch=True,
+            )
+            history['current'] = copy.deepcopy(snapshot)
+            if history['saved'] is not None and snapshot == history['saved']:
+                model.mark_annotations_saved()
+            else:
+                model.mark_annotations_dirty()
+            self._rebuild_roi_dependent_state_for_model(model)
+        finally:
+            history['restoring'] = False
+        self._update_annotation_history_actions()
+
+    def _undo_annotation_change(self) -> None:
+        if self._route_undo_redo_to_focused_text_editor(redo=False):
+            return
+        history = self._annotation_histories.get(self._active_series_id() or '')
+        if not history or not history['undo']:
+            self.status_bar.showMessage(t("mainwindow.nothing_to_undo"), 2000)
+            return
+        previous = history['undo'].pop()
+        history['redo'].append(copy.deepcopy(history['current']))
+        self._restore_annotation_snapshot(history, previous)
+
+    def _redo_annotation_change(self) -> None:
+        if self._route_undo_redo_to_focused_text_editor(redo=True):
+            return
+        history = self._annotation_histories.get(self._active_series_id() or '')
+        if not history or not history['redo']:
+            self.status_bar.showMessage(t("mainwindow.nothing_to_redo"), 2000)
+            return
+        following = history['redo'].pop()
+        history['undo'].append(copy.deepcopy(history['current']))
+        self._restore_annotation_snapshot(history, following)
+
+    @staticmethod
+    def _route_undo_redo_to_focused_text_editor(redo: bool) -> bool:
+        """标准文本控件有焦点时，保留其原生 Undo/Redo 语义。"""
+        focus_widget = QApplication.focusWidget()
+        if not isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return False
+        operation = getattr(focus_widget, 'redo' if redo else 'undo', None)
+        if not callable(operation):
+            return False
+        operation()
+        return True
     
     def _toggle_series_panel(self, checked: bool) -> None:
         """切换序列面板显示状态"""
         logger.debug(f"[MainWindow._toggle_series_panel] 切换序列面板: {checked}")
-        self.series_panel.setVisible(checked)
-        # 同步左侧切换条箭头方向
-        if hasattr(self, 'left_toggle_strip'):
-            self.left_toggle_strip.set_panel_visible(checked)
+        self.series_dock.setVisible(checked)
 
     def _on_left_toggle_strip_clicked(self, visible: bool) -> None:
         """处理左侧切换条点击事件"""
         logger.debug(f"[MainWindow._on_left_toggle_strip_clicked] 左侧切换条点击: {visible}")
-        self.series_panel.setVisible(visible)
+        self.series_dock.setVisible(visible)
         # 同步菜单中的勾选状态
         if hasattr(self, 'toggle_series_panel_action'):
             self.toggle_series_panel_action.blockSignals(True)
@@ -704,20 +1663,72 @@ class MainWindow(QMainWindow):
     def _toggle_info_panel(self, checked: bool) -> None:
         """切换信息面板显示状态"""
         logger.debug(f"[MainWindow._toggle_info_panel] 切换信息面板: {checked}")
-        self.dicom_tag_panel.setVisible(checked)
-        # 同步切换条箭头方向
-        if hasattr(self, 'panel_toggle_strip'):
-            self.panel_toggle_strip.set_panel_visible(checked)
+        if checked:
+            self.info_dock.show()
+            self.dicom_tag_panel.show()
+            self._flush_pending_dicom_tags()
+        else:
+            self.info_dock.hide()
 
     def _on_toggle_strip_clicked(self, visible: bool) -> None:
         """处理切换条点击事件"""
         logger.debug(f"[MainWindow._on_toggle_strip_clicked] 切换条点击: {visible}")
-        self.dicom_tag_panel.setVisible(visible)
+        self.info_dock.setVisible(visible)
+        if visible:
+            self._flush_pending_dicom_tags()
         # 同步菜单中的勾选状态
         if hasattr(self, 'toggle_info_panel_action'):
             self.toggle_info_panel_action.blockSignals(True)
             self.toggle_info_panel_action.setChecked(visible)
             self.toggle_info_panel_action.blockSignals(False)
+
+    def _on_series_dock_visibility_changed(self, visible: bool) -> None:
+        if hasattr(self, 'toggle_series_panel_action'):
+            self.toggle_series_panel_action.blockSignals(True)
+            self.toggle_series_panel_action.setChecked(visible)
+            self.toggle_series_panel_action.blockSignals(False)
+
+    def _on_info_dock_visibility_changed(self, visible: bool) -> None:
+        if hasattr(self, 'toggle_info_panel_action'):
+            self.toggle_info_panel_action.blockSignals(True)
+            self.toggle_info_panel_action.setChecked(visible)
+            self.toggle_info_panel_action.blockSignals(False)
+        if visible:
+            self.dicom_tag_panel.show()
+            self._flush_pending_dicom_tags()
+        elif self.info_dock.isHidden():
+            self.dicom_tag_panel.hide()
+
+    def eventFilter(self, watched, event) -> bool:
+        """Bridge the legacy information-panel visibility API to its dock."""
+        if (
+            watched is getattr(self, 'dicom_tag_panel', None)
+            and event.type() == QEvent.Type.Show
+            and hasattr(self, 'info_dock')
+            and self.info_dock.isHidden()
+        ):
+            self.info_dock.show()
+        return super().eventFilter(watched, event)
+
+    def _queue_dicom_tag_update(self, dataset) -> None:
+        """缓存最新标签；仅在面板显示时以最多约 10 fps 重建树。"""
+        self._pending_dicom_dataset = dataset
+        if getattr(self, '_closing', False):
+            return
+        if not self.info_dock.isVisible():
+            return
+        timer = self._dicom_tag_update_timer
+        if not timer.isActive():
+            timer.start(100)
+
+    def _flush_pending_dicom_tags(self) -> None:
+        if not self.info_dock.isVisible():
+            return
+        dataset = getattr(self, '_pending_dicom_dataset', None)
+        if dataset is None:
+            self.dicom_tag_panel.clear()
+        else:
+            self.dicom_tag_panel.update_tags(dataset)
     
     def _set_layout(self, layout_config: tuple) -> None:
         """设置视图布局"""
@@ -768,7 +1779,7 @@ class MainWindow(QMainWindow):
                     rows, cols = 2, 2
                     self.series_manager.set_layout(rows, cols)
                     self.multi_viewer_grid.set_layout(rows, cols)
-                    logger.info(f"[MainWindow._set_layout] 回退到默认2×2网格布局")
+                    logger.info("[MainWindow._set_layout] 回退到默认2×2网格布局")
             else:
                 # 无效的布局配置
                 logger.error(f"[MainWindow._set_layout] 无效的布局配置: {layout_config}")
@@ -846,6 +1857,9 @@ class MainWindow(QMainWindow):
             new_mode = current_mode | SyncMode.CROSS_REFERENCE
             new_mode = new_mode & ~SyncMode.SLICE
             status_msg = t("mainwindow.manual_position_synchronization_is_enabled")
+        elif mode == "both":
+            new_mode = current_mode | SyncMode.SLICE | SyncMode.CROSS_REFERENCE
+            status_msg = t("mainwindow.combined_position_synchronization_is_enabled")
         else:  # "none"
             new_mode = current_mode & ~(SyncMode.SLICE | SyncMode.CROSS_REFERENCE)
             status_msg = t("mainwindow.location_sync_is_off")
@@ -862,9 +1876,9 @@ class MainWindow(QMainWindow):
         from medimager.core.sync_manager import SyncMode
         
         if checked:
-            new_mode = current_mode | SyncMode.ZOOM_PAN
+            new_mode = current_mode | SyncMode.PAN
         else:
-            new_mode = current_mode & ~SyncMode.ZOOM_PAN
+            new_mode = current_mode & ~SyncMode.PAN
         
         self.sync_manager.set_sync_mode(new_mode)
         status_msg = t("mainwindow.pan_sync_enabled") if checked else t("mainwindow.translation_sync_disabled")
@@ -879,9 +1893,9 @@ class MainWindow(QMainWindow):
         from medimager.core.sync_manager import SyncMode
         
         if checked:
-            new_mode = current_mode | SyncMode.ZOOM_PAN
+            new_mode = current_mode | SyncMode.ZOOM
         else:
-            new_mode = current_mode & ~SyncMode.ZOOM_PAN
+            new_mode = current_mode & ~SyncMode.ZOOM
         
         self.sync_manager.set_sync_mode(new_mode)
         status_msg = t("mainwindow.zoom_sync_enabled") if checked else t("mainwindow.zoom_sync_disabled")
@@ -916,7 +1930,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, '_sync_button'):
             # 确定位置同步模式
             position_mode = "none"
-            if SyncMode.SLICE in current_mode:
+            if (
+                SyncMode.SLICE in current_mode
+                and SyncMode.CROSS_REFERENCE in current_mode
+            ):
+                position_mode = "both"
+            elif SyncMode.SLICE in current_mode:
                 position_mode = "auto"
             elif SyncMode.CROSS_REFERENCE in current_mode:
                 position_mode = "manual"
@@ -924,8 +1943,8 @@ class MainWindow(QMainWindow):
             # 设置同步状态
             self._sync_button.set_sync_states(
                 position_mode=position_mode,
-                pan=SyncMode.ZOOM_PAN in current_mode,
-                zoom=SyncMode.ZOOM_PAN in current_mode,
+                pan=SyncMode.PAN in current_mode,
+                zoom=SyncMode.ZOOM in current_mode,
                 window_level=SyncMode.WINDOW_LEVEL in current_mode
             )
         
@@ -936,9 +1955,14 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._open_multiple_dicom_folders] 打开多个DICOM文件夹")
         
         # 使用文件对话框选择多个文件夹
-        dialog = QFileDialog()
+        dialog = QFileDialog(self, t("mainwindow.select_dicom_folder"), QDir.homePath())
         dialog.setFileMode(QFileDialog.Directory)
         dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        # 原生目录对话框通常只能单选。使用 Qt 对话框并将目录视图设为
+        # ExtendedSelection，才能兑现“打开多个文件夹”的功能名称。
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        for view in dialog.findChildren(QListView) + dialog.findChildren(QTreeView):
+            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         
         if dialog.exec_() == QDialog.Accepted:
             folders = dialog.selectedFiles()
@@ -961,80 +1985,248 @@ class MainWindow(QMainWindow):
             self._load_dicom_folder_as_series(folder)
     
     def _load_dicom_folder_as_series(self, folder_path: str) -> None:
-        """将DICOM文件夹加载为序列"""
+        """提交后台 DICOM 扫描任务；文件遍历和头信息预读不阻塞 GUI。"""
         logger.debug(f"[MainWindow._load_dicom_folder_as_series] 加载DICOM文件夹: {folder_path}")
-        
-        try:
-            # 扫描文件夹中的DICOM文件
-            dicom_files = []
-            folder = Path(folder_path)
-
-            recursive = self._bool_setting("dicom.recursive_scan", True)
-            include_extensionless = self._bool_setting("dicom.include_extensionless", True)
-            allowed_suffixes = ['.dcm', '.dicom']
-            if include_extensionless:
-                allowed_suffixes.append('')
-
-            candidates = folder.rglob("*") if recursive else folder.glob("*")
-            for file_path in candidates:
-                if file_path.is_file() and file_path.suffix.lower() in allowed_suffixes:
-                    dicom_files.append(str(file_path))
-            
-            if not dicom_files:
-                QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.dicom_file_not_found_in_folder"))
-                return
-            
-            # 使用DicomParser解析文件获取序列信息
-            temp_parser = DicomParser()
-            series_groups = temp_parser._group_files_by_series(dicom_files)
-            
-            # 为每个序列创建SeriesInfo并添加到管理器
-            for series_uid, files in series_groups.items():
-                if not files:
-                    continue
-                
-                # 读取第一个文件获取元数据
-                import pydicom
-                try:
-                    first_ds = pydicom.dcmread(files[0], force=True)
-                    self._warn_if_strict_metadata_incomplete(first_ds, files[0])
-                    
-                    series_info = SeriesInfo(
-                        series_id=str(uuid.uuid4()),
-                        patient_name=getattr(first_ds, 'PatientName', 'Unknown Patient'),
-                        patient_id=getattr(first_ds, 'PatientID', ''),
-                        study_description=getattr(first_ds, 'StudyDescription', ''),
-                        series_description=getattr(first_ds, 'SeriesDescription', ''),
-                        modality=getattr(first_ds, 'Modality', ''),
-                        acquisition_date=getattr(first_ds, 'AcquisitionDate', ''),
-                        acquisition_time=getattr(first_ds, 'AcquisitionTime', ''),
-                        slice_count=len(files),
-                        series_number=str(getattr(first_ds, 'SeriesNumber', 0)),
-                        study_instance_uid=getattr(first_ds, 'StudyInstanceUID', ''),
-                        series_instance_uid=series_uid,
-                        file_paths=files
-                    )
-                    
-                    # 添加序列到管理器
-                    series_id = self.series_manager.add_series(series_info)
-                    
-                    # 在后台线程中加载序列数据
-                    self._load_series_in_background(series_id, files, series_info)
-                    
-                except Exception as e:
-                    logger.error(f"[MainWindow._load_dicom_folder_as_series] 解析DICOM文件失败: {e}")
-                    continue
-            
-            logger.info(f"[MainWindow._load_dicom_folder_as_series] 文件夹加载完成: {folder_path}")
-            
-        except Exception as e:
-            logger.error(f"[MainWindow._load_dicom_folder_as_series] 加载文件夹失败: {e}", exc_info=True)
-            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.failed_to_load_dicom_folder_value").replace("%1", str(e)))
-
-    def _warn_if_strict_metadata_incomplete(self, dataset, file_path: str) -> None:
-        """在严格元数据模式下记录缺失关键标签。"""
-        if not self._bool_setting("dicom.strict_metadata", False):
+        normalized = str(Path(folder_path).resolve())
+        if normalized in self._folder_scan_futures:
+            self.status_bar.showMessage(t("mainwindow.folder_scan_in_progress"), 2000)
             return
+        self._prepare_load_batch()
+        pool = get_performance_manager().get_thread_pool()
+        future = pool.submit(
+            _scan_dicom_folder_task,
+            normalized,
+            self._bool_setting("dicom.recursive_scan", True),
+            self._bool_setting("dicom.include_extensionless", True),
+            self._bool_setting("dicom.strict_metadata", False),
+        )
+        self._folder_scan_futures[normalized] = future
+
+        def _on_done(done_future):
+            try:
+                self._folder_scan_done.emit(normalized, done_future)
+            except RuntimeError:
+                return
+
+        future.add_done_callback(_on_done)
+        self.loading_progress.setRange(0, 0)
+        self.loading_progress.setVisible(True)
+        self.loading_cancel_button.show()
+        self.status_bar.showMessage(
+            t("mainwindow.scanning_dicom_folder", name=Path(normalized).name)
+        )
+
+    def _finish_loading_ui_if_idle(self) -> None:
+        """所有扫描和解码结束后统一收尾，避免并发任务争抢进度状态。"""
+        if self._folder_scan_futures or self._loading_futures:
+            return
+        self.loading_progress.setRange(0, 1)
+        self.loading_progress.setValue(1)
+        self.loading_progress.setVisible(False)
+        self.loading_cancel_button.hide()
+        self.loading_retry_button.setVisible(
+            bool(self._failed_load_requests or self._failed_folder_requests)
+        )
+        if self._closing:
+            self._loading_errors.clear()
+            if getattr(self, '_close_after_loading', False):
+                QTimer.singleShot(0, self.close)
+            return
+        counts = dict(self._load_batch_counts)
+        if self._loading_errors and not self._closing:
+            self._last_loading_errors = list(self._loading_errors)
+            self.loading_details_button.show()
+            errors = self._loading_errors[:8]
+            remaining = len(self._loading_errors) - len(errors)
+            details = "\n".join(f"• {message}" for message in errors)
+            if remaining > 0:
+                details += "\n" + t("mainwindow.additional_load_errors", count=remaining)
+            QMessageBox.critical(
+                self,
+                t("mainwindow.error"),
+                t("mainwindow.some_files_failed_to_load") + "\n\n" + details,
+            )
+            if counts['succeeded']:
+                status = t(
+                    'mainwindow.load_partial_summary',
+                    succeeded=counts['succeeded'],
+                    failed=counts['failed'],
+                    cancelled=counts['cancelled'],
+                )
+            else:
+                status = t(
+                    'mainwindow.load_failed_summary',
+                    failed=counts['failed'],
+                    cancelled=counts['cancelled'],
+                )
+            self.status_bar.showMessage(status, 7000)
+            self._loading_errors.clear()
+        elif counts['cancelled'] and not counts['succeeded']:
+            self._last_loading_errors.clear()
+            self.loading_details_button.hide()
+            self.status_bar.showMessage(
+                t('mainwindow.load_cancelled_summary', cancelled=counts['cancelled']),
+                5000,
+            )
+        else:
+            self._last_loading_errors.clear()
+            self.loading_details_button.hide()
+            self.status_bar.showMessage(
+                t('mainwindow.load_success_summary', succeeded=counts['succeeded']),
+                3000,
+            )
+        self._load_batch_counts = {
+            'submitted': 0, 'succeeded': 0, 'failed': 0, 'cancelled': 0
+        }
+
+    def _prepare_load_batch(self) -> None:
+        if self._folder_scan_futures or self._loading_futures:
+            return
+        self._loading_errors.clear()
+        self._last_loading_errors.clear()
+        if hasattr(self, 'loading_details_button'):
+            self.loading_details_button.hide()
+        self._load_batch_counts = {
+            'submitted': 0, 'succeeded': 0, 'failed': 0, 'cancelled': 0
+        }
+
+    def _cancel_pending_loads(self) -> None:
+        for series_id, future in list(self._loading_futures.items()):
+            self._cancelled_load_ids.add(series_id)
+            future.cancel()
+        for folder_path, future in list(self._folder_scan_futures.items()):
+            self._cancelled_folder_scans.add(folder_path)
+            future.cancel()
+        self.status_bar.showMessage(t('mainwindow.cancelling_loads'))
+
+    def _retry_failed_loads(self) -> None:
+        requests = list(self._failed_load_requests.values())
+        folder_requests = list(self._failed_folder_requests)
+        if not requests and not folder_requests:
+            return
+        self._failed_load_requests.clear()
+        self._failed_folder_requests.clear()
+        self.loading_retry_button.hide()
+        self._prepare_load_batch()
+        for folder_path in folder_requests:
+            self._load_dicom_folder_as_series(folder_path)
+        for request in requests:
+            info = copy.deepcopy(request['series_info'])
+            info.is_loaded = False
+            series_id = self.series_manager.add_series(info)
+            if request['kind'] == 'single':
+                self._load_single_image_in_background(
+                    series_id, request['file_path'], info
+                )
+            else:
+                self._load_series_in_background(
+                    series_id, list(request['file_paths']), info
+                )
+
+    def _show_loading_details(self) -> None:
+        if not self._last_loading_errors:
+            return
+        QMessageBox.information(
+            self,
+            t('mainwindow.loading_details'),
+            '\n'.join(f'• {detail}' for detail in self._last_loading_errors),
+        )
+
+    def _on_folder_scan_finished(self, folder_path: str, future) -> None:
+        """在 GUI 线程消费后台扫描结果并启动各序列解码。"""
+        try:
+            if folder_path in self._cancelled_folder_scans:
+                try:
+                    future.result()
+                except (CancelledError, Exception):
+                    pass
+                self._cancelled_folder_scans.discard(folder_path)
+                self._load_batch_counts['cancelled'] += 1
+                return
+            if self._closing:
+                return
+            result: _FolderScanResult = future.result()
+            if result.error:
+                detail = t(
+                    "mainwindow.failed_to_load_dicom_folder_value"
+                ).replace("%1", result.error)
+                self._loading_errors.append(detail)
+                self._load_batch_counts['failed'] += 1
+                self._failed_folder_requests[folder_path] = {
+                    'folder_path': folder_path,
+                }
+                logger.error(
+                    '[MainWindow] DICOM folder scan failed: %s', detail
+                )
+                return
+            if result.candidate_count == 0:
+                QMessageBox.warning(
+                    self, t("mainwindow.warning"), t("mainwindow.dicom_file_not_found_in_folder")
+                )
+                return
+
+            existing_uids = {
+                self.series_manager.get_series_info(series_id).series_instance_uid
+                for series_id in self.series_manager.get_all_series_ids()
+                if self.series_manager.get_series_info(series_id)
+            }
+            added = 0
+            for item in result.series:
+                uid = item['series_instance_uid']
+                if uid and uid in existing_uids:
+                    logger.info("[MainWindow._on_folder_scan_finished] 跳过重复序列: %s", uid)
+                    continue
+                series_info = SeriesInfo(series_id=str(uuid.uuid4()), **item)
+                series_id = self.series_manager.add_series(series_info)
+                self._load_series_in_background(series_id, item['file_paths'], series_info)
+                if uid:
+                    existing_uids.add(uid)
+                added += 1
+
+            if result.skipped_count:
+                self._load_batch_counts['failed'] += result.skipped_count
+                self._loading_errors.append(
+                    t(
+                        'mainwindow.scan_skipped_series_detail',
+                        count=result.skipped_count,
+                    )
+                )
+                self.status_bar.showMessage(
+                    t(
+                        "mainwindow.scan_series_summary",
+                        series_count=len(result.series),
+                        skipped_count=result.skipped_count,
+                    ),
+                    5000,
+                )
+            if added == 0 and not result.series:
+                QMessageBox.warning(
+                    self,
+                    t("mainwindow.warning"),
+                    t("mainwindow.no_loadable_series_matching_metadata_rules"),
+                )
+            logger.info(
+                "[MainWindow._on_folder_scan_finished] 扫描完成: folder=%s, added=%d",
+                folder_path, added,
+            )
+        except Exception as error:
+            logger.error("[MainWindow._on_folder_scan_finished] 处理扫描结果失败: %s", error, exc_info=True)
+            detail = t("mainwindow.failed_to_load_dicom_folder_value").replace(
+                "%1", str(error)
+            )
+            self._loading_errors.append(detail)
+            self._load_batch_counts['failed'] += 1
+            self._failed_folder_requests[folder_path] = {
+                'folder_path': folder_path,
+            }
+        finally:
+            self._folder_scan_futures.pop(folder_path, None)
+            self._finish_loading_ui_if_idle()
+
+    def _warn_if_strict_metadata_incomplete(self, dataset, file_path: str) -> bool:
+        """检查严格元数据要求，完整返回 True；缺失时返回 False。"""
+        if not self._bool_setting("dicom.strict_metadata", False):
+            return True
         required_tags = [
             "SeriesInstanceUID",
             "StudyInstanceUID",
@@ -1049,11 +2241,20 @@ class MainWindow(QMainWindow):
                 "[MainWindow._warn_if_strict_metadata_incomplete] DICOM 缺失关键标签: "
                 f"{missing}, file={file_path}"
             )
+            return False
+        return True
     
     def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
         """使用性能管理器的线程池在后台加载序列"""
         logger.debug(f"[MainWindow._load_series_in_background] 后台加载序列: {series_id}")
 
+        self._prepare_load_batch()
+        self._load_requests[series_id] = {
+            'kind': 'series',
+            'series_info': copy.deepcopy(series_info),
+            'file_paths': list(file_paths),
+        }
+        self._load_batch_counts['submitted'] += 1
         # 获取性能管理器的线程池
         perf_manager = get_performance_manager()
         thread_pool = perf_manager.get_thread_pool()
@@ -1064,43 +2265,150 @@ class MainWindow(QMainWindow):
 
         # 使用信号将结果安全地传回主线程（QTimer.singleShot 从工作线程调用不可靠）
         def _on_done(fut):
-            self._series_load_done.emit(series_id, fut)
+            try:
+                self._series_load_done.emit(series_id, fut)
+            except RuntimeError:
+                # 主窗口可能已在任务结束前销毁。
+                return
 
         future.add_done_callback(_on_done)
 
         # 显示加载进度
+        self.loading_progress.setRange(0, 0)
+        self.loading_progress.setAccessibleName(t("mainwindow.loading_sequence_value").replace("%1", series_info.series_description or series_id))
         self.loading_progress.setVisible(True)
+        self.loading_cancel_button.show()
         self.status_bar.showMessage(t("mainwindow.loading_sequence_value").replace("%1", series_info.series_description or series_id))
+
+    def _load_single_image_in_background(
+        self,
+        series_id: str,
+        file_path: str,
+        series_info: SeriesInfo,
+    ) -> None:
+        """后台读取单文件；完成后复用统一的 GUI 线程收尾流程。"""
+        self._prepare_load_batch()
+        self._load_requests[series_id] = {
+            'kind': 'single',
+            'series_info': copy.deepcopy(series_info),
+            'file_path': str(file_path),
+        }
+        self._load_batch_counts['submitted'] += 1
+        pool = get_performance_manager().get_thread_pool()
+        future = pool.submit(
+            _load_single_image_task,
+            file_path,
+            series_id,
+            self._bool_setting("dicom.strict_metadata", False),
+        )
+        self._loading_futures[series_id] = future
+
+        def _on_done(done_future):
+            try:
+                self._series_load_done.emit(series_id, done_future)
+            except RuntimeError:
+                return
+
+        future.add_done_callback(_on_done)
+        self.loading_progress.setRange(0, 0)
+        self.loading_progress.setAccessibleName(
+            t("mainwindow.loading_sequence_value").replace("%1", series_info.series_description)
+        )
+        self.loading_progress.setVisible(True)
+        self.loading_cancel_button.show()
+        self.status_bar.showMessage(
+            t("mainwindow.loading_sequence_value").replace("%1", series_info.series_description)
+        )
 
     def _on_series_loading_finished(self, series_id: str, future) -> None:
         """处理序列加载完成（在主线程中执行）"""
         logger.debug(f"[MainWindow._on_series_loading_finished] 序列加载完成: {series_id}")
 
         try:
+            if series_id in self._cancelled_load_ids:
+                try:
+                    cancelled_result = future.result()
+                    if cancelled_result.image_model is not None:
+                        cancelled_result.image_model.deleteLater()
+                except (CancelledError, Exception):
+                    pass
+                self._load_batch_counts['cancelled'] += 1
+                self._cancelled_load_ids.discard(series_id)
+                self.series_manager.remove_series(series_id)
+                self._load_requests.pop(series_id, None)
+                return
             result: _SeriesLoadResult = future.result()
 
+            if self._closing:
+                if result.image_model is not None:
+                    result.image_model.deleteLater()
+                    result.image_model = None
+                return
+
             if result.success and result.image_model:
+                series_info = self.series_manager.get_series_info(series_id)
+                if series_info and result.metadata:
+                    for field_name, value in result.metadata.items():
+                        if hasattr(series_info, field_name):
+                            setattr(series_info, field_name, value)
+                if series_info:
+                    series_info.slice_count = result.image_model.get_slice_count()
                 # 将图像模型添加到管理器
                 success = self.series_manager.load_series_data(series_id, result.image_model)
 
                 if success:
                     logger.info(f"[MainWindow._on_series_loading_finished] 序列数据加载成功: {series_id}")
+                    self._load_batch_counts['succeeded'] += 1
+                    self._load_requests.pop(series_id, None)
                 else:
                     logger.error(f"[MainWindow._on_series_loading_finished] 序列数据加载失败: {series_id}")
+                    self._loading_errors.append(
+                        f"{series_id}: {t('mainwindow.cannot_add_decoded_series_to_view')}"
+                    )
+                    self._load_batch_counts['failed'] += 1
+                    request = self._load_requests.pop(series_id, None)
+                    if request:
+                        self._failed_load_requests[series_id] = request
+                    self._remove_failed_series(
+                        series_id, t('mainwindow.cannot_add_decoded_series_to_view')
+                    )
             else:
                 logger.error(f"[MainWindow._on_series_loading_finished] 序列加载失败: {series_id}")
-
-            # 清理 future 引用
-            self._loading_futures.pop(series_id, None)
-
-            # 如果没有正在加载的序列，隐藏进度条
-            if not self._loading_futures:
-                self.loading_progress.setVisible(False)
-                self.status_bar.showMessage(t("mainwindow.loading_complete"), 2000)
+                if result.error_key:
+                    detail = t(result.error_key, **result.error_args)
+                elif result.error:
+                    detail = result.error
+                else:
+                    detail = t("mainwindow.unknown_decoding_error")
+                if result.error and result.error_key:
+                    detail += f" ({result.error})"
+                self._loading_errors.append(f"{series_id}: {detail}")
+                self._load_batch_counts['failed'] += 1
+                request = self._load_requests.pop(series_id, None)
+                if request:
+                    self._failed_load_requests[series_id] = request
+                self._remove_failed_series(series_id, detail)
 
         except Exception as e:
             logger.error(f"[MainWindow._on_series_loading_finished] 处理加载完成失败: {e}", exc_info=True)
+            self._loading_errors.append(f"{series_id}: {e}")
+            self._load_batch_counts['failed'] += 1
+            request = self._load_requests.pop(series_id, None)
+            if request:
+                self._failed_load_requests[series_id] = request
+            self._remove_failed_series(series_id, str(e))
+        finally:
             self._loading_futures.pop(series_id, None)
+            self._finish_loading_ui_if_idle()
+
+    def _remove_failed_series(self, series_id: str, detail: str) -> None:
+        """回滚失败序列，并在它原先绑定的窗格内保留可见错误状态。"""
+        view_ids = self.series_manager.get_bound_views_for_series(series_id)
+        self.series_manager.remove_series(series_id)
+        for view_id in view_ids:
+            frame = self.multi_viewer_grid.get_view_frame(view_id)
+            if frame and hasattr(frame, 'show_error_state'):
+                frame.show_error_state(detail)
     
     def _open_image_file(self) -> None:
         """打开图像文件"""
@@ -1117,58 +2425,28 @@ class MainWindow(QMainWindow):
             self._load_single_image_file(file_path)
     
     def _load_single_image_file(self, file_path: str) -> None:
-        """加载单个图像文件"""
+        """提交单文件后台读取，避免压缩 DICOM 或大图阻塞界面。"""
         logger.debug(f"[MainWindow._load_single_image_file] 加载图像文件: {file_path}")
-        
-        try:
-            # 创建图像数据模型
-            image_model = ImageDataModel()
-            
-            # 根据文件扩展名选择加载方法
-            path = Path(file_path)
-            if path.suffix.lower() in ['.dcm', '.dicom']:
-                success = image_model.load_dicom_series([file_path])
-            elif path.suffix.lower() == '.npy':
-                # 加载NumPy文件
-                data = np.load(file_path)
-                success = image_model.load_single_image(data)
-            else:
-                # 加载其他图像格式（使用PIL或其他库）
-                try:
-                    from PIL import Image
-                    img = Image.open(file_path)
-                    if img.mode not in ("L", "I", "F", "RGB", "RGBA"):
-                        img = img.convert("RGB")
-                    data = np.array(img)
-                    success = image_model.load_single_image(data)
-                except ImportError:
-                    logger.error("PIL库未安装，无法加载图像文件")
-                    success = False
-            
-            if success:
-                # 创建序列信息
-                series_info = SeriesInfo(
-                    series_id=str(uuid.uuid4()),
-                    patient_name=t("mainwindow.single_image"),
-                    series_description=path.name,
-                    modality="IMG",
-                    series_number="1",
-                    slice_count=1,
-                    file_paths=[file_path]
-                )
-                
-                # 添加到管理器
-                series_id = self.series_manager.add_series(series_info)
-                self.series_manager.load_series_data(series_id, image_model)
-                
-                logger.info(f"[MainWindow._load_single_image_file] 图像文件加载成功: {file_path}")
-            else:
-                logger.error(f"[MainWindow._load_single_image_file] 图像文件加载失败: {file_path}")
-                QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.unable_to_load_image_file"))
-                
-        except Exception as e:
-            logger.error(f"[MainWindow._load_single_image_file] 加载图像文件异常: {e}", exc_info=True)
-            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.failed_to_load_image_file_value").replace("%1", str(e)))
+        path = Path(file_path)
+        if not path.is_file():
+            QMessageBox.critical(
+                self,
+                t("mainwindow.error"),
+                t("mainwindow.failed_to_load_image_file_value").replace("%1", str(path)),
+            )
+            return
+
+        series_info = SeriesInfo(
+            series_id=str(uuid.uuid4()),
+            patient_name=t("mainwindow.single_image"),
+            series_description=path.name,
+            modality="IMG",
+            series_number="1",
+            slice_count=0,
+            file_paths=[str(path)],
+        )
+        series_id = self.series_manager.add_series(series_info)
+        self._load_single_image_in_background(series_id, str(path), series_info)
     
     def _load_test_series(self) -> None:
         """加载测试序列"""
@@ -1207,12 +2485,33 @@ class MainWindow(QMainWindow):
             return
         
         image_model = self.series_manager.get_series_model(binding.series_id)
-        if image_model:
+        viewer = self._active_viewer()
+        if image_model and viewer:
             if width == -1 and level == -1:
-                # 自动窗位
-                image_model._set_default_window_level()
+                default_state = self._default_presentation_by_series.get(
+                    binding.series_id,
+                    (
+                        float(image_model.window_width),
+                        float(image_model.window_level),
+                        bool(getattr(image_model, '_use_dicom_voi_lut', False)),
+                        getattr(image_model, '_voi_lut_index', None),
+                    ),
+                )
+                width, level, use_voi_lut, voi_lut_index = default_state
+                voi_setter = getattr(viewer, 'set_view_voi_lut', None)
+                if use_voi_lut and callable(voi_setter):
+                    voi_setter(True, voi_lut_index)
+                else:
+                    viewer.set_view_window(width, level)
             else:
-                image_model.set_window(width, level)
+                viewer.set_view_window(width, level)
+            current_width = float(viewer.window_width)
+            current_level = float(viewer.window_level)
+            self.sync_manager.sync_window_level(
+                active_view_id,
+                current_width,
+                current_level,
+            )
             
             logger.info(f"[MainWindow._set_window_level_preset] 窗宽窗位设置完成: W:{width} L:{level}")
     
@@ -1229,8 +2528,13 @@ class MainWindow(QMainWindow):
             if binding and binding.series_id:
                 image_model = self.series_manager.get_series_model(binding.series_id)
                 if image_model:
-                    current_width = image_model.window_width
-                    current_level = image_model.window_level
+                    viewer = self._active_viewer()
+                    if viewer is not None:
+                        current_width = viewer.window_width
+                        current_level = viewer.window_level
+                    else:
+                        current_width = image_model.window_width
+                        current_level = image_model.window_level
         
         dialog = CustomWLDialog(current_width, current_level, self)
         
@@ -1317,23 +2621,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_annotations_to_export_for_current_series"))
             return
 
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            t("mainwindow.export_annotations"),
-            QDir.homePath() + "/MedImager_annotations.json",
-            t("mainwindow.annotation_json_filter")
-        )
-        if not file_path:
-            return
-
-        try:
-            save_annotations(model, file_path)
-        except Exception as e:
-            logger.error(f"Failed to export annotations: {e}", exc_info=True)
-            QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.export_annotations_failed_prefix") + str(e))
-            return
-
-        self.statusBar().showMessage(t("mainwindow.annotations_exported_prefix") + file_path, 5000)
+        series_id = self._active_series_id()
+        if series_id:
+            self._save_model_annotations(series_id, model, save_as=True)
 
     def _import_annotations(self) -> None:
         """Import ROI and measurement annotations into the active series."""
@@ -1351,14 +2641,82 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
+        existing_count = len(model.rois) + len(model.measurements) + len(model.angle_measurements)
+        replace = True
+        if existing_count:
+            mode_dialog = QMessageBox(self)
+            mode_dialog.setIcon(QMessageBox.Question)
+            mode_dialog.setWindowTitle(t("mainwindow.import_mode_title"))
+            mode_dialog.setText(t("mainwindow.import_mode_prompt", existing_count=existing_count))
+            replace_button = mode_dialog.addButton(
+                t("mainwindow.replace_existing_annotations"),
+                QMessageBox.ButtonRole.DestructiveRole,
+            )
+            mode_dialog.addButton(
+                t("mainwindow.merge_annotations"),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            cancel_button = mode_dialog.addButton(QMessageBox.Cancel)
+            mode_dialog.exec()
+            clicked = mode_dialog.clickedButton()
+            if clicked is cancel_button or clicked is None:
+                return
+            replace = clicked is replace_button
+
         try:
-            counts = import_annotations(model, file_path, replace=True)
+            counts = import_annotations(model, file_path, replace=replace)
+        except AnnotationSeriesMismatchError as mismatch:
+            mismatch_fields = ", ".join(sorted(mismatch.mismatches))
+            mismatch_dialog = QMessageBox(self)
+            mismatch_dialog.setIcon(QMessageBox.Warning)
+            mismatch_dialog.setWindowTitle(t("mainwindow.warning"))
+            mismatch_dialog.setText(
+                t("mainwindow.annotation_identity_mismatch_prompt", fields=mismatch_fields)
+            )
+            import_anyway_button = mismatch_dialog.addButton(
+                t("mainwindow.import_anyway"), QMessageBox.ButtonRole.DestructiveRole
+            )
+            cancel_button = mismatch_dialog.addButton(
+                t("mainwindow.cancel"), QMessageBox.ButtonRole.RejectRole
+            )
+            mismatch_dialog.setDefaultButton(cancel_button)
+            mismatch_dialog.exec()
+            if mismatch_dialog.clickedButton() is not import_anyway_button:
+                return
+            try:
+                counts = import_annotations(
+                    model,
+                    file_path,
+                    replace=replace,
+                    allow_identity_mismatch=True,
+                )
+            except Exception as error:
+                logger.error("Failed to import annotations after identity override: %s", error, exc_info=True)
+                QMessageBox.critical(
+                    self,
+                    t("mainwindow.error"),
+                    t("mainwindow.import_annotations_failed_prefix") + str(error),
+                )
+                return
+        except InvalidAnnotationError as error:
+            logger.error("Rejected invalid annotations: %s", error, exc_info=True)
+            QMessageBox.critical(
+                self,
+                t("mainwindow.error"),
+                t("mainwindow.import_annotations_failed_prefix") + str(error),
+            )
+            return
         except Exception as e:
             logger.error(f"Failed to import annotations: {e}", exc_info=True)
             QMessageBox.critical(self, t("mainwindow.error"), t("mainwindow.import_annotations_failed_prefix") + str(e))
             return
 
-        total = counts["rois"] + counts["measurements"] + counts["angle_measurements"]
+        if replace:
+            self._rebuild_roi_dependent_state_for_model(model)
+        series_id = self._active_series_id()
+        if series_id:
+            self._annotation_sidecar_paths[series_id] = Path(file_path)
+        total = getattr(counts, 'total', sum(counts[key] for key in ("rois", "measurements", "angle_measurements")))
         self.statusBar().showMessage(t("mainwindow.annotations_imported_prefix") + str(total), 5000)
 
     def _copy_view_to_clipboard(self) -> None:
@@ -1385,11 +2743,28 @@ class MainWindow(QMainWindow):
 
     def _cine_start(self):
         """开始 Cine 播放"""
+        view_id = self.series_manager.get_active_view_id()
+        binding = self.series_manager.get_view_binding(view_id) if view_id else None
         model = self._get_active_image_model()
-        if not model or model.get_slice_count() <= 1:
+        if not view_id or not binding or not binding.series_id or not model or model.get_slice_count() <= 1:
+            self._cine_stop()
             return
+        self._cine_source_view_id = view_id
+        self._cine_source_series_id = binding.series_id
+        self._cine_source_model = model
+        current_index = self._active_view_slice_index()
+        frame_interval = self._cine_frame_interval_ms(model, current_index)
+        metadata_fps = self._cine_metadata_fps(model)
+        self._cine_metadata_timing = frame_interval is not None or metadata_fps is not None
+        if frame_interval is not None:
+            self._cine_fps = max(1, min(60, round(1000.0 / frame_interval)))
+            self._update_cine_fps_widget(self._cine_fps)
+        elif metadata_fps is not None:
+            self._cine_fps = metadata_fps
+            self._update_cine_fps_widget(metadata_fps)
         self._cine_playing = True
-        self._cine_timer.start(int(1000 / self._cine_fps))
+        interval = frame_interval or (1000.0 / self._cine_fps)
+        self._cine_timer.start(max(1, round(interval)))
         if hasattr(self, '_cine_play_btn'):
             self._cine_play_btn.blockSignals(True)
             self._cine_play_btn.setChecked(True)
@@ -1404,6 +2779,13 @@ class MainWindow(QMainWindow):
         """停止 Cine 播放"""
         self._cine_playing = False
         self._cine_timer.stop()
+        self._cine_source_view_id = None
+        self._cine_source_series_id = None
+        self._cine_source_model = None
+        self._cine_metadata_timing = False
+        if self._cine_fps != self._cine_configured_fps:
+            self._cine_fps = self._cine_configured_fps
+            self._update_cine_fps_widget(self._cine_fps)
         if hasattr(self, '_cine_play_btn'):
             self._cine_play_btn.blockSignals(True)
             self._cine_play_btn.setChecked(False)
@@ -1416,18 +2798,140 @@ class MainWindow(QMainWindow):
 
     def _cine_advance(self):
         """Cine 播放前进一帧"""
-        model = self._get_active_image_model()
-        if not model:
+        if getattr(self, '_closing', False):
             self._cine_stop()
             return
-        next_idx = (model.current_slice_index + 1) % model.get_slice_count()
-        model.set_current_slice(next_idx)
+        model = self._cine_source_model
+        view_id = self._cine_source_view_id
+        series_id = self._cine_source_series_id
+        binding = self.series_manager.get_view_binding(view_id) if view_id else None
+        if (
+            not model
+            or not view_id
+            or not series_id
+            or binding is None
+            or binding.series_id != series_id
+            or self.series_manager.get_series_model(series_id) is not model
+        ):
+            self._cine_stop()
+            return
+        frame = self.multi_viewer_grid.get_view_frame(view_id)
+        viewer = getattr(frame, 'image_viewer', None) if frame else None
+        state = getattr(viewer, 'presentation_state', None) if viewer else None
+        current_index = int(
+            getattr(state, 'slice_index', getattr(model, 'current_slice_index', 0))
+        )
+        next_idx = (current_index + 1) % model.get_slice_count()
+        setter = getattr(viewer, 'set_view_slice', None) if viewer else None
+        if callable(setter):
+            setter(next_idx)
+        else:
+            model.set_current_slice(next_idx)
+        if self._cine_metadata_timing:
+            interval = self._cine_frame_interval_ms(model, next_idx)
+            if interval is not None:
+                self._cine_timer.setInterval(max(1, round(interval)))
+                display_fps = max(1, min(60, round(1000.0 / interval)))
+                if display_fps != self._cine_fps:
+                    self._cine_fps = display_fps
+                    self._update_cine_fps_widget(display_fps)
 
     def _cine_set_fps(self, fps: int):
         """设置 Cine 播放帧率"""
-        self._cine_fps = max(1, min(60, fps))
+        self._cine_configured_fps = max(1, min(60, int(fps)))
+        self._cine_fps = self._cine_configured_fps
+        self._cine_metadata_timing = False
+        self.settings_manager.set_setting(
+            'cine.default_fps', self._cine_configured_fps
+        )
+        self._update_cine_fps_widget(self._cine_fps)
         if self._cine_playing:
-            self._cine_timer.setInterval(int(1000 / self._cine_fps))
+            self._cine_timer.setInterval(max(1, round(1000 / self._cine_fps)))
+
+    def _update_cine_fps_widget(self, fps: int) -> None:
+        toolbar_setter = getattr(
+            getattr(self, 'main_toolbar', None), 'set_cine_fps', None
+        )
+        if callable(toolbar_setter):
+            toolbar_setter(int(fps))
+            return
+        spin = getattr(self, '_cine_fps_spin', None)
+        if spin is not None and spin.value() != int(fps):
+            spin.blockSignals(True)
+            spin.setValue(int(fps))
+            spin.blockSignals(False)
+
+    @staticmethod
+    def _cine_frame_interval_ms(
+        model: ImageDataModel, slice_index: int
+    ) -> Optional[float]:
+        getter = getattr(model, 'get_frame_interval_ms', None)
+        if not callable(getter):
+            return None
+        try:
+            value = float(getter(slice_index))
+            if value > 0:
+                # Avoid pathological metadata locking the GUI or spinning the
+                # event loop; DICOM cine rates outside this range are not useful
+                # for an interactive desktop viewer.
+                return max(1000.0 / 60.0, min(10_000.0, value))
+        except (TypeError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _cine_metadata_fps(model: ImageDataModel) -> Optional[int]:
+        """Read standard DICOM frame timing without coupling to one parser API."""
+        interval = MainWindow._cine_frame_interval_ms(model, 0)
+        if interval is not None:
+            return max(1, min(60, round(1000.0 / interval)))
+        getter = getattr(model, 'get_cine_frame_rate', None)
+        if callable(getter):
+            try:
+                value = float(getter())
+                if value > 0:
+                    return max(1, min(60, round(value)))
+            except (TypeError, ValueError):
+                pass
+        metadata_getter = getattr(model, 'get_slice_metadata', None)
+        metadata = metadata_getter(0) if callable(metadata_getter) else {}
+
+        def value_for(*keys, default=0):
+            for key in keys:
+                if key in metadata:
+                    return metadata[key]
+                value = model.get_metadata(key, None)
+                if value is not None:
+                    return value
+            return default
+
+        for keys in (
+            ('RecommendedDisplayFrameRate', 'Recommended Display Frame Rate'),
+            ('CineRate', 'Cine Rate'),
+        ):
+            try:
+                value = float(value_for(*keys) or 0)
+                if value > 0:
+                    return max(1, min(60, round(value)))
+            except (TypeError, ValueError):
+                pass
+        try:
+            frame_time = float(
+                value_for('FrameTime', 'Frame Time') or 0
+            )
+            if frame_time > 0:
+                return max(1, min(60, round(1000.0 / frame_time)))
+        except (TypeError, ValueError):
+            pass
+        vector = value_for('FrameTimeVector', 'Frame Time Vector', default=None)
+        if vector is not None:
+            try:
+                values = [float(value) for value in vector if float(value) > 0]
+                if values:
+                    return max(1, min(60, round(1000.0 / (sum(values) / len(values)))))
+            except (TypeError, ValueError):
+                pass
+        return None
 
     def _get_active_image_model(self) -> Optional[ImageDataModel]:
         """获取当前活动视图的图像模型"""
@@ -1465,6 +2969,7 @@ class MainWindow(QMainWindow):
         """应用设置面板中可即时生效的选项。"""
         self._cine_set_fps(self._int_setting('cine.default_fps', self._cine_fps, 1, 60))
         self.sync_manager.set_sync_mode(self._sync_mode_from_setting())
+        self.sync_manager.set_sync_group(self._sync_group_from_setting())
         if hasattr(self.multi_viewer_grid, "apply_runtime_settings"):
             self.multi_viewer_grid.apply_runtime_settings()
         get_performance_manager().clear_cache()
@@ -1476,6 +2981,11 @@ class MainWindow(QMainWindow):
             self,
             t("mainwindow.about_prefix") + APP_NAME,
             get_about_html()
+            + '<hr><p><b>'
+            + t('mainwindow.non_diagnostic_notice')
+            + '</b><br>'
+            + t('mainwindow.non_diagnostic_notice_tooltip')
+            + '</p>'
         )
     
     # 信号处理方法
@@ -1488,22 +2998,109 @@ class MainWindow(QMainWindow):
     def _on_series_loaded(self, series_id: str) -> None:
         """处理序列加载事件"""
         logger.debug(f"[MainWindow._on_series_loaded] 序列加载: {series_id}")
+        model = self.series_manager.get_series_model(series_id)
+        if model is not None:
+            self._default_presentation_by_series[series_id] = (
+                float(model.window_width),
+                float(model.window_level),
+                bool(getattr(model, '_use_dicom_voi_lut', False)),
+                getattr(model, '_voi_lut_index', None),
+            )
+        self._register_annotation_history(series_id)
         # 序列加载完成后可以进行自动分配
         if self.binding_manager.get_binding_strategy() == BindingStrategy.AUTO_ASSIGN:
             self.binding_manager.auto_assign_series_to_views([series_id])
+        self._update_ui_state()
+
+    def _on_series_removed(self, series_id: str) -> None:
+        """移除序列对应的撤销历史，避免保留已销毁模型。"""
+        timer = self._annotation_draft_timers.pop(series_id, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+        self._annotation_sidecar_paths.pop(series_id, None)
+        self._default_presentation_by_series.pop(series_id, None)
+        history = self._annotation_histories.pop(series_id, None)
+        if history:
+            try:
+                history['model'].annotation_changed.disconnect(history['callback'])
+            except (RuntimeError, TypeError):
+                pass
+        self._update_ui_state()
+
+    def _request_remove_series(self, series_id: str) -> None:
+        """Offer Save and remove / Discard / Cancel for a series document."""
+        summary = self.series_manager.get_series_removal_summary(series_id)
+        if not summary.exists:
+            self.status_bar.showMessage(t('mainwindow.series_not_found'), 3000)
+            return
+        model = self.series_manager.get_series_model(series_id)
+        allow_discard = False
+        if model is not None and summary.has_unsaved_annotations:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle(t('seriespanel.remove_sequence'))
+            box.setText(t('mainwindow.remove_series_unsaved_prompt'))
+            save_button = box.addButton(
+                t('mainwindow.save_and_remove'), QMessageBox.AcceptRole
+            )
+            discard_button = box.addButton(
+                t('mainwindow.discard_and_remove'), QMessageBox.DestructiveRole
+            )
+            cancel_button = box.addButton(
+                t('mainwindow.cancel'), QMessageBox.RejectRole
+            )
+            box.setDefaultButton(save_button)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is cancel_button or clicked is None:
+                return
+            if clicked is save_button:
+                if not self._save_model_annotations(series_id, model):
+                    return
+            else:
+                allow_discard = clicked is discard_button
+                self._remove_annotation_draft(series_id)
+        else:
+            answer = QMessageBox.question(
+                self,
+                t('seriespanel.remove_sequence'),
+                t('mainwindow.remove_series_prompt'),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        if not self.series_manager.remove_series(
+            series_id, allow_unsaved_annotations=allow_discard
+        ):
+            QMessageBox.warning(
+                self,
+                t('mainwindow.warning'),
+                t('mainwindow.remove_series_failed'),
+            )
     
     def _on_binding_changed(self, view_id: str, series_id: str) -> None:
         """处理绑定变更事件"""
         logger.debug(f"[MainWindow._on_binding_changed] 绑定变更: view_id={view_id}, series_id={series_id}")
+
+        if (
+            self._cine_playing
+            and view_id == self._cine_source_view_id
+            and series_id != self._cine_source_series_id
+        ):
+            self._cine_stop()
         
         # 如果绑定的是活动视图，更新DICOM标签面板
         active_view_id = self.series_manager.get_active_view_id()
-        if view_id == active_view_id and series_id:
+        if view_id == active_view_id:
             self._on_view_activated(view_id)
         
         # 当新视图绑定序列时，传播工具到该视图
         if series_id:  # 绑定了序列
             self._propagate_tool_to_single_viewer(view_id)
+        else:
+            self._update_ui_state()
     
     def _on_layout_changed(self, layout: tuple) -> None:
         """处理布局变更事件
@@ -1540,15 +3137,74 @@ class MainWindow(QMainWindow):
         if image_model and image_model.has_image() and image_model.is_dicom():
             # 获取第一个DICOM文件的dataset
             dicom_dataset = image_model.get_dicom_file(0)
-            self.dicom_tag_panel.update_tags(dicom_dataset)
+            self._queue_dicom_tag_update(dicom_dataset)
         else:
-            self.dicom_tag_panel.clear()
+            self._queue_dicom_tag_update(None)
+
+    def _select_binding_target_view(
+        self,
+        series_id: str,
+        candidate_view_ids: List[str],
+        preferred_view_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Ask the user for a pane when the ASK_USER strategy is active."""
+        labels = []
+        label_to_id = {}
+        for view_id in candidate_view_ids:
+            binding = self.series_manager.get_view_binding(view_id)
+            if binding is None:
+                continue
+            row, column = binding.position.value
+            occupied = ""
+            if binding.series_id:
+                info = self.series_manager.get_series_info(binding.series_id)
+                occupied = (
+                    getattr(info, 'series_description', '') or binding.series_id
+                )
+            label = f"{row + 1}-{column + 1}"
+            if occupied:
+                label += f" — {occupied}"
+            labels.append(label)
+            label_to_id[label] = view_id
+        if not labels:
+            return None
+        current_index = 0
+        if preferred_view_id:
+            for index, label in enumerate(labels):
+                if label_to_id[label] == preferred_view_id:
+                    current_index = index
+                    break
+        info = self.series_manager.get_series_info(series_id)
+        series_name = (
+            getattr(info, 'series_description', '') if info is not None else ''
+        ) or series_id
+        selected, accepted = QInputDialog.getItem(
+            self,
+            t("mainwindow.select_target_view"),
+            t("mainwindow.select_target_view_for_series", series=series_name),
+            labels,
+            current_index,
+            False,
+        )
+        return label_to_id.get(selected) if accepted else None
+
+    def _on_binding_failed(self, series_id: str, reason: str) -> None:
+        messages = {
+            'series_not_found': t("mainwindow.binding_series_not_found"),
+            'view_not_found': t("mainwindow.binding_view_not_found"),
+            'no_target_view': t("mainwindow.binding_no_target_view"),
+            'binding_rejected': t("mainwindow.binding_rejected"),
+            'unexpected_error': t("mainwindow.binding_unexpected_error"),
+            'selection_cancelled': t("mainwindow.binding_cancelled"),
+        }
+        message = messages.get(reason, t("mainwindow.binding_rejected"))
+        self.status_bar.showMessage(message, 4000)
     
     def _on_binding_requested(self, view_id: str, series_id: str) -> None:
         """处理绑定请求事件"""
         logger.debug(f"[MainWindow._on_binding_requested] 绑定请求: view_id={view_id}, series_id={series_id}")
         
-        success = self.series_manager.bind_series_to_view(view_id, series_id)
+        success = self.binding_manager.bind_series_to_view(view_id, series_id)
         if success:
             logger.info(f"[MainWindow._on_binding_requested] 绑定成功: {view_id} -> {series_id}")
         else:
@@ -1557,6 +3213,9 @@ class MainWindow(QMainWindow):
     def _on_view_activated(self, view_id: str) -> None:
         """处理视图激活事件（合并了活动视图变化的处理逻辑）"""
         logger.debug(f"[MainWindow._on_view_activated] 视图激活: {view_id}")
+
+        if self._cine_playing and view_id != self._cine_source_view_id:
+            self._cine_stop()
         
         # 核心逻辑：确保数据模型中的活动视图ID与当前激活的ID同步
         # 这是为了统一处理来自UI点击和程序化设置的事件
@@ -1574,39 +3233,57 @@ class MainWindow(QMainWindow):
             pos_text = f"{binding.position.value[0]+1}-{binding.position.value[1]+1}"
             self.active_view_label.setText(t("mainwindow.event_view_value").replace("%1", pos_text))
         
-        # 断开之前的连接（如果有的话）
-        if hasattr(self, '_current_active_model'):
+        # 断开之前窗格自己的 presentation signal。切片不再存放在
+        # 共享 model 中，否则同一序列的两个窗格无法独立浏览。
+        if hasattr(self, '_current_active_viewer') and self._current_active_viewer:
             try:
-                self._current_active_model.slice_changed.disconnect(self._on_slice_changed)
-            except:
-                pass  # 忽略断开连接的错误
+                self._current_active_viewer.slice_changed.disconnect(
+                    self._on_slice_changed
+                )
+            except (RuntimeError, TypeError):
+                pass
+        self._current_active_viewer = None
         
         # 更新DICOM标签面板并连接切片变化信号
         if binding and binding.series_id:
             image_model = self.series_manager.get_series_model(binding.series_id)
             if image_model and image_model.has_image():
-                # 连接切片变化信号
-                image_model.slice_changed.connect(self._on_slice_changed)
+                frame = self.multi_viewer_grid.get_view_frame(view_id)
+                viewer = getattr(frame, 'image_viewer', None) if frame else None
+                if viewer is not None:
+                    viewer.slice_changed.connect(self._on_slice_changed)
+                    self._current_active_viewer = viewer
                 self._current_active_model = image_model
+
+                slice_index = (
+                    int(viewer.current_slice_index)
+                    if viewer is not None
+                    else image_model.current_slice_index
+                )
                 
                 if image_model.is_dicom():
                     # 获取当前切片的DICOM数据
-                    dicom_dataset = image_model.get_dicom_file(image_model.current_slice_index)
-                    self.dicom_tag_panel.update_tags(dicom_dataset)
+                    dicom_dataset = image_model.get_dicom_file(slice_index)
+                    self._queue_dicom_tag_update(dicom_dataset)
                 else:
-                    self.dicom_tag_panel.clear()
+                    self._queue_dicom_tag_update(None)
                 
                 # 同步序列面板切片选择
                 if hasattr(self.series_panel, 'sync_slice_selection'):
-                    self.series_panel.sync_slice_selection(binding.series_id, image_model.current_slice_index)
+                    self.series_panel.sync_slice_selection(
+                        binding.series_id, slice_index
+                    )
                     
                 logger.debug(f"[MainWindow._on_view_activated] 切片信号连接成功: {binding.series_id}")
             else:
                 self._current_active_model = None
-                self.dicom_tag_panel.clear()
+                self._current_active_viewer = None
+                self._queue_dicom_tag_update(None)
         else:
             self._current_active_model = None
-            self.dicom_tag_panel.clear()
+            self._current_active_viewer = None
+            self._queue_dicom_tag_update(None)
+        self._update_ui_state()
     
     def _on_grid_layout_changed(self, layout: tuple) -> None:
         """处理网格布局变更事件"""
@@ -1648,7 +3325,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, '_current_active_model') and self._current_active_model:
                 if self._current_active_model.is_dicom():
                     dicom_dataset = self._current_active_model.get_dicom_file(slice_index)
-                    self.dicom_tag_panel.update_tags(dicom_dataset)
+                    self._queue_dicom_tag_update(dicom_dataset)
                     logger.debug(f"[MainWindow._on_slice_changed] DICOM标签面板已更新: 切片{slice_index}")
             
             # 同步序列面板切片选择
@@ -1656,6 +3333,7 @@ class MainWindow(QMainWindow):
             if active_view_id:
                 binding = self.series_manager.get_view_binding(active_view_id)
                 if binding and binding.series_id:
+                    self.sync_manager.sync_slice(active_view_id, slice_index)
                     # 调用序列面板的同步方法
                     if hasattr(self.series_panel, 'sync_slice_selection'):
                         self.series_panel.sync_slice_selection(binding.series_id, slice_index)
@@ -1667,16 +3345,133 @@ class MainWindow(QMainWindow):
         """禁用主窗口的右键菜单，特别是工具栏右键菜单"""
         # 完全忽略右键菜单事件，防止显示工具栏的上下文菜单
         event.ignore()
+
+    def _finalize_in_progress_annotation_edits(self) -> None:
+        """关闭确认前提交已改变模型但尚未收到 mouseRelease 的编辑。"""
+        for view_frame in self.multi_viewer_grid.get_all_view_frames().values():
+            tool = getattr(view_frame.image_viewer, 'current_tool', None)
+            finalizer = getattr(tool, 'finalize_interaction', None)
+            if not callable(finalizer):
+                continue
+            try:
+                finalizer()
+            except Exception:
+                logger.exception(
+                    "[MainWindow.closeEvent] 结束视图 %s 的在途交互失败",
+                    view_frame.view_id,
+                )
+
+    def _confirm_close_with_unsaved_annotations(self) -> bool:
+        """关闭前保存或明确丢弃未保存标注；返回是否可继续关闭。"""
+        unsaved = []
+        total = 0
+        for series_id in self.series_manager.get_all_series_ids():
+            model = self.series_manager.get_series_model(series_id)
+            if model and has_unsaved_annotations(model):
+                count = len(model.rois) + len(model.measurements) + len(model.angle_measurements)
+                unsaved.append((series_id, model))
+                total += count
+        if not unsaved:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(t("mainwindow.warning"))
+        box.setText(
+            t(
+                "mainwindow.unsaved_annotations_close_prompt",
+                series_count=len(unsaved),
+                total_count=total,
+            )
+        )
+        save_button = box.addButton(QMessageBox.Save)
+        discard_button = box.addButton(
+            t("mainwindow.discard_and_close"), QMessageBox.ButtonRole.DestructiveRole
+        )
+        cancel_button = box.addButton(
+            t("mainwindow.cancel"), QMessageBox.ButtonRole.RejectRole
+        )
+        box.setDefaultButton(save_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is cancel_button or clicked is None:
+            return False
+        if clicked is discard_button:
+            # "Discard" is explicit and must remove recovery data as well.
+            for series_id, _model in unsaved:
+                self._remove_annotation_draft(series_id)
+            return True
+
+        output_directory = QFileDialog.getExistingDirectory(
+            self,
+            t("mainwindow.select_annotation_save_folder"),
+            QDir.homePath(),
+        )
+        if not output_directory:
+            return False
+
+        used_names: Set[str] = set()
+        output_path = Path(output_directory)
+        try:
+            for series_id, model in unsaved:
+                description = str(model.get_metadata("SeriesDescription", "") or "series")
+                safe_description = "".join(
+                    character if character.isalnum() or character in "-_" else "_"
+                    for character in description
+                ).strip("_") or "series"
+                uid = str(model.get_metadata("SeriesInstanceUID", "") or series_id)
+                suffix = "".join(character for character in uid if character.isalnum())[-12:]
+                base_name = f"{safe_description}_{suffix or series_id[:8]}"
+                name = base_name
+                sequence = 2
+                target_path = output_path / f"{name}.json"
+                while name.lower() in used_names or target_path.exists():
+                    name = f"{base_name}_{sequence}"
+                    sequence += 1
+                    target_path = output_path / f"{name}.json"
+                used_names.add(name.lower())
+                save_annotations(model, target_path)
+                self._mark_annotation_history_saved(model)
+        except Exception as error:
+            logger.error("[MainWindow.closeEvent] 保存未保存标注失败: %s", error, exc_info=True)
+            QMessageBox.critical(
+                self,
+                t("mainwindow.error"),
+                t("mainwindow.export_annotations_failed_prefix") + str(error),
+            )
+            return False
+        return True
     
     def closeEvent(self, event) -> None:
         """处理窗口关闭事件"""
         logger.debug("[MainWindow.closeEvent] 处理窗口关闭事件")
         
         try:
+            if not getattr(self, '_close_annotations_confirmed', False):
+                self._finalize_in_progress_annotation_edits()
+                if not self._confirm_close_with_unsaved_annotations():
+                    event.ignore()
+                    return
+                self._close_annotations_confirmed = True
+            self._cine_stop()
+            dicom_tag_timer = getattr(self, '_dicom_tag_update_timer', None)
+            if dicom_tag_timer is not None:
+                dicom_tag_timer.stop()
+            self._closing = True
+
             # 取消所有正在进行的加载任务
-            for future in self._loading_futures.values():
+            self._cancelled_load_ids.update(self._loading_futures)
+            self._cancelled_folder_scans.update(self._folder_scan_futures)
+            for future in list(self._loading_futures.values()) + list(self._folder_scan_futures.values()):
                 future.cancel()
-            self._loading_futures.clear()
+            # 已经开始的解码无法被 Future.cancel() 中断。保持 Qt 事件循环和
+            # 主窗口存活，直到结果回到 GUI 线程并安全 deleteLater()。
+            if self._loading_futures or self._folder_scan_futures:
+                self._close_after_loading = True
+                self.status_bar.showMessage(t('mainwindow.waiting_for_background_loads'))
+                self.setEnabled(False)
+                event.ignore()
+                return
             
             # 保存设置
             self.settings_manager.save_settings()
@@ -1686,4 +3481,8 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"[MainWindow.closeEvent] 关闭时发生错误: {e}", exc_info=True)
-            event.accept()  # 即使出错也允许关闭
+            self._closing = False
+            self._close_after_loading = False
+            self._close_annotations_confirmed = False
+            self.setEnabled(True)
+            event.ignore()

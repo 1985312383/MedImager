@@ -3,10 +3,9 @@
 """
 像素放大镜控件
 """
-import numpy as np
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPoint, QRect
-from PySide6.QtGui import QPainter, QColor, QPen, QImage, QPixmap
+from PySide6.QtCore import Qt, QRect
+from PySide6.QtGui import QPainter, QColor, QPen, QImage
 from typing import Optional
 
 class MagnifierWidget(QWidget):

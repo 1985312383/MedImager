@@ -1,3 +1,5 @@
+import toml
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
 from medimager.ui.dialogs.settings_dialog import SettingsDialog
@@ -75,6 +77,9 @@ def test_settings_dialog_saves_workflow_settings(qapp):
         dialog.setting_widgets["multiview.default_layout"].findData("2x2")
     )
     dialog.setting_widgets["cine.default_fps"].setValue(24)
+    dialog.setting_widgets["multiview.sync_group"].setCurrentIndex(
+        dialog.setting_widgets["multiview.sync_group"].findData("same_patient")
+    )
 
     dialog.accept()
 
@@ -84,6 +89,7 @@ def test_settings_dialog_saves_workflow_settings(qapp):
     assert settings.get_setting("roi.stats.area_unit") == "cm2"
     assert settings.get_setting("multiview.default_layout") == "2x2"
     assert settings.get_setting("cine.default_fps") == 24
+    assert settings.get_setting("multiview.sync_group") == "same_patient"
 
 
 def test_settings_dialog_defaults_language_to_english(qapp):
@@ -94,3 +100,37 @@ def test_settings_dialog_defaults_language_to_english(qapp):
     assert language_combo.currentData() == "en_US"
 
     dialog.close()
+
+
+def test_settings_navigation_tracks_keyboard_current_row(qapp):
+    settings = SettingsManager(app_name="MedImagerTestKeyboardNav", use_json=True)
+    dialog = SettingsDialog(settings)
+
+    dialog.nav_list.setCurrentRow(3)
+    qapp.processEvents()
+
+    assert dialog.stacked_widget.currentIndex() == 3
+    assert dialog.minimumWidth() <= 560
+    assert dialog.minimumHeight() <= 420
+    dialog.close()
+
+
+def test_settings_custom_theme_saves_to_user_config_with_alpha(qapp, tmp_path, monkeypatch):
+    import medimager.ui.dialogs.settings_dialog as settings_dialog_module
+
+    settings = SettingsManager(app_name="MedImagerTestUserTheme", use_json=True)
+    monkeypatch.setattr(
+        settings_dialog_module,
+        "get_user_themes_dir",
+        lambda manager=None: tmp_path / "themes",
+    )
+    dialog = SettingsDialog(settings)
+    roi_combo = dialog.setting_widgets["roi_theme"]
+    roi_combo.setCurrentIndex(roi_combo.findData("custom"))
+    dialog.setting_widgets["roi.custom.fill_color"].setColor(QColor(1, 2, 3, 128))
+
+    dialog.accept()
+
+    theme_file = tmp_path / "themes" / "roi" / "custom.toml"
+    assert theme_file.is_file()
+    assert toml.load(theme_file)["fill_color"] == "#01020380"

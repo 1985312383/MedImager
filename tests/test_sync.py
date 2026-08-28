@@ -7,7 +7,6 @@
 """
 
 import sys
-import os
 import unittest
 from pathlib import Path
 
@@ -17,8 +16,6 @@ sys.path.insert(0, str(project_root))
 
 try:
     from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import QTimer
-    from PySide6.QtTest import QTest
     
     from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
     from medimager.core.sync_manager import SyncManager, SyncMode, SyncGroup

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
-import pydicom
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.encaps import encapsulate
 from pydicom.uid import (

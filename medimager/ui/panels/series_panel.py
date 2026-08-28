@@ -7,21 +7,43 @@
 
 from typing import Dict, List, Optional, Set
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
-    QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QGroupBox, QComboBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QCheckBox, QSpinBox,
-    QProgressBar, QTabWidget, QScrollArea, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QGroupBox, QComboBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QScrollArea, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QMimeData, QSignalBlocker
-from PySide6.QtGui import QAction, QPixmap, QIcon, QFont, QColor, QPalette, QDrag, QPainter, QBrush, QPen, QFontMetrics
+from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QSize, QMimeData, QSignalBlocker
+from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QDrag, QPainter, QBrush, QPen, QFontMetrics
 
-from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo, ViewPosition
-from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy, SortOrder
+from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
+from medimager.core.series_view_binding import SeriesViewBindingManager
 from medimager.core.image_data_model import ImageDataModel
+from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.utils.logger import get_logger
 from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
+
+_INLINE_SLICE_LIMIT = 200
+_SLICE_PAGE_SIZE = 100
+_THUMBNAIL_SIZE = QSize(72, 56)
+
+
+def _parse_tree_item_data(data):
+    """Return ``(kind, series_id, payload)`` for series-tree item data."""
+    if isinstance(data, tuple) and data:
+        if data[0] == "slice" and len(data) == 3:
+            return "slice", str(data[1]), int(data[2])
+        if data[0] == "slice_range" and len(data) == 4:
+            return "slice_range", str(data[1]), (int(data[2]), int(data[3]))
+    if isinstance(data, str) and data:
+        # Backward-compatible parsing for trees created before paged slice items.
+        if ":" in data:
+            series_id, possible_index = data.rsplit(":", 1)
+            try:
+                return "slice", series_id, int(possible_index)
+            except ValueError:
+                pass
+        return "series", data, None
+    return None, None, None
 
 
 class DraggableTreeWidget(QTreeWidget):
@@ -39,7 +61,7 @@ class DraggableTreeWidget(QTreeWidget):
             return
         
         # 检查是否是序列项目（不是分组项目）
-        series_id = item.data(0, Qt.UserRole)
+        _, series_id, _ = _parse_tree_item_data(item.data(0, Qt.UserRole))
         if not series_id:
             return
         
@@ -129,9 +151,13 @@ class SeriesListWidget(QWidget):
         
         self._series_manager = series_manager
         self._series_items: Dict[str, QTreeWidgetItem] = {}
+        self._thumbnail_cache: Dict[str, QIcon] = {}
+        self._thumbnail_pending: Set[str] = set()
+        self._thumbnail_placeholder = self._create_thumbnail_placeholder()
         
         self._setup_ui()
         self._connect_signals()
+        self._refresh_tree()
         
         logger.debug("[SeriesListWidget.__init__] 序列列表组件初始化完成")
     
@@ -173,6 +199,7 @@ class SeriesListWidget(QWidget):
             t("serieslistwidget.status"),
             t("serieslistwidget.view")
         ])
+        self._tree_widget.setIconSize(_THUMBNAIL_SIZE)
         
         # 设置列宽
         header = self._tree_widget.header()
@@ -183,6 +210,7 @@ class SeriesListWidget(QWidget):
         
         # 连接信号
         self._tree_widget.itemSelectionChanged.connect(self._on_selection_changed)
+        self._tree_widget.itemExpanded.connect(self._on_item_expanded)
         self._tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree_widget.customContextMenuRequested.connect(self._on_context_menu)
         self._tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -229,8 +257,11 @@ class SeriesListWidget(QWidget):
             # 更新统计信息
             self._stats_label.setText(t("serieslistwidget.total_value_sequences").replace("%1", str(len(series_ids))))
             
-            # 展开所有分组
-            self._tree_widget.expandAll()
+            # Only expand grouping nodes. Series and slice pages stay lazy.
+            for index in range(self._tree_widget.topLevelItemCount()):
+                top_level = self._tree_widget.topLevelItem(index)
+                if top_level.data(0, Qt.UserRole) is None:
+                    top_level.setExpanded(True)
             
             logger.debug(f"[SeriesListWidget._refresh_tree] 树形列表刷新完成: {len(series_ids)}个序列")
             
@@ -290,6 +321,11 @@ class SeriesListWidget(QWidget):
             series_desc = self._format_series_text(series_info)
             item.setText(0, series_desc)
             item.setData(0, Qt.UserRole, series_id)
+            item.setIcon(
+                0, self._thumbnail_cache.get(
+                    series_id, self._thumbnail_placeholder
+                )
+            )
             
             # 设置状态
             status_text = t("serieslistwidget.loaded") if series_info.is_loaded else t("seriesinfowidget.not_loaded")
@@ -308,6 +344,8 @@ class SeriesListWidget(QWidget):
             
             # 存储项目引用
             self._series_items[series_id] = item
+            if series_info.is_loaded and series_id not in self._thumbnail_cache:
+                self._schedule_thumbnail(series_id)
             
             logger.debug(f"[SeriesListWidget._add_series_item] 添加序列项目: {series_id}")
             
@@ -315,8 +353,9 @@ class SeriesListWidget(QWidget):
             logger.error(f"[SeriesListWidget._add_series_item] 添加序列项目失败: {e}", exc_info=True)
     
     def _add_slice_items(self, series_item: QTreeWidgetItem, series_id: str) -> None:
-        """为序列添加切片子项目"""
+        """Add inline slices for small volumes and lazy pages for large ones."""
         try:
+            series_item.takeChildren()
             series_info = self._series_manager.get_series_info(series_id)
             if not series_info or not series_info.is_loaded:
                 return
@@ -328,23 +367,190 @@ class SeriesListWidget(QWidget):
             
             slice_count = image_model.get_slice_count()
             
-            # 为每个切片创建子项目
-            for slice_index in range(slice_count):
-                slice_item = QTreeWidgetItem(series_item)
-                slice_item.setText(0, t("serieslistwidget.slice_value").replace("%1", str(slice_index + 1)))
-                slice_item.setData(0, Qt.UserRole, f"{series_id}:{slice_index}")  # 存储序列ID和切片索引
-                
-                # 设置切片状态（如果需要）
-                slice_item.setText(1, "")
-                slice_item.setText(2, "")
-                
-                # 设置不同的图标或颜色来区分切片项目
-                slice_item.setFont(0, QFont("", 8))
+            if slice_count <= _INLINE_SLICE_LIMIT:
+                for slice_index in range(slice_count):
+                    self._create_slice_item(series_item, series_id, slice_index)
+            else:
+                for start in range(0, slice_count, _SLICE_PAGE_SIZE):
+                    end = min(start + _SLICE_PAGE_SIZE, slice_count)
+                    range_item = QTreeWidgetItem(series_item)
+                    range_label = f"{start + 1}–{end}"
+                    range_item.setText(
+                        0,
+                        t("serieslistwidget.slice_value").replace("%1", range_label),
+                    )
+                    range_item.setData(
+                        0, Qt.UserRole, ("slice_range", series_id, start, end)
+                    )
+                    # A placeholder supplies an expand affordance without creating
+                    # hundreds of QTreeWidgetItems during series loading.
+                    placeholder = QTreeWidgetItem(range_item)
+                    placeholder.setData(0, Qt.UserRole, ("slice_placeholder",))
                 
             logger.debug(f"[SeriesListWidget._add_slice_items] 添加切片项目: {series_id}, 数量: {slice_count}")
             
         except Exception as e:
             logger.error(f"[SeriesListWidget._add_slice_items] 添加切片项目失败: {e}", exc_info=True)
+
+    def _create_slice_item(
+        self, parent: QTreeWidgetItem, series_id: str, slice_index: int
+    ) -> QTreeWidgetItem:
+        slice_item = QTreeWidgetItem(parent)
+        slice_item.setText(
+            0,
+            t("serieslistwidget.slice_value").replace("%1", str(slice_index + 1)),
+        )
+        slice_item.setData(0, Qt.UserRole, ("slice", series_id, slice_index))
+        slice_item.setFont(0, QFont("", 8))
+        return slice_item
+
+    @staticmethod
+    def _create_thumbnail_placeholder() -> QIcon:
+        pixmap = QPixmap(_THUMBNAIL_SIZE)
+        pixmap.fill(QColor('#30353b'))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor('#6f7a85'), 1))
+        painter.drawRoundedRect(pixmap.rect().adjusted(1, 1, -2, -2), 4, 4)
+        painter.setPen(QColor('#aeb7c0'))
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, 'DICOM')
+        painter.end()
+        return QIcon(pixmap)
+
+    def _schedule_thumbnail(self, series_id: str) -> None:
+        """Generate once at GUI idle; scrolling never invokes decoding."""
+        if series_id in self._thumbnail_cache or series_id in self._thumbnail_pending:
+            return
+        self._thumbnail_pending.add(series_id)
+        QTimer.singleShot(
+            0, lambda sid=series_id: self._generate_series_thumbnail(sid)
+        )
+
+    def _generate_series_thumbnail(self, series_id: str) -> None:
+        self._thumbnail_pending.discard(series_id)
+        if series_id in self._thumbnail_cache:
+            return
+        icon = self._thumbnail_placeholder
+        try:
+            model = self._series_manager.get_series_model(series_id)
+            if model is None or not model.has_image():
+                raise ValueError('series image is unavailable')
+            middle_slice = model.get_slice_count() // 2
+            display_data = model.get_display_slice(middle_slice)
+            if display_data is None:
+                raise ValueError('middle slice could not be rendered')
+            image = qimage_from_display_data(display_data)
+            scaled = QPixmap.fromImage(image).scaled(
+                _THUMBNAIL_SIZE,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            canvas = QPixmap(_THUMBNAIL_SIZE)
+            canvas.fill(QColor('#161a1e'))
+            painter = QPainter(canvas)
+            painter.drawPixmap(
+                (canvas.width() - scaled.width()) // 2,
+                (canvas.height() - scaled.height()) // 2,
+                scaled,
+            )
+            painter.end()
+            icon = QIcon(canvas)
+        except Exception as error:
+            # Cache the placeholder as the terminal result for this loaded
+            # series. Tree rebuilds and scrolling therefore never retry decode.
+            logger.warning(
+                '[SeriesListWidget] 生成序列缩略图失败: %s (%s)',
+                series_id,
+                error,
+            )
+        self._thumbnail_cache[series_id] = icon
+        item = self._series_items.get(series_id)
+        if item is not None:
+            item.setIcon(0, icon)
+
+    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
+        kind, series_id, payload = _parse_tree_item_data(item.data(0, Qt.UserRole))
+        if kind != "slice_range" or not series_id:
+            return
+        first_child = item.child(0) if item.childCount() else None
+        if first_child is None or first_child.data(0, Qt.UserRole) != ("slice_placeholder",):
+            return
+        item.takeChildren()
+        start, end = payload
+        for slice_index in range(start, end):
+            self._create_slice_item(item, series_id, slice_index)
+
+    def find_slice_item(
+        self, series_id: str, slice_index: int
+    ) -> Optional[QTreeWidgetItem]:
+        """Find and, for a large series, materialize only the requested page."""
+        series_item = self._series_items.get(series_id)
+        if series_item is None:
+            return None
+        for child_index in range(series_item.childCount()):
+            child = series_item.child(child_index)
+            kind, child_series_id, payload = _parse_tree_item_data(
+                child.data(0, Qt.UserRole)
+            )
+            if kind == "slice" and child_series_id == series_id and payload == slice_index:
+                return child
+            if kind == "slice_range" and child_series_id == series_id:
+                start, end = payload
+                if start <= slice_index < end:
+                    self._on_item_expanded(child)
+                    child.setExpanded(True)
+                    for page_index in range(child.childCount()):
+                        slice_item = child.child(page_index)
+                        item_kind, item_series_id, item_slice_index = _parse_tree_item_data(
+                            slice_item.data(0, Qt.UserRole)
+                        )
+                        if (
+                            item_kind == "slice"
+                            and item_series_id == series_id
+                            and item_slice_index == slice_index
+                        ):
+                            return slice_item
+        return None
+
+    def find_materialized_slice_item(
+        self, series_id: str, slice_index: int
+    ) -> Optional[QTreeWidgetItem]:
+        """Find an already-created slice without expanding or allocating pages."""
+        series_item = self._series_items.get(series_id)
+        if series_item is None:
+            return None
+        pending = [series_item]
+        while pending:
+            parent = pending.pop()
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                kind, child_series_id, payload = _parse_tree_item_data(
+                    child.data(0, Qt.UserRole)
+                )
+                if (
+                    kind == "slice"
+                    and child_series_id == series_id
+                    and payload == slice_index
+                ):
+                    return child
+                # Do not descend into collapsed range pages. Navigation must
+                # remain O(materialized items), not allocate on every frame.
+                if child.isExpanded():
+                    pending.append(child)
+        return None
+
+    def update_current_slice_indicator(
+        self, series_id: str, slice_index: int
+    ) -> None:
+        series_item = self._series_items.get(series_id)
+        model = self._series_manager.get_series_model(series_id)
+        if series_item is None or model is None:
+            return
+        status = t("serieslistwidget.loaded")
+        count = model.get_slice_count()
+        if count > 1:
+            status = f"{status} · {slice_index + 1}/{count}"
+        series_item.setText(1, status)
     
     def _format_series_text(self, series_info: SeriesInfo) -> str:
         """格式化序列显示文本"""
@@ -362,25 +568,15 @@ class SeriesListWidget(QWidget):
             item = selected_items[0]
             data = item.data(0, Qt.UserRole)
             if data:
-                if ":" in str(data):
-                    # 这是一个切片项目
-                    series_id, slice_index_str = str(data).split(":", 1)
-                    try:
-                        slice_index = int(slice_index_str)
-                        logger.debug(f"[SeriesListWidget._on_selection_changed] 选择切片: {series_id}, 切片: {slice_index}")
-                        
-                        # 切换到对应的切片
-                        image_model = self._series_manager.get_series_model(series_id)
-                        if image_model:
-                            image_model.set_current_slice(slice_index)
-                        
-                        # 发出序列选择信号
-                        self.series_selected.emit(series_id)
-                    except (ValueError, IndexError):
-                        logger.warning(f"[SeriesListWidget._on_selection_changed] 无效的切片索引: {data}")
-                else:
-                    # 这是一个序列项目
-                    series_id = str(data)
+                kind, series_id, payload = _parse_tree_item_data(data)
+                if kind == "slice" and series_id is not None:
+                    slice_index = payload
+                    logger.debug(f"[SeriesListWidget._on_selection_changed] 选择切片: {series_id}, 切片: {slice_index}")
+                    image_model = self._series_manager.get_series_model(series_id)
+                    if image_model:
+                        image_model.set_current_slice(slice_index)
+                    self.series_selected.emit(series_id)
+                elif kind in ("series", "slice_range") and series_id is not None:
                     logger.debug(f"[SeriesListWidget._on_selection_changed] 选择序列: {series_id}")
                     self.series_selected.emit(series_id)
     
@@ -388,14 +584,11 @@ class SeriesListWidget(QWidget):
         """处理项目双击"""
         data = item.data(0, Qt.UserRole)
         if data:
-            if ":" in str(data):
-                # 这是一个切片项目，双击时发出序列选择信号
-                series_id, _ = str(data).split(":", 1)
+            kind, series_id, _ = _parse_tree_item_data(data)
+            if kind == "slice" and series_id is not None:
                 logger.debug(f"[SeriesListWidget._on_item_double_clicked] 双击切片，所属序列: {series_id}")
                 self.series_double_clicked.emit(series_id)
-            else:
-                # 这是一个序列项目
-                series_id = str(data)
+            elif kind in ("series", "slice_range") and series_id is not None:
                 logger.debug(f"[SeriesListWidget._on_item_double_clicked] 双击序列: {series_id}")
                 self.series_double_clicked.emit(series_id)
     
@@ -405,13 +598,9 @@ class SeriesListWidget(QWidget):
         if item:
             data = item.data(0, Qt.UserRole)
             if data:
-                if ":" in str(data):
-                    # 这是一个切片项目，获取序列ID
-                    series_id, _ = str(data).split(":", 1)
-                else:
-                    # 这是一个序列项目
-                    series_id = str(data)
-                
+                _, series_id, _ = _parse_tree_item_data(data)
+                if not series_id:
+                    return
                 global_pos = self._tree_widget.mapToGlobal(position)
                 logger.debug(f"[SeriesListWidget._on_context_menu] 请求右键菜单: {series_id}")
                 self.series_context_menu.emit(series_id, global_pos)
@@ -424,6 +613,8 @@ class SeriesListWidget(QWidget):
     def _on_series_removed(self, series_id: str) -> None:
         """处理序列移除事件"""
         logger.debug(f"[SeriesListWidget._on_series_removed] 序列移除: {series_id}")
+        self._thumbnail_cache.pop(series_id, None)
+        self._thumbnail_pending.discard(series_id)
         self._refresh_tree()
     
     def _on_series_loaded(self, series_id: str) -> None:
@@ -437,9 +628,8 @@ class SeriesListWidget(QWidget):
             
             # 添加切片子项目
             self._add_slice_items(item, series_id)
-            
-            # 展开该序列项目以显示切片
-            item.setExpanded(True)
+            item.setIcon(0, self._thumbnail_placeholder)
+            self._schedule_thumbnail(series_id)
     
     def _on_binding_changed(self, view_id: str, series_id: str) -> None:
         """处理绑定变更事件"""
@@ -589,9 +779,6 @@ class ViewBindingWidget(QWidget):
         """处理布局变更信号"""
         logger.debug(f"[ViewBindingWidget._on_layout_changed_signal] 布局变更信号: {layout}")
         
-        # 更新布局选择器
-        rows, cols = layout
-        layout_text = f"{rows}×{cols}"
         
         # 刷新绑定表格
         self._refresh_binding_table()
@@ -872,6 +1059,8 @@ class SeriesPanel(QWidget):
         
         self._series_manager = series_manager
         self._binding_manager = binding_manager
+        self._connected_slice_signals: Dict[str, tuple[ImageDataModel, object]] = {}
+        self._series_removal_handler = None
         
         self._setup_ui()
         self._connect_signals()
@@ -925,6 +1114,7 @@ class SeriesPanel(QWidget):
         # 序列管理器信号 - 监听切片变化
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)
         self._series_manager.series_loaded.connect(self._on_series_loaded_for_sync)
+        self._series_manager.series_removed.connect(self._on_series_removed_for_sync)
         self._series_manager.binding_changed.connect(self._on_binding_changed_for_sync)
         
         # 绑定组件信号
@@ -976,7 +1166,9 @@ class SeriesPanel(QWidget):
         """绑定到活动视图"""
         active_view_id = self._series_manager.get_active_view_id()
         if active_view_id:
-            success = self._series_manager.bind_series_to_view(active_view_id, series_id)
+            success = self._binding_manager.bind_series_to_view(
+                active_view_id, series_id
+            )
             if success:
                 logger.info(f"[SeriesPanel._bind_to_active_view] 绑定成功: {series_id} -> {active_view_id}")
         else:
@@ -991,8 +1183,54 @@ class SeriesPanel(QWidget):
         logger.info(f"[SeriesPanel._unbind_all_views] 解除绑定完成: {series_id}")
     
     def _remove_series(self, series_id: str) -> None:
-        """移除序列"""
-        success = self._series_manager.remove_series(series_id)
+        """Remove a series only after an explicit, annotation-aware confirmation."""
+        if callable(self._series_removal_handler):
+            self._series_removal_handler(series_id)
+            return
+        summary = self._series_manager.get_series_removal_summary(series_id)
+        if not summary.exists:
+            logger.warning(f"[SeriesPanel._remove_series] 序列不存在: {series_id}")
+            return
+
+        series_info = self._series_manager.get_series_info(series_id)
+        display_name = (
+            self._series_list._format_series_text(series_info)
+            if series_info is not None
+            else series_id
+        )
+        message_lines = [f"{t('seriespanel.remove_sequence')}?", "", display_name]
+        if summary.annotation_count:
+            message_lines.append("")
+            if summary.has_unsaved_annotations:
+                message_lines.append(f"⚠ {t('seriespanel.unsaved_annotations')}")
+            message_lines.extend(
+                [
+                    f"{t('settingsdialog.roi_settings')}: {summary.roi_count}",
+                    f"{t('measurementtool.measurements')}: {summary.measurement_count}",
+                    f"{t('mainwindow.angle_measurement')}: {summary.angle_measurement_count}",
+                ]
+            )
+
+        dialog_title = (
+            f"⚠ {t('seriespanel.remove_sequence')}"
+            if summary.has_unsaved_annotations
+            else t("seriespanel.remove_sequence")
+        )
+        answer = QMessageBox.warning(
+            self,
+            dialog_title,
+            "\n".join(message_lines),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            logger.info(f"[SeriesPanel._remove_series] 用户取消移除: {series_id}")
+            return
+
+        success = self._series_manager.remove_series(
+            series_id,
+            allow_unsaved_annotations=summary.has_unsaved_annotations,
+        )
         if success:
             logger.info(f"[SeriesPanel._remove_series] 序列移除成功: {series_id}")
         else:
@@ -1048,19 +1286,21 @@ class SeriesPanel(QWidget):
     def _connect_slice_change_signal(self, series_id: str, image_model) -> None:
         """连接图像模型的切片变化信号"""
         try:
-            # 为了避免重复连接，先断开可能存在的连接
-            if hasattr(self, '_connected_slice_signals'):
-                if series_id in self._connected_slice_signals:
-                    return  # 已经连接过了
-            else:
-                self._connected_slice_signals = set()
-            
-            # 连接切片变化信号
-            image_model.slice_changed.connect(
-                lambda slice_index, sid=series_id: self.sync_slice_selection(sid, slice_index)
-            )
-            
-            self._connected_slice_signals.add(series_id)
+            existing = self._connected_slice_signals.get(series_id)
+            if existing is not None:
+                existing_model, existing_slot = existing
+                if existing_model is image_model:
+                    return
+                try:
+                    existing_model.slice_changed.disconnect(existing_slot)
+                except (RuntimeError, TypeError):
+                    pass
+
+            def slot(slice_index, sid=series_id):
+                self.sync_slice_selection(sid, slice_index)
+
+            image_model.slice_changed.connect(slot)
+            self._connected_slice_signals[series_id] = (image_model, slot)
             logger.debug(f"[SeriesPanel._connect_slice_change_signal] 连接切片变化信号: {series_id}")
             
         except Exception as e:
@@ -1094,41 +1334,27 @@ class SeriesPanel(QWidget):
             if active_view_id:
                 binding = self._series_manager.get_view_binding(active_view_id)
                 if not binding or binding.series_id != series_id:
-                    logger.debug(f"[SeriesPanel._sync_slice_selection] 切片变化不是来自活动视图，跳过同步")
+                    logger.debug("[SeriesPanel._sync_slice_selection] 切片变化不是来自活动视图，跳过同步")
                     return
             
-            # 在序列列表中找到对应的切片项目并选中
-            if hasattr(self._series_list, '_series_items') and series_id in self._series_list._series_items:
-                series_item = self._series_list._series_items[series_id]
-                
-                # 查找对应的切片子项目
-                for i in range(series_item.childCount()):
-                    slice_item = series_item.child(i)
-                    data = slice_item.data(0, Qt.UserRole)
-                    
-                    if data and ":" in str(data):
-                        item_series_id, item_slice_index_str = str(data).split(":", 1)
-                        try:
-                            item_slice_index = int(item_slice_index_str)
-                            if item_series_id == series_id and item_slice_index == slice_index:
-                                tree_widget = self._series_list._tree_widget
-                                blocker = QSignalBlocker(tree_widget)
-                                try:
-                                    # 选中切片项目
-                                    tree_widget.setCurrentItem(slice_item)
-
-                                    # 确保父项目展开
-                                    series_item.setExpanded(True)
-
-                                    # 滚动到选中项目，确保可见
-                                    tree_widget.scrollToItem(slice_item)
-                                finally:
-                                    del blocker
-                                
-                                logger.debug(f"[SeriesPanel._sync_slice_selection] 选中切片项目: {slice_index}")
-                                break
-                        except (ValueError, IndexError):
-                            continue
+            self._series_list.update_current_slice_indicator(series_id, slice_index)
+            series_item = self._series_list._series_items.get(series_id)
+            # Browsing images must not force open the tree or scroll the side
+            # panel.  If the user has explicitly expanded the series/page, we
+            # may update an already materialized selection in place.
+            if series_item is None or not series_item.isExpanded():
+                return
+            slice_item = self._series_list.find_materialized_slice_item(
+                series_id, slice_index
+            )
+            if slice_item is not None:
+                tree_widget = self._series_list._tree_widget
+                blocker = QSignalBlocker(tree_widget)
+                try:
+                    tree_widget.setCurrentItem(slice_item)
+                finally:
+                    del blocker
+                logger.debug(f"[SeriesPanel._sync_slice_selection] 选中切片项目: {slice_index}")
             
         except Exception as e:
             logger.error(f"[SeriesPanel._sync_slice_selection] 同步切片选择失败: {e}", exc_info=True)
@@ -1146,12 +1372,31 @@ class SeriesPanel(QWidget):
                 
         except Exception as e:
             logger.error(f"[SeriesPanel._on_series_loaded_for_sync] 处理序列加载失败: {e}", exc_info=True)
+
+    def _on_series_removed_for_sync(self, series_id: str) -> None:
+        """Disconnect the exact lambda associated with a removed series model."""
+        connection = self._connected_slice_signals.pop(series_id, None)
+        if connection is None:
+            return
+        model, slot = connection
+        try:
+            model.slice_changed.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass
     
     def get_selected_series_id(self) -> Optional[str]:
         """获取当前选中的序列ID"""
-        # 这里需要从序列列表组件获取选中项
-        # 实现省略，返回None
-        return None
+        selected_items = self._series_list._tree_widget.selectedItems()
+        if not selected_items:
+            return None
+        _, series_id, _ = _parse_tree_item_data(
+            selected_items[0].data(0, Qt.UserRole)
+        )
+        return series_id
+
+    def set_series_removal_handler(self, handler) -> None:
+        """Delegate annotation-aware removal to the owning main window."""
+        self._series_removal_handler = handler
     
     def _register_to_theme_manager(self) -> None:
         """注册到主题管理器"""
@@ -1161,13 +1406,13 @@ class SeriesPanel(QWidget):
             if hasattr(main_window, 'theme_manager'):
                 self._theme_manager = main_window.theme_manager
                 self._theme_manager.register_component(self)
-                logger.debug(f"[SeriesPanel._register_to_theme_manager] 成功注册到主题管理器")
+                logger.debug("[SeriesPanel._register_to_theme_manager] 成功注册到主题管理器")
                 
                 # 立即应用当前主题
                 current_theme = self._theme_manager.get_current_theme()
                 self.update_theme(current_theme)
             else:
-                logger.debug(f"[SeriesPanel._register_to_theme_manager] 未找到主题管理器")
+                logger.debug("[SeriesPanel._register_to_theme_manager] 未找到主题管理器")
         except Exception as e:
             logger.error(f"[SeriesPanel._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
     
@@ -1196,7 +1441,7 @@ class SeriesPanel(QWidget):
                         color: #000000;
                     }
                 """
-                logger.info(f"[SeriesPanel.update_theme] 应用浅色主题样式")
+                logger.info("[SeriesPanel.update_theme] 应用浅色主题样式")
             else:  # dark theme
                 stylesheet = """
                     QWidget {
@@ -1217,10 +1462,10 @@ class SeriesPanel(QWidget):
                         color: #ffffff;
                     }
                 """
-                logger.info(f"[SeriesPanel.update_theme] 应用深色主题样式")
+                logger.info("[SeriesPanel.update_theme] 应用深色主题样式")
             
             self.setStyleSheet(stylesheet)
-            logger.info(f"[SeriesPanel.update_theme] 样式表已应用")
+            logger.info("[SeriesPanel.update_theme] 样式表已应用")
             
             logger.info(f"[SeriesPanel.update_theme] 主题更新完成: {theme_name}")
         except Exception as e:

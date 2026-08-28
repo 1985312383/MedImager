@@ -19,3 +19,18 @@ def qcolor_from_theme(value: str, fallback: str = "#000000") -> QColor:
     if not color.isValid():
         color = QColor(fallback)
     return color
+
+
+def qcolor_to_theme(color: QColor) -> str:
+    """Serialize a QColor using the theme file's CSS ``#RRGGBBAA`` format.
+
+    ``QColor.name(QColor.HexArgb)`` returns ``#AARRGGBB`` which is a different
+    byte order from the existing theme files. Keeping this conversion in one
+    place prevents alpha values from being silently lost or swapped.
+    """
+    if not isinstance(color, QColor) or not color.isValid():
+        raise ValueError("A valid QColor is required")
+    return (
+        f"#{color.red():02X}{color.green():02X}{color.blue():02X}"
+        f"{color.alpha():02X}"
+    )

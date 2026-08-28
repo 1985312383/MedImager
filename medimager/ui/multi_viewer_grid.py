@@ -5,17 +5,27 @@
 每个视图可以独立显示不同的DICOM序列。
 """
 
-from typing import Dict, List, Optional, Tuple, Set, Union
+from typing import Dict, List, Optional, Tuple
 from PySide6.QtWidgets import (QWidget, QGridLayout, QFrame, QVBoxLayout, 
-                              QHBoxLayout, QLabel, QPushButton, QSplitter,
-                              QSizePolicy, QProgressBar, QApplication)
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QRect, QTimer, QSize
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QFont, QPixmap
+                              QHBoxLayout, QLabel, QSplitter,
+                              QApplication,
+                              QStackedLayout)
+from PySide6.QtCore import Qt, Signal, QRect, QRectF, QTimer
 
 from medimager.ui.image_viewer import ImageViewer
 from medimager.ui.qt_image_utils import qimage_from_display_data
-from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition, ViewBinding
+from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.view_presentation_state import (
+    ViewPresentationState,
+    render_display_slice,
+)
+from medimager.core.analysis import calculate_roi_statistics
+from medimager.ui.widgets.roi_stats_box import (
+    _get_stats_box_settings,
+    calculate_stats_box_size_rect,
+    get_stats_text,
+)
 from medimager.utils.logger import get_logger
 from medimager.utils.settings import get_settings_manager
 from medimager.utils.i18n import t
@@ -37,6 +47,7 @@ class ViewFrame(QFrame):
     view_activated = Signal(str)
     view_clicked = Signal(str)
     drop_requested = Signal(str, str)
+    maximize_requested = Signal(str)
     
     def __init__(self, view_id: str, position: ViewPosition, parent: Optional[QWidget] = None) -> None:
         """初始化视图框架
@@ -54,6 +65,11 @@ class ViewFrame(QFrame):
         self._is_active = False
         self._series_id: Optional[str] = None
         self._image_model: Optional[ImageDataModel] = None
+        self._viewer_state_store = getattr(parent, "_viewer_state_store", {})
+        self._presentation_state_store = getattr(parent, "_presentation_state_store", {})
+        self._presentation_state: Optional[ViewPresentationState] = None
+        self._display_cache_key = None
+        self._display_cache_qimage = None
         
         # 启用拖拽接收
         self.setAcceptDrops(True)
@@ -83,20 +99,53 @@ class ViewFrame(QFrame):
         self._title_bar = self._create_title_bar()
         self._main_layout.addWidget(self._title_bar)
         
-        # 图像查看器
+        # 图像查看器与空态/加载态覆盖层
+        viewer_container = QWidget(self)
+        self._viewer_stack = QStackedLayout(viewer_container)
+        self._viewer_stack.setContentsMargins(0, 0, 0, 0)
+        self._viewer_stack.setStackingMode(QStackedLayout.StackAll)
         self._image_viewer = ImageViewer(self)
         self._image_viewer.view_id = self._view_id
-        self._main_layout.addWidget(self._image_viewer, 1)
+        self._viewer_stack.addWidget(self._image_viewer)
+        self._state_overlay = QLabel(t('viewframe.empty_hint'), viewer_container)
+        self._state_overlay.setAlignment(Qt.AlignCenter)
+        self._state_overlay.setWordWrap(True)
+        self._state_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._state_overlay.setStyleSheet(
+            "QLabel { color: #f2f2f2; background: rgba(24, 28, 34, 185); "
+            "padding: 18px; font-size: 13px; }"
+        )
+        self._viewer_stack.addWidget(self._state_overlay)
+        # StackAll keeps both widgets laid out; the current widget is raised.
+        self._viewer_stack.setCurrentWidget(self._state_overlay)
+        self._main_layout.addWidget(viewer_container, 1)
         
         # 连接图像查看器的信号以显示坐标和像素值
         self._image_viewer.pixel_value_changed.connect(self._update_pixel_info)
         self._image_viewer.cursor_left_image.connect(self._clear_pixel_info)
+        self._image_viewer.interaction_started.connect(self._activate_from_viewer_interaction)
+        self._image_viewer.presentation_changed.connect(
+            self._on_view_presentation_changed
+        )
+        self._image_viewer.maximize_requested.connect(self._request_maximize)
+        self._image_viewer.series_drag_active.connect(self._set_drag_accept_style)
+        self._image_viewer.series_drop_requested.connect(
+            lambda series_id: self.drop_requested.emit(self._view_id, series_id)
+        )
         
         # 状态栏
         self._status_bar = self._create_status_bar()
         self._main_layout.addWidget(self._status_bar)
         
         logger.debug(f"[ViewFrame._setup_ui] UI设置完成: {self._view_id}")
+
+    def _request_maximize(self) -> None:
+        self.maximize_requested.emit(self._view_id)
+
+    def _activate_from_viewer_interaction(self) -> None:
+        """在查看器处理交互前激活所属视图。"""
+        if not self._is_active:
+            self.view_activated.emit(self._view_id)
     
     def _create_title_bar(self) -> QWidget:
         """创建标题栏"""
@@ -245,15 +294,15 @@ class ViewFrame(QFrame):
         """设置拖拽接受状态的样式"""
         if accepting:
             # 拖拽接受状态：蓝色虚线边框 + 半透明蓝色背景
-            self.setStyleSheet(f"""
-                ViewFrame {{
+            self.setStyleSheet("""
+                ViewFrame {
                     border: 3px dashed #0078d4;
                     background-color: rgba(0, 120, 212, 0.1);
-                }}
-                QLabel {{
+                }
+                QLabel {
                     color: #0078d4;
                     font-weight: bold;
-                }}
+                }
             """)
         else:
             # 恢复原始样式
@@ -314,32 +363,110 @@ class ViewFrame(QFrame):
             self._clear_tool_data()
             
             self._series_id = series_id
-            self._image_model = image_model # 存储图像模型
+            self._image_model = image_model
             
             # 更新UI显示
             self._series_label.setText(series_info)
+            self._image_viewer.set_corner_overlay_info(title=series_info)
+            state_key = (series_id, self._view_id)
+            state = self._presentation_state_store.get(state_key)
+            if state is None:
+                state = ViewPresentationState.from_model(
+                    image_model,
+                    series_id=series_id,
+                    interpolation=self._image_viewer.presentation_state.interpolation,
+                )
+                self._presentation_state_store[state_key] = state
+            self._presentation_state = state
+
             
             # 绑定图像数据
-            self._image_viewer.set_model(image_model)
+            self._image_viewer.set_model(image_model, initialize_state=False)
+            self._image_viewer.set_presentation_state(state)
+            self._viewer_stack.setCurrentWidget(self._image_viewer)
+            self._state_overlay.hide()
 
             # 连接信号以更新状态信息和图像显示
-            image_model.data_changed.connect(self._update_status_info)
-            image_model.data_changed.connect(self._update_image_display)
-            image_model.slice_changed.connect(self._update_slice_info)
-            image_model.slice_changed.connect(self._update_image_display)
+            image_model.data_changed.connect(self._on_model_data_changed)
+            image_model.data_changed.connect(self._restore_roi_stats_positions)
+            image_model.pixels_changed.connect(self._on_model_pixels_changed)
+            image_model.metadata_changed.connect(self._update_status_info)
+            image_model.slice_changed.connect(self._on_model_slice_changed)
+            image_model.window_level_changed.connect(self._on_model_window_changed)
+
             
             # 初始化状态显示和图像显示
             self._update_status_info()
             self._update_slice_info()
             self._update_image_display()
             
-            # 首次绑定时自适应窗格大小
-            self._image_viewer.fit_to_window()
+            if state.fit_mode:
+                self._image_viewer.fit_to_window()
+            else:
+                # Reapply saved pan/zoom after the image item has a scene rect.
+                self._image_viewer.set_presentation_state(state)
+            QTimer.singleShot(0, self._restore_roi_stats_positions)
             
             logger.info(f"[ViewFrame.bind_series] 序列绑定成功: {self._view_id} -> {series_id}")
             
         except Exception as e:
             logger.error(f"[ViewFrame.bind_series] 绑定序列失败: {e}", exc_info=True)
+            self.show_error_state(str(e))
+
+    def _on_view_presentation_changed(self, _state=None) -> None:
+        if self._image_model is None:
+            return
+        self._update_status_info()
+        self._update_slice_info()
+        self._update_image_display()
+        self._restore_roi_stats_positions()
+
+    def _on_model_data_changed(self) -> None:
+        """Repaint annotations without rebuilding the unchanged pixel layer."""
+        self._image_viewer.viewport().update()
+
+    def _on_model_pixels_changed(self) -> None:
+        self._display_cache_key = None
+        self._display_cache_qimage = None
+        self._image_viewer._roi_stats_cache.clear()
+        self._update_image_display()
+
+
+    def _on_model_slice_changed(self, slice_index: int) -> None:
+        """Compatibility path for old callers that target the active model."""
+        if self._is_active:
+            self._image_viewer.set_view_slice(slice_index)
+
+    def _on_model_window_changed(self, width: int, level: int) -> None:
+        """Compatibility path for toolbar actions not yet view-aware."""
+        if self._is_active:
+            self._image_viewer.set_view_window(width, level)
+
+    def set_compact_mode(self, compact: bool) -> None:
+        settings = get_settings_manager()
+        show_title = self._to_bool(settings.get_setting("display.show_view_title", True))
+        show_status = self._to_bool(settings.get_setting("display.show_view_status", True))
+        self._title_bar.setVisible(show_title and not compact)
+        self._status_bar.setVisible(show_status and not compact)
+        self._image_viewer.viewport().update()
+
+
+    def show_loading_state(self, series_id: str, series_info: str) -> None:
+        """显示已绑定但仍在后台解码的序列状态。"""
+        self._series_id = series_id
+        self._series_label.setText(series_info)
+        self._state_overlay.setText(t('viewframe.loading_hint'))
+        self._viewer_stack.setCurrentWidget(self._state_overlay)
+        self._state_overlay.show()
+
+    def show_error_state(self, detail: str = '') -> None:
+        """在视图内部显示解码/显示失败，而不吞掉全局错误详情。"""
+        message = t('viewframe.load_failed_hint')
+        if detail:
+            message += f"\n{detail}"
+        self._state_overlay.setText(message)
+        self._viewer_stack.setCurrentWidget(self._state_overlay)
+        self._state_overlay.show()
     
     def unbind_series(self) -> None:
         """解除序列绑定"""
@@ -348,16 +475,13 @@ class ViewFrame(QFrame):
         try:
             if self._series_id:
                 old_series_id = self._series_id
-                
-                # 清除数据
-                self._series_id = None
-                self._image_model = None # 清除图像模型
-                
-                # 清除图像数据
-                self._image_viewer.display_qimage(None)
-                
-                # 清除工具相关数据
+
+                # 先断开旧模型并清除当前视图的临时交互状态。持久标注仍归模型所有。
                 self._clear_tool_data()
+
+                self._series_id = None
+                self._image_model = None
+                self._image_viewer.display_qimage(None)
                 
                 # 更新UI
                 self._series_label.setText(t("viewframe.no_serial_number"))
@@ -365,6 +489,9 @@ class ViewFrame(QFrame):
                 self._wl_label.setText("")
                 self._coordinate_label.setText("")
                 self._pixel_value_label.setText("")
+                self._state_overlay.setText(t('viewframe.empty_hint'))
+                self._viewer_stack.setCurrentWidget(self._state_overlay)
+                self._state_overlay.show()
                 
                 logger.info(f"[ViewFrame.unbind_series] 序列解绑成功: {self._view_id} <- {old_series_id}")
             
@@ -375,10 +502,11 @@ class ViewFrame(QFrame):
         """更新状态信息"""
         try:
             if self._image_model:
-                model = self._image_model
-                ww = model.window_width
-                wl = model.window_level
-                self._wl_label.setText(f"WW/WL: {ww:.0f}/{wl:.0f}")
+                ww = self._image_viewer.window_width
+                wl = self._image_viewer.window_level
+                text = f"WW/WL: {ww:.0f}/{wl:.0f}"
+                self._wl_label.setText(text)
+                self._image_viewer.set_corner_overlay_info(window=text)
         except Exception as e:
             logger.debug(f"[ViewFrame._update_status_info] 更新状态信息失败: {e}")
     
@@ -387,9 +515,11 @@ class ViewFrame(QFrame):
         try:
             if self._image_model:
                 model = self._image_model
-                current = model.current_slice_index + 1
-                total = model.slice_count
-                self._slice_label.setText(f"{t('viewframe.slice')}: {current}/{total}")
+                current = self._image_viewer.current_slice_index + 1
+                total = model.get_slice_count()
+                text = f"{t('viewframe.slice')}: {current}/{total}"
+                self._slice_label.setText(text)
+                self._image_viewer.set_corner_overlay_info(slice=text)
         except Exception as e:
             logger.debug(f"[ViewFrame._update_slice_info] 更新切片信息失败: {e}")
     
@@ -398,33 +528,67 @@ class ViewFrame(QFrame):
         try:
             if self._image_model:
                 model = self._image_model
+                state = self._image_viewer.presentation_state
+                cache_key = (
+                    id(model),
+                    int(getattr(model, "_data_revision", 0)),
+                    int(state.slice_index),
+                    float(state.window_width),
+                    float(state.window_level),
+                    bool(state.use_dicom_voi_lut),
+                    state.voi_lut_index,
+                )
+                q_image = self._display_cache_qimage
+                if cache_key != self._display_cache_key or q_image is None:
+                    display_slice = render_display_slice(model, state)
+                    q_image = (
+                        qimage_from_display_data(display_slice)
+                        if display_slice is not None
+                        else None
+                    )
+                    self._display_cache_key = cache_key
+                    self._display_cache_qimage = q_image
 
-                # 使用 get_display_slice（内部带 PerformanceManager 缓存）
-                display_slice = model.get_display_slice()
-
-                if display_slice is not None:
-                    # 转换为QImage
-                    q_image = qimage_from_display_data(display_slice)
-
-                    # 创建QImage - 必须保持numpy数组引用，防止GC回收导致悬空指针
-                    # q_image was copied from the numpy buffer by qimage_from_display_data.
-
-                    # 显示图像
+                if q_image is not None and not q_image.isNull():
                     self._image_viewer.display_qimage(q_image)
 
                     logger.debug(f"[ViewFrame._update_image_display] 图像显示更新完成: {self._view_id}")
                 else:
                     # 清空显示
                     self._image_viewer.display_qimage(None)
+                    self.show_error_state()
 
         except Exception as e:
             logger.error(f"[ViewFrame._update_image_display] 更新图像显示失败: {e}", exc_info=True)
     
-    def _update_pixel_info(self, x: int, y: int, value: float) -> None:
+    def _update_pixel_info(self, x: int, y: int, value) -> None:
         """更新像素信息显示"""
         try:
             self._coordinate_label.setText(f"X:{x} Y:{y}")
-            self._pixel_value_label.setText(f"{t('viewframe.ct_value')}: {value:.0f}HU")
+            if isinstance(value, (tuple, list)):
+                channels = tuple(float(channel) for channel in value)
+                prefix = "RGBA" if len(channels) == 4 else "RGB"
+                formatted = ", ".join(f"{channel:g}" for channel in channels)
+                self._pixel_value_label.setText(f"{prefix}: ({formatted})")
+                return
+
+            model = self._image_viewer.model
+            dataset = None
+            if model and model.is_dicom():
+                dataset = model.get_dicom_file(self._image_viewer.current_slice_index)
+            modality = str(getattr(dataset, 'Modality', '') or '').upper()
+            unit = str(
+                getattr(dataset, 'RescaleType', '')
+                or getattr(dataset, 'Units', '')
+                or ''
+            ).strip()
+            if modality == 'CT':
+                label = t('viewframe.ct_value')
+                unit = unit or 'HU'
+            else:
+                label = modality or t('viewframe.pixel_value')
+            suffix = f" {unit}" if unit else ""
+            self._pixel_value_label.setText(f"{label}: {float(value):g}{suffix}")
         except Exception as e:
             logger.debug(f"[ViewFrame._update_pixel_info] 更新像素信息失败: {e}")
     
@@ -437,8 +601,41 @@ class ViewFrame(QFrame):
             logger.debug(f"[ViewFrame._clear_pixel_info] 清除像素信息失败: {e}")
     
     def _clear_tool_data(self) -> None:
-        """清除工具相关数据"""
+        """清除仅属于当前视图的临时工具状态，不修改模型标注。"""
         try:
+            old_model = self._image_model
+            if old_model is None and getattr(self._image_viewer, "model", None) is not None:
+                old_model = self._image_viewer.model
+
+            self._persist_roi_stats_positions(old_model)
+
+            # 先断开旧模型，避免清理临时状态时触发多余重绘。
+            if old_model is not None:
+                for signal, slot in (
+                    (old_model.data_changed, self._on_model_data_changed),
+                    (old_model.data_changed, self._restore_roi_stats_positions),
+                    (old_model.pixels_changed, self._on_model_pixels_changed),
+                    (old_model.metadata_changed, self._update_status_info),
+                    (old_model.slice_changed, self._on_model_slice_changed),
+                    (old_model.window_level_changed, self._on_model_window_changed),
+                ):
+                    try:
+                        signal.disconnect(slot)
+                    except (RuntimeError, TypeError):
+                        pass
+
+            # Cancel any in-progress drawing operation while keeping completed data.
+            current_tool = getattr(self._image_viewer, "current_tool", None)
+            if current_tool is not None:
+                try:
+                    current_tool.deactivate()
+                    reset_measurement = getattr(current_tool, "_reset_measurement", None)
+                    if callable(reset_measurement):
+                        reset_measurement()
+                    current_tool.activate()
+                except Exception as error:
+                    logger.debug(f"[ViewFrame._clear_tool_data] 重置临时工具状态失败: {error}")
+
             # 清除ImageViewer中的ROI相关状态
             if hasattr(self._image_viewer, 'clear_roi_dependent_state'):
                 self._image_viewer.clear_roi_dependent_state()
@@ -447,42 +644,91 @@ class ViewFrame(QFrame):
             if hasattr(self._image_viewer, 'clear_measurement_line'):
                 self._image_viewer.clear_measurement_line()
             
-            # 清除ImageViewer的模型引用中的ROI数据
-            if hasattr(self._image_viewer, 'model') and self._image_viewer.model:
-                model = self._image_viewer.model
-                if hasattr(model, 'clear_all_rois'):
-                    model.clear_all_rois()
-                if hasattr(model, 'clear_selection'):
-                    model.clear_selection()
-            
-            # 清除当前图像模型中的ROI数据（如果存在）
-            if self._image_model:
-                if hasattr(self._image_model, 'clear_all_rois'):
-                    self._image_model.clear_all_rois()
-                if hasattr(self._image_model, 'clear_selection'):
-                    self._image_model.clear_selection()
-            
-            # 断开旧模型的信号连接
-            if self._image_model:
-                try:
-                    self._image_model.data_changed.disconnect(self._update_status_info)
-                    self._image_model.data_changed.disconnect(self._update_image_display)
-                    self._image_model.slice_changed.disconnect(self._update_slice_info)
-                    self._image_model.slice_changed.disconnect(self._update_image_display)
-                except:
-                    pass  # 忽略断开连接的错误
-            
             # 清除ImageViewer的模型引用
             if hasattr(self._image_viewer, 'set_model'):
                 self._image_viewer.set_model(None)
+
+            self._image_model = None
             
             # 强制重绘视图
             self._image_viewer.viewport().update()
             
             logger.debug(f"[ViewFrame._clear_tool_data] 工具数据清理完成: {self._view_id}")
+            self._display_cache_key = None
+            self._display_cache_qimage = None
             
         except Exception as e:
             logger.error(f"[ViewFrame._clear_tool_data] 清理工具数据失败: {e}", exc_info=True)
+
+    def _persist_roi_stats_positions(self, model: Optional[ImageDataModel]) -> None:
+        """Store per-view ROI label positions outside the persistent data model."""
+        if model is None or not self._series_id:
+            return
+        valid_ids = {roi.id for roi in model.rois}
+        positions = {
+            roi_id: QRectF(rect)
+            for roi_id, rect in self._image_viewer.stats_box_positions.items()
+            if roi_id in valid_ids
+        }
+        self._viewer_state_store[(self._series_id, self._view_id)] = positions
+
+    def _restore_roi_stats_positions(self, *_args) -> None:
+        """Restore or safely generate visible label positions for current-slice ROIs."""
+        model = self._image_model
+        viewer = self._image_viewer
+        if model is None or not model.has_image() or viewer.image_item is None:
+            return
+
+        valid_ids = {roi.id for roi in model.rois}
+        viewer.stats_box_positions = {
+            roi_id: rect
+            for roi_id, rect in viewer.stats_box_positions.items()
+            if roi_id in valid_ids
+        }
+
+        saved_positions = self._viewer_state_store.get(
+            (self._series_id, self._view_id), {}
+        )
+        for roi in model.rois:
+            if roi.slice_index != viewer.current_slice_index or not roi.show_stats:
+                continue
+            if roi.id in viewer.stats_box_positions:
+                viewer.set_stats_box_viewport_rect(
+                    roi.id, viewer.get_stats_box_viewport_rect(roi.id)
+                )
+                continue
+            if roi.id in saved_positions:
+                viewer.stats_box_positions[roi.id] = QRectF(saved_positions[roi.id])
+                viewer.set_stats_box_viewport_rect(
+                    roi.id, viewer.get_stats_box_viewport_rect(roi.id)
+                )
+                continue
+
+            stats = calculate_roi_statistics(model, roi)
+            if not stats:
+                continue
+            font = viewer.font()
+            font.setPointSize(int(_get_stats_box_settings().get("font_size", 10)))
+            size = calculate_stats_box_size_rect(get_stats_text(stats), font)
+            rect = viewer.create_stats_box_viewport_rect(roi, size.size())
+            viewer.set_stats_box_viewport_rect(roi.id, rect)
+
+        viewer.viewport().update()
+
+    @staticmethod
+    def _clamp_stats_rect(rect: QRect, bounds: QRect) -> QRect:
+        """Keep a stats rectangle inside the currently visible image area."""
+        if bounds.isEmpty():
+            return rect
+        if rect.width() <= bounds.width():
+            rect.moveLeft(max(bounds.left(), min(rect.left(), bounds.right() - rect.width() + 1)))
+        else:
+            rect.moveLeft(bounds.left())
+        if rect.height() <= bounds.height():
+            rect.moveTop(max(bounds.top(), min(rect.top(), bounds.bottom() - rect.height() + 1)))
+        else:
+            rect.moveTop(bounds.top())
+        return rect
     
     # 属性访问器
     @property
@@ -532,21 +778,21 @@ class ViewFrame(QFrame):
             self._update_border_style_for_theme(theme_name)
             
             # 更新标题栏和状态栏的样式
-            logger.info(f"[ViewFrame.update_theme] 更新标题栏主题")
+            logger.info("[ViewFrame.update_theme] 更新标题栏主题")
             self._update_title_bar_theme(theme_name)
             
-            logger.info(f"[ViewFrame.update_theme] 更新状态栏主题")
+            logger.info("[ViewFrame.update_theme] 更新状态栏主题")
             self._update_status_bar_theme(theme_name)
             
             # 更新内部ImageViewer的主题
             if hasattr(self, '_image_viewer') and self._image_viewer:
-                logger.info(f"[ViewFrame.update_theme] 更新内部ImageViewer主题")
+                logger.info("[ViewFrame.update_theme] 更新内部ImageViewer主题")
                 if hasattr(self._image_viewer, 'update_theme'):
                     self._image_viewer.update_theme(theme_name)
                 else:
-                    logger.warning(f"[ViewFrame.update_theme] ImageViewer没有update_theme方法")
+                    logger.warning("[ViewFrame.update_theme] ImageViewer没有update_theme方法")
             else:
-                logger.info(f"[ViewFrame.update_theme] 没有ImageViewer需要更新")
+                logger.info("[ViewFrame.update_theme] 没有ImageViewer需要更新")
             
             logger.info(f"[ViewFrame.update_theme] 主题更新完成: {theme_name}, view_id: {self._view_id}")
         except Exception as e:
@@ -669,6 +915,11 @@ class MultiViewerGrid(QWidget):
         self._sync_manager = None  # 将由主窗口设置
         self._current_layout = (1, 1)
         self._view_frames: Dict[str, ViewFrame] = {}
+        self._viewer_state_store: Dict[tuple[str, str], Dict[str, QRectF]] = {}
+        # Per-pane state is persistent across layout rebuilds and is never stored
+        # on the shared ImageDataModel.
+        self._presentation_state_store: Dict[tuple[str, str], ViewPresentationState] = {}
+        self._maximized_view_id: Optional[str] = None
         self._rebuilding = False  # 防止 set_layout 与信号处理重复重建
         
         self._setup_ui()
@@ -721,18 +972,18 @@ class MultiViewerGrid(QWidget):
         logger.debug("[MultiViewerGrid._connect_sync_signals] 同步管理器信号连接完成")
 
     def _on_cross_reference_updated(self, view_id: str, position) -> None:
-        """处理交叉参考线更新"""
+        """在信号指定的目标视图中更新交叉参考线。"""
         logger.debug(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线: view_id={view_id}")
-        
-        # 更新所有其他视图的交叉参考线
-        for frame_view_id, view_frame in self._view_frames.items():
-            if frame_view_id != view_id and view_frame.image_viewer:
-                try:
-                    # 如果ImageViewer有交叉参考线方法，显示参考线
-                    if hasattr(view_frame.image_viewer, 'show_cross_reference'):
-                        view_frame.image_viewer.show_cross_reference(position)
-                except Exception as e:
-                    logger.warning(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线失败: {e}")
+
+        # SyncManager 发出的 view_id 已经是完成患者坐标转换后的目标视图，
+        # 不能再次把它当作源视图广播到其余窗口。
+        view_frame = self._view_frames.get(view_id)
+        if not view_frame or not view_frame.image_viewer:
+            return
+        try:
+            view_frame.image_viewer.show_cross_reference(position)
+        except Exception as e:
+            logger.warning(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线失败: {e}")
 
     def _on_view_synced(self, source_view_id: str, target_view_id: str) -> None:
         """处理视图同步事件"""
@@ -766,6 +1017,17 @@ class MultiViewerGrid(QWidget):
         self._series_manager.binding_changed.connect(self._on_binding_changed)
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)
         self._series_manager.series_loaded.connect(self._on_series_data_ready)
+        self._series_manager.series_removed.connect(self._on_series_removed)
+
+    def _on_series_removed(self, series_id: str) -> None:
+        """Discard only ephemeral viewer state after a series is explicitly removed."""
+        for store in (
+            self._viewer_state_store,
+            self._presentation_state_store,
+        ):
+            stale_keys = [key for key in store if key[0] == series_id]
+            for key in stale_keys:
+                store.pop(key, None)
     
     def set_layout(self, rows: int, cols: int) -> bool:
         """设置网格布局
@@ -1063,7 +1325,7 @@ class MultiViewerGrid(QWidget):
             # 设置分割比例
             left_ratio = layout_config.get('left_ratio', 0.33)
             middle_ratio = layout_config.get('middle_ratio', 0.34)
-            right_ratio = 1.0 - left_ratio - middle_ratio
+            1.0 - left_ratio - middle_ratio
 
             # 添加左列
             main_splitter.addWidget(view_frames[0])
@@ -1158,6 +1420,7 @@ class MultiViewerGrid(QWidget):
             view_frame.deleteLater()
 
         self._view_frames.clear()
+        self._maximized_view_id = None
 
         # 销毁 _grid_container 上的旧布局（可能是 QGridLayout 或 QVBoxLayout+QSplitter）
         old_layout = self._grid_container.layout()
@@ -1211,6 +1474,8 @@ class MultiViewerGrid(QWidget):
                 view_frame.view_activated.connect(self._on_view_frame_activated)
                 view_frame.view_clicked.connect(self._on_view_frame_clicked)
                 view_frame.drop_requested.connect(self._on_view_frame_drop_requested) # 连接拖拽信号
+                view_frame.maximize_requested.connect(self.toggle_maximize_view)
+                view_frame.set_compact_mode(rows * cols > 1)
                 
                 # 添加到网格
                 self._grid_layout.addWidget(view_frame, row, col)
@@ -1259,6 +1524,8 @@ class MultiViewerGrid(QWidget):
             view_frame.view_activated.connect(self._on_view_frame_activated)
             view_frame.view_clicked.connect(self._on_view_frame_clicked)
             view_frame.drop_requested.connect(self._on_view_frame_drop_requested)
+            view_frame.maximize_requested.connect(self.toggle_maximize_view)
+            view_frame.set_compact_mode(len(positions) > 1)
 
             self._grid_layout.addWidget(view_frame, position.value[0], position.value[1])
             self._view_frames[view_id] = view_frame
@@ -1303,6 +1570,11 @@ class MultiViewerGrid(QWidget):
                 logger.debug(f"[MultiViewerGrid._bind_series_to_view_frame] "
                            f"绑定成功: {view_frame.view_id} -> {series_id}")
             else:
+                if series_info:
+                    view_frame.show_loading_state(
+                        series_id,
+                        self._format_series_description(series_info),
+                    )
                 logger.warning(f"[MultiViewerGrid._bind_series_to_view_frame] "
                              f"序列信息或数据模型不存在: series_id={series_id}")
                 
@@ -1386,6 +1658,40 @@ class MultiViewerGrid(QWidget):
         # 可以在这里添加右键菜单等交互逻辑
         pass
 
+    @staticmethod
+    def _restore_view_geometry(viewer: ImageViewer) -> None:
+        """Refit fit-mode panes and preserve explicit pan/zoom panes."""
+        if viewer.presentation_state.fit_mode:
+            viewer.fit_to_window()
+        else:
+            viewer.set_presentation_state(viewer.presentation_state)
+
+    def toggle_maximize_view(self, view_id: str) -> None:
+        """Double-click a pane to maximize it; double-click again to restore."""
+        target = self._view_frames.get(view_id)
+        if target is None:
+            return
+        restoring = self._maximized_view_id == view_id
+        self._maximized_view_id = None if restoring else view_id
+        compact = len(self._view_frames) > 1
+        for frame_id, frame in self._view_frames.items():
+            frame.setVisible(restoring or frame_id == view_id)
+            frame.set_compact_mode(compact if restoring else False)
+        if not restoring:
+            self._series_manager.set_active_view(view_id)
+        QTimer.singleShot(
+            0,
+            lambda: self._restore_view_geometry(target.image_viewer)
+            if target.image_viewer and target.series_id
+            else None,
+        )
+
+    def is_view_maximized(self, view_id: Optional[str] = None) -> bool:
+        """Return whether any pane, or a specific pane, is maximized."""
+        if view_id is None:
+            return self._maximized_view_id is not None
+        return self._maximized_view_id == view_id
+
     def _on_view_frame_drop_requested(self, view_id: str, series_id: str) -> None:
         """处理视图框架的拖拽请求"""
         logger.debug(f"[MultiViewerGrid._on_view_frame_drop_requested] 视图框架拖拽请求: view_id={view_id}, series_id={series_id}")
@@ -1433,10 +1739,12 @@ class MultiViewerGrid(QWidget):
             for view_frame in self._view_frames.values():
                 if view_frame and view_frame.series_id and view_frame.image_viewer:
                     viewer = view_frame.image_viewer
-                    viewer.fit_to_window()
-                    # 同时设置 _fit_pending 作为后备：如果此刻视口尺寸
-                    # 仍未最终确定，resizeEvent 到来时会再执行一次
-                    viewer._fit_pending = True
+                    self._restore_view_geometry(viewer)
+                    if viewer.presentation_state.fit_mode:
+                        # If the layout is still settling, refit once on resize.
+                        viewer._fit_pending = True
+                    else:
+                        viewer._fit_pending = False
         except Exception as e:
             logger.error(f"[MultiViewerGrid._do_fit_all_bound_views] 自适应失败: {e}", exc_info=True)
 
@@ -1448,13 +1756,13 @@ class MultiViewerGrid(QWidget):
             if hasattr(main_window, 'theme_manager'):
                 self._theme_manager = main_window.theme_manager
                 self._theme_manager.register_component(self)
-                logger.debug(f"[MultiViewerGrid._register_to_theme_manager] 成功注册到主题管理器")
+                logger.debug("[MultiViewerGrid._register_to_theme_manager] 成功注册到主题管理器")
                 
                 # 立即应用当前主题
                 current_theme = self._theme_manager.get_current_theme()
                 self.update_theme(current_theme)
             else:
-                logger.debug(f"[MultiViewerGrid._register_to_theme_manager] 未找到主题管理器")
+                logger.debug("[MultiViewerGrid._register_to_theme_manager] 未找到主题管理器")
         except Exception as e:
             logger.error(f"[MultiViewerGrid._register_to_theme_manager] 注册主题管理器失败: {e}", exc_info=True)
     

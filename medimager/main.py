@@ -27,7 +27,7 @@ if __name__ == "__main__" and __package__ is None:
 
 # 导入项目模块
 from medimager.utils.logger import setup_logger, get_logger
-from medimager.utils.settings import SettingsManager, get_settings_manager
+from medimager.utils.settings import get_settings_manager
 from medimager.utils.i18n import get_translation_manager
 from medimager.app_info import APP_NAME, get_version
 
@@ -142,6 +142,7 @@ class MedImagerApplication:
                 'roi.stats.area_unit': 'auto',
                 'multiview.default_layout': '1x1',
                 'multiview.default_sync_mode': 'basic',
+                'multiview.sync_group': 'same_study',
             }
 
             # 加载设置并设置默认值
@@ -323,9 +324,6 @@ if __name__ == "__main__":
             # 设置AppUserModelID以在Windows任务栏上正确显示图标
             myappid = 'medimager.dicom_viewer.1.0'  # 更具体的应用程序ID
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-            
-            # 设置Windows DPI感知
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception as e:
             print(f"Windows配置失败: {e}")
             
@@ -342,7 +340,6 @@ if __name__ == "__main__":
                     info['CFBundleDisplayName'] = 'MedImager'
                     
             # 设置macOS应用程序图标
-            from PySide6.QtGui import QPixmap
             from PySide6.QtWidgets import QApplication
             from medimager.utils.resource_path import get_icon_path, verify_resource_exists
             

@@ -21,6 +21,9 @@
 
 MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.0 consolidates the completed 1.0 and 1.x work into a reliable 2D DICOM foundation: multi-series viewing, measurement and ROI analysis, professional synthetic DICOM coverage, annotation persistence, and repeatable performance baselines.
 
+> [!WARNING]
+> **Research and teaching use only — not diagnostic grade.** MedImager has not completed DICOM GSDF conformance or calibrated diagnostic-display validation. Do not use it for primary diagnosis or other clinical decisions.
+
 ## 1. Project Vision
 
 Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.0 is ready as the stable 2D foundation release; later versions should build on that base with MPR, DICOMDIR/PACS, hanging protocols, and advanced clinical-style workflows.
@@ -193,6 +196,22 @@ First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an
     # Then you can run commands directly:
     python medimager/main.py
     ```
+
+    Main viewport controls:
+
+    | Action | Mouse / shortcut |
+    | --- | --- |
+    | Select, move, or edit ROI/distance/angle annotations | Pointer tool + left drag; drag a selected anchor to resize |
+    | Browse slices | Mouse wheel, `Page Up` / `Page Down`; `Home` / `End` for first / last |
+    | Pan | Pan toolbar mode + left drag, or `Shift` + left drag in Pointer mode |
+    | Zoom | Zoom toolbar mode + left drag, or `Ctrl` + mouse wheel |
+    | Window width/level | W/L toolbar mode + left drag, or choose a DICOM/preset window |
+    | Cine play/pause | `Space` |
+    | Fit / actual pixels | `F` / `1` |
+    | Cancel current creation or interaction | `Esc` |
+    | Save / Save As / Save all annotations | `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+Alt+S` |
+
+    Annotation edits are tracked per series. Sidecar JSON is associated with the source series, and a crash-recovery draft can be restored on the next application launch. Removing a dirty series offers **Save and remove**, **Discard and remove**, or **Cancel**.
 
 4.  **Run the performance baseline (developers):**
     ```bash
