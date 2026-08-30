@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.4 enrichit la base DICOM 2D fiable avec un modèle de volume dans l’espace patient et une MPR axiale, coronale et sagittale liée : visualisation multi-séries, mesure et analyse ROI, couverture DICOM synthétique professionnelle, persistance des annotations et baselines de performance répétables.
+MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.5 complète le noyau MPR orthogonal par un espace Patient→Étude→Série, la synchronisation inter-séries en espace patient, de vraies lignes de repérage, des protocoles d’accrochage, la restauration d’état et le cache/préchargement en arrière-plan.
 
 ## 1. Vision du Projet
 
-Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.4 fournit une MPR orthogonale validée géométriquement ; les versions suivantes ajouteront DICOMDIR/PACS, les hanging protocols, la reconstruction oblique et des flux plus complets.
+Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.5 associe la MPR orthogonale validée géométriquement à un espace de lecture centré sur l’étude ; les versions suivantes ajouteront DICOMDIR/PACS, la reconstruction oblique et des flux plus complets.
 
 <div align="center">
 
@@ -74,7 +74,7 @@ Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de 
 - [ ] **Rendu de Volume 3D :** Visualisation 3D de base des séries DICOM.
 - [ ] **Fusion d'Images :** Superposer deux séries différentes (ex. PET/CT).
 - [ ] **DICOMDIR / PACS :** Navigation sur médias locaux et requête/récupération DICOM réseau après stabilisation de la base 2D.
-- [ ] **Hanging Protocols :** Sauvegarder et restaurer des mises en page pratiques pour la revue répétée d'études.
+- [x] **Hanging Protocols :** Préréglages CT/MR/vue d’ensemble et restauration d’état (v2.5).
 - [ ] **Système de Plugins :** Permettre aux utilisateurs d'étendre les fonctionnalités via des scripts Python personnalisés pour la recherche.
 
 ## 3. Stack Technologique

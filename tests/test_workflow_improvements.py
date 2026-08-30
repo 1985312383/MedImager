@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+import uuid
 
 import numpy as np
+from PySide6.QtTest import QTest
 
 from medimager.core.image_data_model import ImageDataModel
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
@@ -96,47 +98,56 @@ def test_viewer_slice_accessor_prefers_pane_presentation_state():
     assert viewer_slice_index(viewer) == 7
 
 
-def test_series_thumbnail_uses_middle_slice_and_is_cached(qapp, monkeypatch):
+def test_series_thumbnail_uses_background_render_cache(qapp, monkeypatch):
     manager = MultiSeriesManager()
-    model = _loaded_series(manager, 'thumbnail-series')
+    series_id = f"thumbnail-{uuid.uuid4().hex}"
+    model = _loaded_series(manager, series_id)
     calls = []
-    original = model.get_display_slice
 
-    def render_once(slice_index=None):
+    def forbidden_gui_render(slice_index=None):
         calls.append(slice_index)
-        return original(slice_index)
+        raise AssertionError("GUI-thread get_display_slice must not render thumbnails")
 
-    monkeypatch.setattr(model, 'get_display_slice', render_once)
+    monkeypatch.setattr(model, 'get_display_slice', forbidden_gui_render)
     widget = SeriesListWidget(manager)
-    qapp.processEvents()
+    for _ in range(100):
+        qapp.processEvents()
+        if series_id in widget._thumbnail_cache:
+            break
+        QTest.qWait(5)
 
-    assert calls == [model.get_slice_count() // 2]
-    assert not widget._series_items['thumbnail-series'].icon(0).isNull()
+    assert calls == []
+    assert series_id in widget._thumbnail_cache
+    assert not widget._series_items[series_id].icon(0).isNull()
 
     widget._refresh_tree()
     qapp.processEvents()
-    assert calls == [model.get_slice_count() // 2]
+    assert calls == []
     widget.deleteLater()
     qapp.processEvents()
 
 
 def test_failed_series_thumbnail_caches_placeholder(qapp, monkeypatch):
     manager = MultiSeriesManager()
-    model = _loaded_series(manager, 'broken-thumbnail')
+    series_id = f"broken-thumbnail-{uuid.uuid4().hex}"
+    model = _loaded_series(manager, series_id)
     calls = []
+    original = model.get_slice_data
 
-    def fail_once(slice_index=None):
+    def fail_once(slice_index):
         calls.append(slice_index)
-        raise RuntimeError('decode failed')
+        raise RuntimeError('snapshot failed')
 
-    monkeypatch.setattr(model, 'get_display_slice', fail_once)
+    monkeypatch.setattr(model, 'get_slice_data', fail_once)
     widget = SeriesListWidget(manager)
     qapp.processEvents()
     widget._refresh_tree()
     qapp.processEvents()
 
     assert calls == [model.get_slice_count() // 2]
-    assert not widget._series_items['broken-thumbnail'].icon(0).isNull()
+    assert series_id in widget._thumbnail_cache
+    assert not widget._series_items[series_id].icon(0).isNull()
+    monkeypatch.setattr(model, 'get_slice_data', original)
     widget.deleteLater()
     qapp.processEvents()
 

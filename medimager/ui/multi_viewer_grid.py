@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QWidget, QGridLayout, QFrame, QVBoxLayout,
                               QHBoxLayout, QLabel, QSplitter,
                               QApplication,
                               QStackedLayout)
-from PySide6.QtCore import Qt, Signal, QRect, QRectF, QTimer
+from PySide6.QtCore import Qt, Signal, QRect, QRectF, QPointF, QTimer
 
 from medimager.ui.image_viewer import ImageViewer
 from medimager.ui.qt_image_utils import qimage_from_display_data
@@ -966,6 +966,14 @@ class MultiViewerGrid(QWidget):
         # 连接同步管理器的信号到视图处理
         if hasattr(self._sync_manager, 'cross_reference_updated'):
             self._sync_manager.cross_reference_updated.connect(self._on_cross_reference_updated)
+        if hasattr(self._sync_manager, 'cross_reference_line_updated'):
+            self._sync_manager.cross_reference_line_updated.connect(
+                self._on_cross_reference_line_updated
+            )
+        if hasattr(self._sync_manager, 'patient_cursor_updated'):
+            self._sync_manager.patient_cursor_updated.connect(
+                self._on_patient_cursor_updated
+            )
         if hasattr(self._sync_manager, 'view_synced'):
             self._sync_manager.view_synced.connect(self._on_view_synced)
         
@@ -984,6 +992,18 @@ class MultiViewerGrid(QWidget):
             view_frame.image_viewer.show_cross_reference(position)
         except Exception as e:
             logger.warning(f"[MultiViewerGrid._on_cross_reference_updated] 更新交叉参考线失败: {e}")
+
+    def _on_cross_reference_line_updated(
+        self, view_id: str, start: QPointF, end: QPointF
+    ) -> None:
+        view_frame = self._view_frames.get(view_id)
+        if view_frame and view_frame.image_viewer:
+            view_frame.image_viewer.show_reference_line(start, end)
+
+    def _on_patient_cursor_updated(self, view_id: str, position: QPointF) -> None:
+        view_frame = self._view_frames.get(view_id)
+        if view_frame and view_frame.image_viewer:
+            view_frame.image_viewer.show_patient_cursor(position)
 
     def _on_view_synced(self, source_view_id: str, target_view_id: str) -> None:
         """处理视图同步事件"""

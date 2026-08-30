@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.4 ergänzt die zuverlässige 2D-DICOM-Basis um ein Patientenraum-Volumenmodell und verknüpfte axiale, koronare und sagittale MPR: Multi-Serien-Anzeige, Messung und ROI-Analyse, professionelle synthetische DICOM-Testabdeckung, Annotationspersistenz und wiederholbare Performance-Baselines.
+MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.5 ergänzt den orthogonalen MPR-Kern um einen Patient→Studie→Serie-Arbeitsbereich, patientenraumbasierte Serienkopplung, echte Referenzlinien, Hängeprotokolle, Zustandswiederherstellung sowie Hintergrund-Caching und Prefetch.
 
 ## 1. Projektvision
 
-Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.4 bietet geometrievalidierte orthogonale MPR; spätere Versionen bauen darauf DICOMDIR/PACS, Hanging Protocols, schräge Rekonstruktion und weitere klinikähnliche Workflows auf.
+Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.5 verbindet geometrievalidierte orthogonale MPR mit einem studienzentrierten Befundungsarbeitsbereich; spätere Versionen ergänzen DICOMDIR/PACS, schräge Rekonstruktion und weitere klinikähnliche Workflows.
 
 <div align="center">
 
@@ -74,7 +74,7 @@ Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen 
 - [ ] **3D-Volumen-Rendering:** Grundlegende 3D-Visualisierung von DICOM-Serien.
 - [ ] **Bildfusion:** Überlagerung zweier verschiedener Serien (z.B. PET/CT).
 - [ ] **DICOMDIR / PACS:** Lokale Mediennavigation und DICOM-Netzwerkabfrage/-abruf nach stabiler 2D-Parser-Basis.
-- [ ] **Hanging Protocols:** Praktische Leselayouts für wiederholte Studienprüfung speichern und wiederherstellen.
+- [x] **Hanging Protocols:** CT/MR/Übersichts-Presets und Studienzustandswiederherstellung (v2.5).
 - [ ] **Plugin-System:** Ermöglicht Benutzern, Funktionen über benutzerdefinierte Python-Skripte für die Forschung zu erweitern.
 
 ## 3. Tech Stack

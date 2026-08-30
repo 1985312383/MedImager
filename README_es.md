@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager es un visor de imágenes médicas y herramienta de análisis de código abierto con el objetivo a largo plazo de acercarse a flujos de trabajo de lectura tipo RadiAnt. La versión 2.4 amplía la base DICOM 2D fiable con un modelo de volumen en el espacio del paciente y MPR axial, coronal y sagital enlazada: visualización multi-serie, medición y análisis ROI, cobertura DICOM sintética profesional, persistencia de anotaciones y benchmarks de rendimiento repetibles.
+MedImager es un visor de imágenes médicas y herramienta de análisis de código abierto con el objetivo a largo plazo de acercarse a flujos de trabajo de lectura tipo RadiAnt. La versión 2.5 añade al núcleo MPR ortogonal un espacio Paciente→Estudio→Serie, sincronización entre series en espacio del paciente, líneas de referencia reales, protocolos de presentación, restauración de estado y caché/prefetch en segundo plano.
 
 ## 1. Visión del Proyecto
 
-Crear un visor de código abierto pragmático que pueda crecer hacia flujos de trabajo tipo RadiAnt. MedImager 2.4 ofrece MPR ortogonal validada geométricamente; las versiones posteriores añadirán DICOMDIR/PACS, protocolos de colgado, reconstrucción oblicua y flujos clínicos más completos.
+Crear un visor de código abierto pragmático que pueda crecer hacia flujos de trabajo tipo RadiAnt. MedImager 2.5 combina MPR ortogonal validada geométricamente con un espacio de lectura centrado en el estudio; las versiones posteriores añadirán DICOMDIR/PACS, reconstrucción oblicua y flujos clínicos más completos.
 
 <div align="center">
 

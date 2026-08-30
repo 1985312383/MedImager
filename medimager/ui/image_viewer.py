@@ -137,7 +137,9 @@ class ImageViewer(QGraphicsView):
         
         # 交叉参考线状态
         self._cross_reference_enabled = False
-        self._cross_reference_pos = QPointF(-1, -1)  # 无效位置表示不显示
+        self._cross_reference_pos = QPointF(-1, -1)
+        self._reference_line_start = QPointF(-1, -1)
+        self._reference_line_end = QPointF(-1, -1)
         self._cross_reference_color = qcolor_from_theme(
             normalize_ui_theme({})["reference_line_color"]
         )
@@ -949,7 +951,7 @@ class ImageViewer(QGraphicsView):
         self._draw_all_angle_measurements(painter)
             
         # --- 绘制交叉参考线 ---
-        if self._cross_reference_enabled and self._cross_reference_pos.x() >= 0 and self._cross_reference_pos.y() >= 0:
+        if self._cross_reference_enabled:
             self._draw_cross_reference_lines(painter)
             
         self._draw_medical_overlay(painter)
@@ -1438,20 +1440,41 @@ class ImageViewer(QGraphicsView):
         self.update()
 
     def show_cross_reference(self, pos: QPointF) -> None:
-        """显示交叉参考线
-        
-        Args:
-            pos: 参考线交叉点位置（场景坐标）
-        """
+        """Backward-compatible alias for the patient-space cursor marker."""
+        self.show_patient_cursor(pos)
+
+    def show_patient_cursor(self, pos: QPointF) -> None:
         self._cross_reference_enabled = True
         self._cross_reference_pos = QPointF(pos)
-        self.update()
-    
+        self.viewport().update()
+
+    def hide_patient_cursor(self) -> None:
+        self._cross_reference_pos = QPointF(-1, -1)
+        self._cross_reference_enabled = (
+            self._reference_line_start.x() >= 0
+            and self._reference_line_end.x() >= 0
+        )
+        self.viewport().update()
+
+    def show_reference_line(self, start: QPointF, end: QPointF) -> None:
+        self._cross_reference_enabled = True
+        self._reference_line_start = QPointF(start)
+        self._reference_line_end = QPointF(end)
+        self.viewport().update()
+
+    def hide_reference_line(self) -> None:
+        self._reference_line_start = QPointF(-1, -1)
+        self._reference_line_end = QPointF(-1, -1)
+        self._cross_reference_enabled = self._cross_reference_pos.x() >= 0
+        self.viewport().update()
+
     def hide_cross_reference(self) -> None:
-        """隐藏交叉参考线"""
+        """Hide both the localizer plane and shared patient cursor."""
         self._cross_reference_enabled = False
         self._cross_reference_pos = QPointF(-1, -1)
-        self.update()
+        self._reference_line_start = QPointF(-1, -1)
+        self._reference_line_end = QPointF(-1, -1)
+        self.viewport().update()
     
     def set_cross_reference_enabled(self, enabled: bool) -> None:
         """设置交叉参考线是否启用
@@ -1780,32 +1803,29 @@ class ImageViewer(QGraphicsView):
         return rect
 
     def _draw_cross_reference_lines(self, painter):
-        """绘制交叉参考线"""
-        if not self._cross_reference_enabled or self._cross_reference_pos.x() < 0 or self._cross_reference_pos.y() < 0:
+        """Draw a clipped plane intersection plus the shared 3D cursor."""
+        if not self._cross_reference_enabled:
             return
-
         painter.save()
-
-        # 设置画笔样式
         pen = QPen(self._cross_reference_color, 2)
-        pen.setCosmetic(True)  # 不受视图变换影响
-        pen.setStyle(Qt.DashLine)  # 虚线样式
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
         painter.setPen(pen)
-
-        # 获取视图区域
-        view_rect = self.viewport().rect()
-        scene_rect = self.mapToScene(view_rect).boundingRect()
-
-        # 绘制水平参考线（横穿整个视图）
-        painter.drawLine(
-            scene_rect.left(), self._cross_reference_pos.y(),
-            scene_rect.right(), self._cross_reference_pos.y()
-        )
-
-        # 绘制垂直参考线（横穿整个视图）
-        painter.drawLine(
-            self._cross_reference_pos.x(), scene_rect.top(),
-            self._cross_reference_pos.x(), scene_rect.bottom()
-        )
-
+        if self._reference_line_start.x() >= 0 and self._reference_line_end.x() >= 0:
+            painter.drawLine(self._reference_line_start, self._reference_line_end)
+        if self._cross_reference_pos.x() >= 0 and self._cross_reference_pos.y() >= 0:
+            pen.setStyle(Qt.SolidLine)
+            painter.setPen(pen)
+            scale = max(abs(self.transform().m11()), abs(self.transform().m22()), 1e-6)
+            radius = 7.0 / scale
+            point = self._cross_reference_pos
+            painter.drawLine(
+                QPointF(point.x() - radius, point.y()),
+                QPointF(point.x() + radius, point.y()),
+            )
+            painter.drawLine(
+                QPointF(point.x(), point.y() - radius),
+                QPointF(point.x(), point.y() + radius),
+            )
+            painter.drawEllipse(point, 2.5 / scale, 2.5 / scale)
         painter.restore()

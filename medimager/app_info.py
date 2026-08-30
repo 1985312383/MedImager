@@ -24,14 +24,16 @@ def get_version() -> str:
     if build_version:
         return build_version
 
+    # A source checkout may coexist with stale editable-install metadata.
+    # Prefer the adjacent project manifest; packaged builds use _build_info.
+    pyproject_version = _read_pyproject_version()
+    if pyproject_version:
+        return pyproject_version
+
     try:
         return metadata.version("medimager")
     except metadata.PackageNotFoundError:
         pass
-
-    pyproject_version = _read_pyproject_version()
-    if pyproject_version:
-        return pyproject_version
 
     return "0.0.0"
 

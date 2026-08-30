@@ -1,5 +1,23 @@
 # Changelog
 
+## 2.5.0 - 2026-08-30
+
+### Study workspace and navigation
+- Added a stable Patient → Study → Series inspection model and a default study browser with dates, modality summaries, protocol/body-part metadata, orientation, thumbnails, drag binding, and double-click assignment.
+- Added study-scoped hanging protocols for overview, CT phase comparison, MR T1/T2/FLAIR/DWI, and the current-series MPR workflow.
+- Added per-study restoration of layout, series bindings, active pane, synchronization mode, slice, WL/WW, zoom, pan, invert, and interpolation state.
+
+### Patient-space synchronization
+- Upgraded automatic slice synchronization to preserve millimetre-based LPS matching across reversed ordering and anisotropic series.
+- Replaced full-pane cursor crosshairs with geometrically clipped image-plane intersection lines and a shared patient-space 3D cursor.
+- Refuses automatic spatial linkage when patient identity or Frame of Reference is missing/incompatible; independent display state remains available when position sync is off.
+
+### Performance, privacy, and quality
+- Moved thumbnail VOI rendering and resize work off the GUI thread, with bounded persistent thumbnail caching.
+- Added active-study diagnostic load ordering and background ±2-slice display prefetch through the shared render LRU.
+- Removed patient names from series-manager logs and keyed saved workspaces by a hash of Study Instance UID.
+- Added focused hierarchy, hanging-protocol, localizer geometry, cache, prefetch, and thumbnail regressions in addition to the existing v2.4 MPR suite.
+
 ## 2.4.0 - 2026-08-29
 
 ### Features

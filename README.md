@@ -19,14 +19,14 @@
 
 </div>
 
-MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.4 builds on the stable 2D foundation with a patient-space volume model and linked axial, coronal, and sagittal MPR reconstruction, while retaining multi-series viewing, quantitative tools, annotation persistence, and repeatable performance baselines.
+MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.5 adds a study-centric Patient → Study → Series workspace, patient-space cross-series synchronization, true localizer lines, hanging protocols, study-state restoration, and background thumbnail/prefetch caching on top of the v2.4 orthogonal MPR core.
 
 > [!WARNING]
 > **Research and teaching use only — not diagnostic grade.** MedImager has not completed DICOM GSDF conformance or calibrated diagnostic-display validation. Do not use it for primary diagnosis or other clinical decisions.
 
 ## 1. Project Vision
 
-Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.4 adds geometry-validated orthogonal MPR to the stable 2D foundation; later versions can build on it with DICOMDIR/PACS, hanging protocols, oblique reconstruction, 3D rendering, and fusion.
+Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.5 combines geometry-validated orthogonal MPR with a study workspace and practical cross-series reading flow; later versions can build on it with DICOMDIR/PACS, oblique reconstruction, 3D rendering, and fusion.
 
 <div align="center">
 
@@ -78,11 +78,18 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 - [x] Asynchronous volume building with cancellation and memory preflight.
 - [x] Patient-space DICOM LPS annotation schema v2.
 
+### ✅ V2.5 - Study Workspace and Cross-Series Reading
+- [x] Stable Patient → Study → Series inspection navigator with background thumbnails.
+- [x] Millimetre-based LPS slice synchronization, true cross-series localizer lines, and shared 3D cursor.
+- [x] Study overview, CT comparison, MR neuro, and current-series MPR hanging presets.
+- [x] Per-study restoration of layout, binding, display, and synchronization state.
+- [x] Active-study load ordering, persistent thumbnail cache, and neighboring-slice prefetch.
+
 ### Next Roadmap - RadiAnt-Class Workflow
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
 - [ ] **DICOMDIR / PACS:** Local media browsing and DICOM network query/retrieve after the 2D parser baseline is stable.
-- [ ] **Hanging Protocols:** Save and restore practical reading layouts for repeated study review.
+- [x] **Hanging Protocols:** Study-scoped CT/MR/overview presets with state restoration (v2.5).
 - [ ] **Plugin System:** Allow users to extend features via custom Python scripts for research.
 
 ## 3. Tech Stack

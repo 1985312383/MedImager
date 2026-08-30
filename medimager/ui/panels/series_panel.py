@@ -6,25 +6,58 @@
 """
 
 from typing import Dict, List, Optional, Set
+from pathlib import Path
+import hashlib
+import numpy as np
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QGroupBox, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QScrollArea, QFrame, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QSize, QMimeData, QSignalBlocker
+from PySide6.QtCore import Qt, Signal, QPoint, QSize, QMimeData, QSignalBlocker
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QDrag, QPainter, QBrush, QPen, QFontMetrics
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.view_presentation_state import (
+    ViewPresentationState,
+    build_render_request,
+    render_and_cache_request,
+)
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.utils.logger import get_logger
 from medimager.utils.i18n import t
+from medimager.utils.settings import get_performance_manager, get_settings_manager
 
 logger = get_logger(__name__)
 
 _INLINE_SLICE_LIMIT = 200
 _SLICE_PAGE_SIZE = 100
 _THUMBNAIL_SIZE = QSize(72, 56)
+
+
+def _fit_thumbnail_array(data: np.ndarray) -> np.ndarray:
+    """Downsample and letterbox on a worker using only immutable arrays."""
+    pixels = np.asarray(data)
+    height, width = pixels.shape[:2]
+    if height <= 0 or width <= 0:
+        raise ValueError("empty thumbnail source")
+    scale = min(_THUMBNAIL_SIZE.width() / width, _THUMBNAIL_SIZE.height() / height)
+    target_width = max(1, min(_THUMBNAIL_SIZE.width(), round(width * scale)))
+    target_height = max(1, min(_THUMBNAIL_SIZE.height(), round(height * scale)))
+    x_index = np.linspace(0, width - 1, target_width).astype(np.intp)
+    y_index = np.linspace(0, height - 1, target_height).astype(np.intp)
+    sampled = pixels[y_index][:, x_index]
+    shape = (_THUMBNAIL_SIZE.height(), _THUMBNAIL_SIZE.width()) + pixels.shape[2:]
+    canvas = np.full(shape, 22, dtype=np.uint8)
+    top = (canvas.shape[0] - target_height) // 2
+    left = (canvas.shape[1] - target_width) // 2
+    canvas[top:top + target_height, left:left + target_width] = sampled
+    return np.ascontiguousarray(canvas)
+
+
+def _render_thumbnail_request(cache_key: str, request) -> np.ndarray:
+    return _fit_thumbnail_array(render_and_cache_request(cache_key, request))
 
 
 def _parse_tree_item_data(data):
@@ -138,6 +171,7 @@ class SeriesListWidget(QWidget):
     series_selected = Signal(str)
     series_double_clicked = Signal(str)
     series_context_menu = Signal(str, QPoint)
+    thumbnail_ready = Signal(str, object)
     
     def __init__(self, series_manager: MultiSeriesManager, parent: Optional[QWidget] = None) -> None:
         """初始化序列列表组件
@@ -154,7 +188,8 @@ class SeriesListWidget(QWidget):
         self._thumbnail_cache: Dict[str, QIcon] = {}
         self._thumbnail_pending: Set[str] = set()
         self._thumbnail_placeholder = self._create_thumbnail_placeholder()
-        
+        self.thumbnail_ready.connect(self._on_thumbnail_ready)
+
         self._setup_ui()
         self._connect_signals()
         self._refresh_tree()
@@ -181,12 +216,13 @@ class SeriesListWidget(QWidget):
         # 分组选项
         self._group_combo = QComboBox()
         self._group_combo.addItems([
+            t("serieslistwidget.study_browser"),
             t("serieslistwidget.group_by_patient"),
             t("serieslistwidget.group_by_study"),
             t("serieslistwidget.group_by_modal"),
-            t("serieslistwidget.no_grouping")
+            t("serieslistwidget.no_grouping"),
         ])
-        self._group_combo.setCurrentIndex(3) # 设置默认选项为"不分组"
+        self._group_combo.setCurrentIndex(0)
         self._group_combo.currentTextChanged.connect(self._on_group_changed)
         header_layout.addWidget(self._group_combo)
         
@@ -249,10 +285,12 @@ class SeriesListWidget(QWidget):
             series_ids = self._series_manager.get_all_series_ids()
             group_mode = self._group_combo.currentIndex()
             
-            if group_mode == 3:  # 不分组
+            if group_mode == 0:
+                self._add_study_hierarchy()
+            elif group_mode == 4:  # 不分组
                 self._add_series_flat(series_ids)
             else:
-                self._add_series_grouped(series_ids, group_mode)
+                self._add_series_grouped(series_ids, group_mode - 1)
             
             # 更新统计信息
             self._stats_label.setText(t("serieslistwidget.total_value_sequences").replace("%1", str(len(series_ids))))
@@ -268,6 +306,49 @@ class SeriesListWidget(QWidget):
         except Exception as e:
             logger.error(f"[SeriesListWidget._refresh_tree] 刷新失败: {e}", exc_info=True)
     
+    def _add_study_hierarchy(self) -> None:
+        """Render the stable Patient -> Study -> Series inspection tree."""
+        hierarchy = self._series_manager.get_study_hierarchy()
+        for patient in hierarchy.patients:
+            patient_item = QTreeWidgetItem(self._tree_widget)
+            patient_label = patient.display_name or t("serieslistwidget.unknown_patient")
+            if patient.patient_id:
+                patient_label = f"{patient_label} · {patient.patient_id}"
+            patient_item.setText(
+                0,
+                t("serieslistwidget.patient_summary")
+                .replace("%1", patient_label)
+                .replace("%2", str(len(patient.studies))),
+            )
+            patient_item.setFont(0, QFont("", 9, QFont.Bold))
+            patient_item.setExpanded(True)
+
+            for study in patient.studies:
+                study_item = QTreeWidgetItem(patient_item)
+                date = self._format_dicom_date(study.study_date)
+                description = study.description or t("serieslistwidget.unknown_research")
+                modalities = "/".join(study.modalities) or "—"
+                label = t("serieslistwidget.study_summary")
+                for marker, value in (
+                    ("%1", date or "—"),
+                    ("%2", description),
+                    ("%3", modalities),
+                    ("%4", str(study.series_count)),
+                ):
+                    label = label.replace(marker, value)
+                study_item.setText(0, label)
+                study_item.setFont(0, QFont("", 9, QFont.Bold))
+                study_item.setExpanded(True)
+                for series in study.series:
+                    self._add_series_item(study_item, series.series_id)
+
+    @staticmethod
+    def _format_dicom_date(value: str) -> str:
+        digits = str(value or "").strip()
+        if len(digits) == 8 and digits.isdigit():
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+        return digits
+
     def _add_series_flat(self, series_ids: List[str]) -> None:
         """平铺方式添加序列"""
         for series_id in series_ids:
@@ -321,6 +402,7 @@ class SeriesListWidget(QWidget):
             series_desc = self._format_series_text(series_info)
             item.setText(0, series_desc)
             item.setData(0, Qt.UserRole, series_id)
+            item.setToolTip(0, self._format_series_tooltip(series_info))
             item.setIcon(
                 0, self._thumbnail_cache.get(
                     series_id, self._thumbnail_placeholder
@@ -417,56 +499,97 @@ class SeriesListWidget(QWidget):
         painter.end()
         return QIcon(pixmap)
 
+    def _thumbnail_disk_path(self, series_id: str) -> Path:
+        info = self._series_manager.get_series_info(series_id)
+        identity = (
+            getattr(info, "series_instance_uid", "")
+            or ("|".join(getattr(info, "file_paths", [])[:2]) if info else "")
+            or series_id
+        )
+        digest = hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()
+        directory = get_settings_manager().get_config_directory() / "thumbnail_cache"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{digest}.png"
+
     def _schedule_thumbnail(self, series_id: str) -> None:
-        """Generate once at GUI idle; scrolling never invokes decoding."""
+        """Snapshot on the GUI thread; render and resize on a worker."""
         if series_id in self._thumbnail_cache or series_id in self._thumbnail_pending:
             return
-        self._thumbnail_pending.add(series_id)
-        QTimer.singleShot(
-            0, lambda sid=series_id: self._generate_series_thumbnail(sid)
-        )
-
-    def _generate_series_thumbnail(self, series_id: str) -> None:
-        self._thumbnail_pending.discard(series_id)
-        if series_id in self._thumbnail_cache:
-            return
-        icon = self._thumbnail_placeholder
+        disk_path = self._thumbnail_disk_path(series_id)
+        if disk_path.is_file():
+            icon = QIcon(str(disk_path))
+            if not icon.isNull():
+                self._thumbnail_cache[series_id] = icon
+                item = self._series_items.get(series_id)
+                if item is not None:
+                    item.setIcon(0, icon)
+                return
         try:
             model = self._series_manager.get_series_model(series_id)
             if model is None or not model.has_image():
-                raise ValueError('series image is unavailable')
+                return
             middle_slice = model.get_slice_count() // 2
-            display_data = model.get_display_slice(middle_slice)
-            if display_data is None:
-                raise ValueError('middle slice could not be rendered')
-            image = qimage_from_display_data(display_data)
-            scaled = QPixmap.fromImage(image).scaled(
-                _THUMBNAIL_SIZE,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            canvas = QPixmap(_THUMBNAIL_SIZE)
-            canvas.fill(QColor('#161a1e'))
-            painter = QPainter(canvas)
-            painter.drawPixmap(
-                (canvas.width() - scaled.width()) // 2,
-                (canvas.height() - scaled.height()) // 2,
-                scaled,
-            )
-            painter.end()
-            icon = QIcon(canvas)
+            if str(getattr(model, "image_mode", "")).startswith("rgb"):
+                pixels = np.asarray(model.get_slice_data(middle_slice)).copy()
+                future = get_performance_manager().get_thread_pool().submit(
+                    _fit_thumbnail_array, model._as_uint8_rgb(pixels)
+                )
+            else:
+                state = ViewPresentationState.from_model(model, series_id=series_id)
+                state.slice_index = middle_slice
+                cache_key, request = build_render_request(
+                    model, state, copy_pixels=True
+                )
+                if request is None:
+                    return
+                future = get_performance_manager().get_thread_pool().submit(
+                    _render_thumbnail_request, cache_key, request
+                )
+            self._thumbnail_pending.add(series_id)
         except Exception as error:
-            # Cache the placeholder as the terminal result for this loaded
-            # series. Tree rebuilds and scrolling therefore never retry decode.
-            logger.warning(
-                '[SeriesListWidget] 生成序列缩略图失败: %s (%s)',
-                series_id,
-                error,
-            )
+            logger.warning("[SeriesListWidget] 无法提交缩略图任务: %s", error)
+            self._on_thumbnail_ready(series_id, None)
+            return
+
+        def done(done_future, sid=series_id):
+            try:
+                result = done_future.result()
+            except Exception as error:
+                logger.warning("[SeriesListWidget] 生成缩略图失败: %s", error)
+                result = None
+            try:
+                self.thumbnail_ready.emit(sid, result)
+            except RuntimeError:
+                pass
+
+        future.add_done_callback(done)
+
+    def _on_thumbnail_ready(self, series_id: str, display_data) -> None:
+        self._thumbnail_pending.discard(series_id)
+        icon = self._thumbnail_placeholder
+        if display_data is not None:
+            try:
+                image = qimage_from_display_data(display_data).copy()
+                disk_path = self._thumbnail_disk_path(series_id)
+                image.save(str(disk_path), "PNG")
+                cached_files = sorted(
+                    disk_path.parent.glob("*.png"),
+                    key=lambda candidate: candidate.stat().st_mtime,
+                    reverse=True,
+                )
+                for stale in cached_files[256:]:
+                    try:
+                        stale.unlink()
+                    except OSError:
+                        pass
+                icon = QIcon(QPixmap.fromImage(image))
+            except Exception as error:
+                logger.warning("[SeriesListWidget] 缩略图转为图标失败: %s", error)
         self._thumbnail_cache[series_id] = icon
         item = self._series_items.get(series_id)
         if item is not None:
             item.setIcon(0, icon)
+
 
     def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
         kind, series_id, payload = _parse_tree_item_data(item.data(0, Qt.UserRole))
@@ -552,6 +675,17 @@ class SeriesListWidget(QWidget):
             status = f"{status} · {slice_index + 1}/{count}"
         series_item.setText(1, status)
     
+    @staticmethod
+    def _format_series_tooltip(series_info: SeriesInfo) -> str:
+        parts = [
+            str(series_info.modality or ""),
+            str(series_info.protocol_name or ""),
+            str(series_info.body_part_examined or ""),
+            str(series_info.orientation or "").capitalize(),
+            t("serieslistwidget.slices_count").replace("%1", str(int(series_info.slice_count or 0))),
+        ]
+        return " · ".join(part for part in parts if part)
+
     def _format_series_text(self, series_info: SeriesInfo) -> str:
         """格式化序列显示文本"""
         if series_info.series_description:

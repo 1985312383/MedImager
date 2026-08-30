@@ -658,6 +658,8 @@ def test_dicom_tag_copy_shortcut_is_scoped_to_tree_and_preserves_search_copy(
     panel.search_edit.setFocus()
     qapp.clipboard().setText("clipboard sentinel")
     qapp.processEvents()
+    if qapp.clipboard().text() != "clipboard sentinel":
+        pytest.skip("Windows system clipboard is unavailable in this session")
     assert qapp.focusWidget() is panel.search_edit
 
     QTest.keyClick(panel.search_edit, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)

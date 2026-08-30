@@ -121,7 +121,9 @@ class SyncManager(QObject):
     sync_mode_changed = Signal(SyncMode)
     sync_group_changed = Signal(SyncGroup)
     view_synced = Signal(str, str)  # source_view_id, target_view_id
-    cross_reference_updated = Signal(str, QPointF)  # view_id, position
+    cross_reference_updated = Signal(str, QPointF)  # legacy cursor signal
+    cross_reference_line_updated = Signal(str, QPointF, QPointF)
+    patient_cursor_updated = Signal(str, QPointF)
     roi_synced = Signal(str, str, str)  # source_view_id, target_view_id, roi_id
     measurement_synced = Signal(str, str, QPointF, QPointF, float)  # source_view_id, target_view_id, start, end, distance
     
@@ -435,26 +437,37 @@ class SyncManager(QObject):
             self._cross_reference.source_view_id = source_view_id
             self._cross_reference.cursor_scene_pos = QPointF(cursor_pos)
             
-            # 通知其他视图更新交叉参考线
+            # The source cursor defines one patient-space point.  Each
+            # target receives both that point (when it intersects the displayed
+            # slice) and the clipped intersection of the two image planes.
+            self.patient_cursor_updated.emit(source_view_id, QPointF(cursor_pos))
             target_views = self._get_sync_targets(source_view_id)
-            
+
             for target_view_id in target_views:
-                # 计算目标视图中的对应位置
+                line = self._plane_intersection_segment(source_view_id, target_view_id)
+                if line is not None:
+                    self.cross_reference_line_updated.emit(
+                        target_view_id, line[0], line[1]
+                    )
+                else:
+                    viewer = self._get_image_viewer(target_view_id)
+                    if viewer and hasattr(viewer, 'hide_reference_line'):
+                        viewer.hide_reference_line()
+
                 target_pos = self._convert_position_between_views(
                     source_view_id,
                     target_view_id,
                     cursor_pos,
                     require_on_target_plane=True,
                 )
-                
                 if target_pos.x() >= 0 and target_pos.y() >= 0:
+                    # Keep the old signal for extensions written against v2.4.
                     self.cross_reference_updated.emit(target_view_id, target_pos)
-                    logger.debug(f"[SyncManager.update_cross_reference] 交叉参考线更新: "
-                               f"{source_view_id} -> {target_view_id}")
+                    self.patient_cursor_updated.emit(target_view_id, target_pos)
                 else:
                     viewer = self._get_image_viewer(target_view_id)
-                    if viewer:
-                        viewer.hide_cross_reference()
+                    if viewer and hasattr(viewer, 'hide_patient_cursor'):
+                        viewer.hide_patient_cursor()
             
         except Exception as e:
             logger.error(f"[SyncManager.update_cross_reference] 更新交叉参考线失败: {e}", exc_info=True)
@@ -1031,6 +1044,81 @@ class SyncManager(QObject):
 
         # 单张二次捕获图像经常没有层厚；此时只接受确实位于平面上的点。
         return max(max(candidates, default=0.0) * 0.5, 1e-3)
+
+    def _plane_intersection_segment(
+        self, source_view_id: str, target_view_id: str
+    ) -> Optional[Tuple[QPointF, QPointF]]:
+        """Clip the source image plane to the target image rectangle."""
+        source_model = self._get_view_model(source_view_id)
+        target_model = self._get_view_model(target_view_id)
+        if not source_model or not target_model or source_model is target_model:
+            return None
+        if not self._patients_compatible(source_view_id, target_view_id):
+            return None
+        source_geometry = self._frame_geometry(
+            source_model, self._get_view_slice_index(source_view_id, source_model)
+        )
+        target_geometry = self._frame_geometry(
+            target_model, self._get_view_slice_index(target_view_id, target_model)
+        )
+        if not source_geometry or not target_geometry:
+            return None
+        source_uid = source_geometry.get('frame_of_reference_uid')
+        target_uid = target_geometry.get('frame_of_reference_uid')
+        if not source_uid or source_uid != target_uid:
+            return None
+        if abs(self._dot(source_geometry['normal'], target_geometry['normal'])) >= 0.999:
+            return None
+
+        # Target pixel (x, y) maps to origin + x*column + y*row.  Substitution
+        # into the source plane equation yields a*x + b*y + c = 0.
+        source_normal = source_geometry['normal']
+        a = self._dot(source_normal, target_geometry['column_axis']) * target_geometry['column_spacing']
+        b = self._dot(source_normal, target_geometry['row_axis']) * target_geometry['row_spacing']
+        origin_delta = tuple(
+            target_geometry['origin'][axis] - source_geometry['origin'][axis]
+            for axis in range(3)
+        )
+        c = self._dot(source_normal, origin_delta)
+        shape = target_model.get_image_shape()
+        if not shape or len(shape) < 3:
+            return None
+        width, height = float(shape[2] - 1), float(shape[1] - 1)
+        if width <= 0 or height <= 0:
+            return None
+
+        candidates = []
+        epsilon = 1e-9
+        if abs(b) > epsilon:
+            for x in (0.0, width):
+                y = -(a * x + c) / b
+                if -epsilon <= y <= height + epsilon:
+                    candidates.append(QPointF(x, min(height, max(0.0, y))))
+        if abs(a) > epsilon:
+            for y in (0.0, height):
+                x = -(b * y + c) / a
+                if -epsilon <= x <= width + epsilon:
+                    candidates.append(QPointF(min(width, max(0.0, x)), y))
+
+        unique = []
+        for point in candidates:
+            if not any(
+                abs(point.x() - other.x()) < 1e-5
+                and abs(point.y() - other.y()) < 1e-5
+                for other in unique
+            ):
+                unique.append(point)
+        if len(unique) < 2:
+            return None
+        best = max(
+            (
+                ((left.x() - right.x()) ** 2 + (left.y() - right.y()) ** 2, left, right)
+                for index, left in enumerate(unique)
+                for right in unique[index + 1:]
+            ),
+            key=lambda item: item[0],
+        )
+        return QPointF(best[1]), QPointF(best[2])
 
     def _convert_position_between_views(
         self,

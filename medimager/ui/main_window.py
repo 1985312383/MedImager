@@ -11,6 +11,7 @@ import copy
 import json
 import hashlib
 import tempfile
+import time
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Set
@@ -27,6 +28,11 @@ from PySide6.QtGui import QAction, QKeySequence, QActionGroup
 from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
+from medimager.core.hanging_protocols import (
+    HangingProtocolId,
+    build_hanging_plan,
+)
+from medimager.core.study_model import classify_orientation
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
 from medimager.core.image_data_model import ImageDataModel
 from medimager.core.annotation_persistence import (
@@ -42,6 +48,10 @@ from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
 from medimager.ui.mpr_workspace import MprWorkspace
 from medimager.core.volume_geometry import GeometryStatus, VolumeBuilder
+from medimager.core.view_presentation_state import (
+    InterpolationMode,
+    prefetch_display_slices,
+)
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.ui.panels.series_panel import SeriesPanel
 from medimager.ui.panels.dicom_tag_panel import DicomTagPanel
@@ -172,10 +182,18 @@ def _scan_dicom_folder_task(
                     'modality': str(getattr(first, 'Modality', '') or ''),
                     'acquisition_date': str(getattr(first, 'AcquisitionDate', '') or ''),
                     'acquisition_time': str(getattr(first, 'AcquisitionTime', '') or ''),
+                    'study_date': str(getattr(first, 'StudyDate', '') or ''),
+                    'study_time': str(getattr(first, 'StudyTime', '') or ''),
+                    'protocol_name': str(getattr(first, 'ProtocolName', '') or ''),
+                    'body_part_examined': str(getattr(first, 'BodyPartExamined', '') or ''),
                     'slice_count': slice_count,
                     'series_number': str(getattr(first, 'SeriesNumber', 0)),
                     'study_instance_uid': str(getattr(first, 'StudyInstanceUID', '') or ''),
                     'series_instance_uid': str(getattr(first, 'SeriesInstanceUID', '') or ''),
+                    'frame_of_reference_uid': str(getattr(first, 'FrameOfReferenceUID', '') or ''),
+                    'orientation': classify_orientation(
+                        getattr(first, 'ImageOrientationPatient', None)
+                    ).value,
                     'file_paths': list(series_files),
                 })
             except Exception as error:
@@ -307,9 +325,17 @@ def _load_single_image_task(
                 'modality': str(getattr(dataset, 'Modality', '') or 'DICOM'),
                 'acquisition_date': str(getattr(dataset, 'AcquisitionDate', '') or ''),
                 'acquisition_time': str(getattr(dataset, 'AcquisitionTime', '') or ''),
+                'study_date': str(getattr(dataset, 'StudyDate', '') or ''),
+                'study_time': str(getattr(dataset, 'StudyTime', '') or ''),
+                'protocol_name': str(getattr(dataset, 'ProtocolName', '') or ''),
+                'body_part_examined': str(getattr(dataset, 'BodyPartExamined', '') or ''),
                 'series_number': str(getattr(dataset, 'SeriesNumber', '') or ''),
                 'study_instance_uid': str(getattr(dataset, 'StudyInstanceUID', '') or ''),
                 'series_instance_uid': str(getattr(dataset, 'SeriesInstanceUID', '') or ''),
+                'frame_of_reference_uid': str(getattr(dataset, 'FrameOfReferenceUID', '') or ''),
+                'orientation': classify_orientation(
+                    getattr(dataset, 'ImageOrientationPatient', None)
+                ).value,
                 'slice_count': image_model.get_slice_count(),
             }
         else:
@@ -392,7 +418,13 @@ class MainWindow(QMainWindow):
         self._image_required_widgets: List[QWidget] = []
         self._mpr_active = False
         self._mpr_series_id: Optional[str] = None
-        
+        self._workspace_state_timer = QTimer(self)
+        self._workspace_state_timer.setSingleShot(True)
+        self._workspace_state_timer.timeout.connect(self._save_study_workspace_state)
+        self._restored_study_keys: Set[str] = set()
+        self._restoring_workspace = False
+        self._prefetch_pending: Set[str] = set()
+
         # 初始化UI
         self._init_ui()
         self.shortcut_registry = ShortcutRegistry(self)
@@ -844,7 +876,23 @@ class MainWindow(QMainWindow):
         self.auto_assign_action = QAction(t("mainwindow.automatically_assign_all_sequences"), self)
         self.auto_assign_action.triggered.connect(self._auto_assign_all_series)
         series_menu.addAction(self.auto_assign_action)
-        
+
+        hanging_menu = series_menu.addMenu(t("mainwindow.hanging_protocols"))
+        self._hanging_actions = []
+        for protocol, title_key in (
+            (HangingProtocolId.STUDY_OVERVIEW, "mainwindow.hanging_study_overview"),
+            (HangingProtocolId.CT_COMPARISON, "mainwindow.hanging_ct_comparison"),
+            (HangingProtocolId.MR_NEURO, "mainwindow.hanging_mr_neuro"),
+            (HangingProtocolId.CURRENT_MPR, "mainwindow.hanging_current_mpr"),
+        ):
+            action = QAction(t(title_key), self)
+            action.triggered.connect(
+                lambda checked=False, value=protocol: self._apply_hanging_protocol(value)
+            )
+            hanging_menu.addAction(action)
+            self._hanging_actions.append(action)
+            self._image_required_actions.append(action)
+
         # 清除所有绑定
         self.clear_bindings_action = QAction(t("mainwindow.clear_all_bindings"), self)
         self.clear_bindings_action.triggered.connect(self._clear_all_bindings)
@@ -1890,6 +1938,193 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(t("mainwindow.auto_assignment_complete_value_sequences_assigned").replace("%1", str(assigned_count)), 3000)
         logger.info(f"[MainWindow._auto_assign_all_series] 自动分配完成: {assigned_count}个序列")
     
+    def _apply_hanging_protocol(self, protocol: HangingProtocolId) -> None:
+        active_series_id = self._active_series_id()
+        infos = [
+            self.series_manager.get_series_info(series_id)
+            for series_id in self.series_manager.get_all_series_ids()
+        ]
+        plan = build_hanging_plan(
+            protocol,
+            [info for info in infos if info is not None],
+            active_series_id,
+        )
+        if not plan.series_ids:
+            self.status_bar.showMessage(t("mainwindow.hanging_no_series"), 3000)
+            return
+        if protocol is HangingProtocolId.CURRENT_MPR:
+            view_id = self.series_manager.get_active_view_id()
+            if view_id:
+                self.series_manager.bind_series_to_view(view_id, plan.series_ids[0])
+            self._toggle_mpr_workspace()
+            return
+        self._set_layout(plan.layout)
+        view_ids = self.series_manager.get_all_view_ids()
+        for view_id, series_id in zip(view_ids, plan.series_ids):
+            self.series_manager.bind_series_to_view(view_id, series_id)
+        if view_ids:
+            self.series_manager.set_active_view(view_ids[0])
+        self.status_bar.showMessage(t("mainwindow.hanging_applied"), 3000)
+        self._schedule_workspace_state_save()
+
+    @staticmethod
+    def _workspace_study_key(study_instance_uid: str) -> Optional[str]:
+        uid = str(study_instance_uid or "").strip()
+        if not uid:
+            return None
+        return hashlib.sha256(uid.encode("utf-8", "replace")).hexdigest()[:24]
+
+    def _schedule_workspace_state_save(self) -> None:
+        if not self._restoring_workspace and not self._closing:
+            self._workspace_state_timer.start(500)
+
+    def _save_study_workspace_state(self) -> None:
+        series_id = self._active_series_id()
+        info = self.series_manager.get_series_info(series_id) if series_id else None
+        study_key = self._workspace_study_key(
+            info.study_instance_uid if info is not None else ""
+        )
+        if not study_key:
+            return
+        bindings = {}
+        presentations = {}
+        for view_id in self.series_manager.get_all_view_ids():
+            binding = self.series_manager.get_view_binding(view_id)
+            if not binding or not binding.series_id:
+                continue
+            series_info = self.series_manager.get_series_info(binding.series_id)
+            if not series_info or not series_info.series_instance_uid:
+                continue
+            uid = series_info.series_instance_uid
+            bindings[view_id] = uid
+            frame = self.multi_viewer_grid.get_view_frame(view_id)
+            viewer = getattr(frame, "image_viewer", None) if frame else None
+            state = getattr(viewer, "presentation_state", None)
+            if state is not None:
+                presentations[view_id] = {
+                    "series_uid": uid,
+                    "slice": int(state.slice_index),
+                    "ww": float(state.window_width),
+                    "wl": float(state.window_level),
+                    "zoom": float(state.zoom),
+                    "pan": [float(state.pan_center.x()), float(state.pan_center.y())],
+                    "invert": bool(state.inverted),
+                    "interpolation": state.interpolation.value,
+                    "fit": bool(state.fit_mode),
+                }
+        states = self.settings_manager.get_setting("study_workspace.states", {})
+        if not isinstance(states, dict):
+            states = {}
+        states[study_key] = {
+            "updated": time.time(),
+            "layout": list(self.series_manager.get_current_layout()),
+            "bindings": bindings,
+            "presentations": presentations,
+            "active_view": self.series_manager.get_active_view_id() or "",
+            "sync_mode": int(self.sync_manager.get_sync_mode().value),
+        }
+        if len(states) > 20:
+            keep = sorted(
+                states,
+                key=lambda key: float(states[key].get("updated", 0.0)),
+                reverse=True,
+            )[:20]
+            states = {key: states[key] for key in keep}
+        self.settings_manager.set_setting("study_workspace.states", states)
+
+    def _restore_study_workspace_for_series(self, series_id: str) -> bool:
+        info = self.series_manager.get_series_info(series_id)
+        study_key = self._workspace_study_key(
+            info.study_instance_uid if info is not None else ""
+        )
+        if not study_key or study_key in self._restored_study_keys:
+            return False
+        states = self.settings_manager.get_setting("study_workspace.states", {})
+        state = states.get(study_key) if isinstance(states, dict) else None
+        if not isinstance(state, dict):
+            self._restored_study_keys.add(study_key)
+            return False
+        uid_to_series = {
+            candidate.series_instance_uid: candidate.series_id
+            for candidate in (
+                self.series_manager.get_series_info(sid)
+                for sid in self.series_manager.get_all_series_ids()
+            )
+            if candidate is not None and candidate.series_instance_uid
+        }
+        loaded_uids = {
+            candidate.series_instance_uid
+            for candidate in (
+                self.series_manager.get_series_info(sid)
+                for sid in self.series_manager.get_all_series_ids()
+            )
+            if candidate is not None
+            and candidate.series_instance_uid
+            and candidate.is_loaded
+        }
+        required_uids = set(state.get("bindings", {}).values())
+        if not required_uids.issubset(loaded_uids):
+            return False
+        self._restored_study_keys.add(study_key)
+        try:
+            self._restoring_workspace = True
+            layout = state.get("layout", [1, 1])
+            if (
+                isinstance(layout, (list, tuple))
+                and len(layout) == 2
+                and all(isinstance(value, int) for value in layout)
+            ):
+                self._set_layout((layout[0], layout[1]))
+            for view_id, series_uid in state.get("bindings", {}).items():
+                target_series = uid_to_series.get(series_uid)
+                if target_series and self.series_manager.get_view_binding(view_id):
+                    self.series_manager.bind_series_to_view(view_id, target_series)
+            active_view = str(state.get("active_view", ""))
+            if self.series_manager.get_view_binding(active_view):
+                self.series_manager.set_active_view(active_view)
+            from medimager.core.sync_manager import SyncMode
+            try:
+                self.sync_manager.set_sync_mode(SyncMode(int(state.get("sync_mode", 0))))
+            except (TypeError, ValueError):
+                pass
+            self._apply_restored_presentations(state.get("presentations", {}), uid_to_series)
+        finally:
+            self._restoring_workspace = False
+        self.status_bar.showMessage(t("mainwindow.study_workspace_restored"), 2500)
+        return True
+
+    def _apply_restored_presentations(self, saved: Dict, uid_to_series: Dict[str, str]) -> None:
+        if not isinstance(saved, dict):
+            return
+        for view_id, values in saved.items():
+            if not isinstance(values, dict):
+                continue
+            binding = self.series_manager.get_view_binding(view_id)
+            expected = uid_to_series.get(str(values.get("series_uid", "")))
+            if not binding or binding.series_id != expected:
+                continue
+            frame = self.multi_viewer_grid.get_view_frame(view_id)
+            viewer = getattr(frame, "image_viewer", None) if frame else None
+            state = getattr(viewer, "presentation_state", None)
+            if state is None:
+                continue
+            state.slice_index = int(values.get("slice", state.slice_index))
+            state.window_width = float(values.get("ww", state.window_width))
+            state.window_level = float(values.get("wl", state.window_level))
+            state.zoom = float(values.get("zoom", state.zoom))
+            pan = values.get("pan", [state.pan_center.x(), state.pan_center.y()])
+            if isinstance(pan, (list, tuple)) and len(pan) == 2:
+                state.pan_center.setX(float(pan[0]))
+                state.pan_center.setY(float(pan[1]))
+            state.inverted = bool(values.get("invert", state.inverted))
+            state.interpolation = InterpolationMode.coerce(
+                values.get("interpolation", state.interpolation)
+            )
+            state.fit_mode = bool(values.get("fit", state.fit_mode))
+            model = self.series_manager.get_series_model(expected)
+            state.clamp(model.get_slice_count() if model else None)
+            viewer.set_presentation_state(state)
+
     def _clear_all_bindings(self) -> None:
         """清除所有绑定"""
         logger.debug("[MainWindow._clear_all_bindings] 清除所有绑定")
@@ -2249,7 +2484,8 @@ class MainWindow(QMainWindow):
                 if self.series_manager.get_series_info(series_id)
             }
             added = 0
-            for item in result.series:
+            ordered_series = sorted(result.series, key=self._series_load_priority)
+            for item in ordered_series:
                 uid = item['series_instance_uid']
                 if uid and uid in existing_uids:
                     logger.info("[MainWindow._on_folder_scan_finished] 跳过重复序列: %s", uid)
@@ -2322,6 +2558,65 @@ class MainWindow(QMainWindow):
             return False
         return True
     
+    def _series_load_priority(self, item: Dict) -> tuple:
+        """FIFO pool priority: active study, diagnostic series, then DICOM order."""
+        active_id = self._active_series_id()
+        active = self.series_manager.get_series_info(active_id) if active_id else None
+        same_study = bool(
+            active
+            and active.study_instance_uid
+            and item.get("study_instance_uid") == active.study_instance_uid
+        )
+        description = " ".join(
+            str(item.get(key, ""))
+            for key in ("series_description", "protocol_name")
+        ).casefold()
+        is_localizer = any(
+            term in description
+            for term in ("localizer", "scout", "survey", "topogram", "定位", "序列定位")
+        )
+        modality_rank = {
+            "CT": 0, "MR": 1, "PT": 2, "NM": 3, "US": 4, "CR": 5, "DX": 6
+        }.get(str(item.get("modality", "")).upper(), 9)
+        try:
+            series_number = int(str(item.get("series_number", "")).strip())
+        except (TypeError, ValueError):
+            series_number = 1_000_000
+        return (
+            0 if same_study else 1,
+            1 if is_localizer else 0,
+            modality_rank,
+            series_number,
+            str(item.get("series_instance_uid", "")),
+        )
+
+    def _prefetch_active_neighbors(self, slice_index: int) -> None:
+        if len(self._prefetch_pending) >= 8:
+            return
+        view_id = self.series_manager.get_active_view_id()
+        binding = self.series_manager.get_view_binding(view_id) if view_id else None
+        if not binding or not binding.series_id:
+            return
+        model = self.series_manager.get_series_model(binding.series_id)
+        frame = self.multi_viewer_grid.get_view_frame(view_id)
+        viewer = getattr(frame, "image_viewer", None) if frame else None
+        state = getattr(viewer, "presentation_state", None)
+        if model is None or state is None:
+            return
+        futures = prefetch_display_slices(
+            model,
+            state,
+            (slice_index + 1, slice_index - 1, slice_index + 2, slice_index - 2),
+        )
+        for cache_key, future in futures:
+            if cache_key in self._prefetch_pending:
+                future.cancel()
+                continue
+            self._prefetch_pending.add(cache_key)
+            future.add_done_callback(
+                lambda _future, key=cache_key: self._prefetch_pending.discard(key)
+            )
+
     def _load_series_in_background(self, series_id: str, file_paths: List[str], series_info: SeriesInfo) -> None:
         """使用性能管理器的线程池在后台加载序列"""
         logger.debug(f"[MainWindow._load_series_in_background] 后台加载序列: {series_id}")
@@ -3095,6 +3390,7 @@ class MainWindow(QMainWindow):
         # 序列加载完成后可以进行自动分配
         if self.binding_manager.get_binding_strategy() == BindingStrategy.AUTO_ASSIGN:
             self.binding_manager.auto_assign_series_to_views([series_id])
+        self._restore_study_workspace_for_series(series_id)
         self._update_ui_state()
 
     def _on_series_removed(self, series_id: str) -> None:
@@ -3188,7 +3484,8 @@ class MainWindow(QMainWindow):
             self._propagate_tool_to_single_viewer(view_id)
         else:
             self._update_ui_state()
-    
+        self._schedule_workspace_state_save()
+
     def _on_layout_changed(self, layout: tuple) -> None:
         """处理布局变更事件
 
@@ -3201,6 +3498,7 @@ class MainWindow(QMainWindow):
 
         logger.debug(f"[MainWindow._on_layout_changed] 布局变更: {layout}")
         self._update_ui_state()
+        self._schedule_workspace_state_save()
     
     def _on_auto_assignment_completed(self, assigned_count: int) -> None:
         """处理自动分配完成事件"""
@@ -3377,7 +3675,8 @@ class MainWindow(QMainWindow):
             self._current_active_viewer = None
             self._queue_dicom_tag_update(None)
         self._update_ui_state()
-    
+        self._schedule_workspace_state_save()
+
     def _on_grid_layout_changed(self, layout: tuple) -> None:
         """处理网格布局变更事件"""
         logger.debug(f"[MainWindow._on_grid_layout_changed] 网格布局变更: {layout}")
@@ -3430,7 +3729,9 @@ class MainWindow(QMainWindow):
                     # 调用序列面板的同步方法
                     if hasattr(self.series_panel, 'sync_slice_selection'):
                         self.series_panel.sync_slice_selection(binding.series_id, slice_index)
-                    
+                    self._schedule_workspace_state_save()
+                    self._prefetch_active_neighbors(slice_index)
+
         except Exception as e:
             logger.error(f"[MainWindow._on_slice_changed] 处理切片变化失败: {e}", exc_info=True)
     
@@ -3569,6 +3870,8 @@ class MainWindow(QMainWindow):
                 return
             
             # 保存设置
+            self._workspace_state_timer.stop()
+            self._save_study_workspace_state()
             self.settings_manager.save_settings()
             
             logger.info("[MainWindow.closeEvent] 应用程序正常关闭")

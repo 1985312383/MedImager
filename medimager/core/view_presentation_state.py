@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Iterable, Iterator, Optional
 
@@ -125,13 +125,87 @@ def model_presentation_context(model, state: ViewPresentationState) -> Iterator[
             setattr(model, name, value)
 
 
+def build_render_request(model, state: ViewPresentationState, *, copy_pixels: bool = False):
+    """Snapshot a pure render request and its LRU key on the caller thread."""
+    import numpy as np
+    from medimager.core.render_pipeline import RenderRequest
+
+    local_state = replace(state, pan_center=QPointF(state.pan_center))
+    local_state.clamp(getattr(model, "get_slice_count", lambda: 0)())
+    pixels = model.get_slice_data(local_state.slice_index)
+    if pixels is None:
+        return None, None
+    pixels = np.asarray(pixels).copy() if copy_pixels else pixels
+    metadata = model.get_slice_metadata(local_state.slice_index)
+    photometric = metadata.get(
+        "PhotometricInterpretation", metadata.get("Photometric Interpretation", "")
+    )
+    request = RenderRequest(
+        pixels=pixels,
+        window_width=local_state.window_width,
+        window_level=local_state.window_level,
+        voi_function=str(metadata.get("VOILUTFunction", "LINEAR")),
+        inverted=local_state.inverted,
+        monochrome1=str(photometric).upper() == "MONOCHROME1",
+        presentation_lut_shape=str(metadata.get("PresentationLUTShape", "IDENTITY")),
+        use_dicom_voi_lut=local_state.use_dicom_voi_lut,
+        voi_lut_index=int(local_state.voi_lut_index or 0),
+        dataset=model.get_dicom_file(local_state.slice_index),
+    )
+    namespace = str(getattr(model, "_cache_namespace", id(model)))
+    revision = int(getattr(model, "_data_revision", 0))
+    key = (
+        f"view:{namespace}:{revision}:{local_state.slice_index}:"
+        f"{local_state.window_width:.9g}:{local_state.window_level:.9g}:"
+        f"{request.voi_function}:{request.inverted}:{request.monochrome1}:"
+        f"{request.presentation_lut_shape}:{request.use_dicom_voi_lut}:"
+        f"{request.voi_lut_index}"
+    )
+    return key, request
+
+
+def render_and_cache_request(cache_key: str, request):
+    """Worker-safe renderer used by neighbor prefetch and thumbnails."""
+    from medimager.core.render_pipeline import render_frame
+    from medimager.utils.settings import get_performance_manager
+
+    perf = get_performance_manager()
+    cached = perf.get_from_cache(cache_key)
+    if cached is not None:
+        return cached
+    rendered = render_frame(request).pixels_uint8
+    perf.add_to_cache(cache_key, rendered)
+    return rendered
+
+
+def prefetch_display_slices(model, state: ViewPresentationState, indices: Iterable[int]):
+    """Submit immutable neighboring slices to the shared background pool."""
+    from medimager.utils.settings import get_performance_manager
+
+    perf = get_performance_manager()
+    futures = []
+    count = model.get_slice_count()
+    for index in indices:
+        if not 0 <= int(index) < count:
+            continue
+        local_state = replace(
+            state,
+            slice_index=int(index),
+            pan_center=QPointF(state.pan_center),
+        )
+        key, request = build_render_request(model, local_state, copy_pixels=True)
+        if key is None or perf.get_from_cache(key) is not None:
+            continue
+        futures.append(
+            (key, perf.get_thread_pool().submit(render_and_cache_request, key, request))
+        )
+    return futures
+
+
 def render_display_slice(model, state: ViewPresentationState):
     """Render one slice without mutating the shared image model."""
-    from medimager.core.render_pipeline import RenderRequest, render_frame
 
     state.clamp(getattr(model, "get_slice_count", lambda: 0)())
-    # Keep compatibility with lightweight external/test models while the
-    # production ImageDataModel always uses the pure request path below.
     if not hasattr(model, "get_slice_data") or not hasattr(model, "get_slice_metadata"):
         with model_presentation_context(model, state):
             return model.get_display_slice(state.slice_index)
@@ -140,26 +214,10 @@ def render_display_slice(model, state: ViewPresentationState):
         return None
     if str(getattr(model, "image_mode", "")).startswith("rgb"):
         return model._as_uint8_rgb(pixels)
-    metadata = model.get_slice_metadata(state.slice_index)
-    photometric = metadata.get(
-        "PhotometricInterpretation", metadata.get("Photometric Interpretation", "")
-    )
-    return render_frame(
-        RenderRequest(
-            pixels=pixels,
-            window_width=state.window_width,
-            window_level=state.window_level,
-            voi_function=str(metadata.get("VOILUTFunction", "LINEAR")),
-            inverted=state.inverted,
-            monochrome1=str(photometric).upper() == "MONOCHROME1",
-            presentation_lut_shape=str(
-                metadata.get("PresentationLUTShape", "IDENTITY")
-            ),
-            use_dicom_voi_lut=state.use_dicom_voi_lut,
-            voi_lut_index=int(state.voi_lut_index or 0),
-            dataset=model.get_dicom_file(state.slice_index),
-        )
-    ).pixels_uint8
+    key, request = build_render_request(model, state)
+    if key is None:
+        return None
+    return render_and_cache_request(key, request)
 
 
 def pixel_value_for_view(model, state: ViewPresentationState, x: int, y: int):

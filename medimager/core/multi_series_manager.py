@@ -14,6 +14,7 @@ from medimager.core.annotation_persistence import (
     get_annotation_counts,
     has_unsaved_annotations,
 )
+from medimager.core.study_model import StudyHierarchy
 from medimager.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,10 +47,16 @@ class SeriesInfo:
     modality: str = ""
     acquisition_date: str = ""
     acquisition_time: str = ""
+    study_date: str = ""
+    study_time: str = ""
+    protocol_name: str = ""
+    body_part_examined: str = ""
     slice_count: int = 0
     series_number: str = ""
     study_instance_uid: str = ""
     series_instance_uid: str = ""
+    frame_of_reference_uid: str = ""
+    orientation: str = "unknown"
     
     # 运行时状态
     is_loaded: bool = False
@@ -57,8 +64,11 @@ class SeriesInfo:
     
     def __post_init__(self):
         """数据类初始化后的处理"""
-        logger.debug(f"[SeriesInfo.__post_init__] 创建序列信息: series_id={self.series_id}, "
-                    f"patient_name={self.patient_name}, modality={self.modality}")
+        logger.debug(
+            "[SeriesInfo.__post_init__] 创建序列信息: series_id=%s, modality=%s",
+            self.series_id,
+            self.modality,
+        )
 
 
 @dataclass
@@ -114,6 +124,7 @@ class MultiSeriesManager(QObject):
     binding_changed = Signal(str, str)  # view_id, series_id
     active_view_changed = Signal(str)  # view_id
     layout_changed = Signal(tuple)  # (rows, cols)
+    study_index_changed = Signal()
     
     def __init__(self, parent: Optional[QObject] = None) -> None:
         """初始化多序列管理器
@@ -168,9 +179,11 @@ class MultiSeriesManager(QObject):
         Returns:
             序列ID
         """
-        logger.debug(f"[MultiSeriesManager.add_series] 开始添加序列: "
-                    f"patient_name={series_info.patient_name}, "
-                    f"series_description={series_info.series_description}")
+        logger.debug(
+            "[MultiSeriesManager.add_series] 开始添加序列: series_id=%s, modality=%s",
+            series_info.series_id,
+            series_info.modality,
+        )
         
         try:
             series_id = series_info.series_id
@@ -185,6 +198,7 @@ class MultiSeriesManager(QObject):
             
             logger.info(f"[MultiSeriesManager.add_series] 序列添加成功: {series_id}")
             self.series_added.emit(series_id)
+            self.study_index_changed.emit()
             
             return series_id
             
@@ -232,6 +246,7 @@ class MultiSeriesManager(QObject):
             
             logger.info(f"[MultiSeriesManager.remove_series] 序列移除成功: {series_id}")
             self.series_removed.emit(series_id)
+            self.study_index_changed.emit()
             
             return True
             
@@ -265,6 +280,7 @@ class MultiSeriesManager(QObject):
             
             logger.info(f"[MultiSeriesManager.load_series_data] 序列数据加载完成: {series_id}")
             self.series_loaded.emit(series_id)
+            self.study_index_changed.emit()
             
             return True
             
@@ -508,6 +524,10 @@ class MultiSeriesManager(QObject):
     
     # 查询方法
     
+    def get_study_hierarchy(self) -> StudyHierarchy:
+        """Return an immutable Patient -> Study -> Series snapshot."""
+        return StudyHierarchy.build(self._series_info.values())
+
     def get_series_info(self, series_id: str) -> Optional[SeriesInfo]:
         """获取序列信息"""
         return self._series_info.get(series_id)
