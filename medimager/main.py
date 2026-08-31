@@ -14,9 +14,12 @@ MedImager - 现代化的 DICOM 查看器与图像分析工具
 
 import sys
 import os
+import argparse
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+from PySide6.QtCore import QStandardPaths, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 
@@ -28,10 +31,73 @@ if __name__ == "__main__" and __package__ is None:
 # 导入项目模块
 from medimager.utils.logger import setup_logger, get_logger
 from medimager.utils.settings import get_settings_manager
+from medimager.core.settings_registry import DEFAULT_SETTINGS_REGISTRY
 from medimager.utils.i18n import get_translation_manager
 from medimager.app_info import APP_NAME, get_version
 
 from medimager.ui.main_window import MainWindow
+
+
+@dataclass(frozen=True)
+class StartupRequest:
+    """Non-sensitive startup intent parsed before the Qt event loop starts."""
+
+    paths: tuple[str, ...] = ()
+    demo: str | None = None
+
+
+def parse_startup_arguments(argv: Sequence[str]) -> StartupRequest:
+    """Parse MedImager arguments while leaving Qt/platform switches alone."""
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--demo",
+        "--example",
+        choices=("ct_multiphase", "mr_brain", "geometry_lab"),
+    )
+    namespace, remaining = parser.parse_known_args(tuple(argv)[1:])
+    # Qt keeps its own command-line switches in ``remaining``. A startup
+    # source must exist before it can be indexed, which cleanly separates it
+    # from option values such as ``--style Fusion`` without duplicating Qt's
+    # platform-option parser.
+    paths = tuple(
+        str(Path(value).expanduser())
+        for value in remaining
+        if not str(value).startswith("-") and Path(value).expanduser().exists()
+    )
+    return StartupRequest(
+        paths=paths,
+        demo=namespace.demo,
+    )
+
+
+def qt_application_arguments(
+    argv: Sequence[str],
+    request: StartupRequest,
+) -> list[str]:
+    """Remove MedImager-owned switches before Qt parses platform options."""
+
+    values = list(argv)
+    if not values:
+        return ["medimager"]
+    result = [values[0]]
+    skip_demo_value = False
+    source_values = set(request.paths)
+    for raw in values[1:]:
+        value = str(raw)
+        if skip_demo_value:
+            skip_demo_value = False
+            continue
+        if value in {"--demo", "--example"}:
+            skip_demo_value = True
+            continue
+        if value.startswith("--demo=") or value.startswith("--example="):
+            continue
+        expanded = str(Path(value).expanduser())
+        if expanded in source_values:
+            continue
+        result.append(value)
+    return result
 
 
 class MedImagerApplication:
@@ -40,9 +106,14 @@ class MedImagerApplication:
     负责应用程序的完整初始化和生命周期管理
     """
     
-    def __init__(self, app: QApplication) -> None:
+    def __init__(
+        self,
+        app: QApplication,
+        startup_request: StartupRequest | None = None,
+    ) -> None:
         self.app = app
         self.main_window: Optional[MainWindow] = None
+        self.startup_request = startup_request or StartupRequest()
 
         self.logger = None
         self.settings_manager = None
@@ -86,9 +157,18 @@ class MedImagerApplication:
     def _setup_logging(self) -> bool:
         """设置日志系统"""
         try:
-            # 创建日志目录
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
+            # A packaged install may live below Program Files and must never
+            # write beside the executable.  The smoke override is restricted
+            # to release automation; normal runs use Qt's per-user writable
+            # application-data location.
+            smoke_root = os.environ.get("MEDIMAGER_SMOKE_APP_DATA_ROOT", "").strip()
+            app_data = smoke_root or QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppLocalDataLocation
+            )
+            if not app_data:
+                raise OSError("no writable application-data location")
+            log_dir = Path(app_data) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
             
             # 初始化日志系统
             setup_logger(
@@ -113,37 +193,18 @@ class MedImagerApplication:
 
             # 设置默认值
             default_settings = {
-                'language': 'en_US',
-                'ui_theme': 'dark',  # 改为深色主题
-                'window_geometry': None,
-                'window_state': None,
-                'recent_files': [],
-                'max_recent_files': 10,
-                'auto_save_interval': 300,  # 5分钟
-                'log_level': 'INFO',
-                'display.window_level_strategy': 'dicom',
-                'display.smooth_interpolation': True,
-                'display.show_view_title': True,
-                'display.show_view_status': True,
-                'interaction.left_drag_action': 'browse',
-                'interaction.middle_drag_action': 'window',
-                'interaction.right_drag_action': 'zoom',
-                'interaction.wheel_reverse': False,
-                'cine.default_fps': 10,
-                'dicom.recursive_scan': True,
-                'dicom.include_extensionless': True,
-                'dicom.strict_metadata': False,
-                'roi.stats.show_mean': True,
-                'roi.stats.show_std': True,
-                'roi.stats.show_max': True,
-                'roi.stats.show_min': True,
-                'roi.stats.show_area': True,
-                'roi.stats.show_count': True,
-                'roi.stats.area_unit': 'auto',
-                'multiview.default_layout': '1x1',
-                'multiview.default_sync_mode': 'basic',
-                'multiview.sync_group': 'same_study',
+                spec.key: spec.default
+                for spec in DEFAULT_SETTINGS_REGISTRY.specs()
+                if spec.category != "internal"
             }
+            default_settings.update({
+                "window_geometry": None,
+                "window_state": None,
+                "recent_files": [],
+                "max_recent_files": 10,
+                "auto_save_interval": 300,
+                "log_level": "INFO",
+            })
 
             # 加载设置并设置默认值
             for key, default_value in default_settings.items():
@@ -286,6 +347,7 @@ class MedImagerApplication:
         try:
             # 显示主窗口
             self.main_window.show()
+            QTimer.singleShot(0, self._dispatch_startup_request)
             
             # 启动事件循环
             return self.app.exec()
@@ -294,14 +356,26 @@ class MedImagerApplication:
             self.logger.error(f"应用程序运行时出错: {e}")
             return 1
 
+    def _dispatch_startup_request(self) -> None:
+        """Enter the same asynchronous local/demo pipelines used by the UI."""
+
+        if self.main_window is None:
+            return
+        if self.startup_request.paths:
+            self.main_window._open_dropped_paths(self.startup_request.paths)
+            return
+        if self.startup_request.demo:
+            self.main_window._request_demo_study(self.startup_request.demo)
+
 
 def main() -> int:
     """应用程序主入口点"""
-    app = QApplication(sys.argv)
+    startup_request = parse_startup_arguments(sys.argv)
+    app = QApplication(qt_application_arguments(sys.argv, startup_request))
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(get_version())
     try:
-        medimager_app = MedImagerApplication(app)
+        medimager_app = MedImagerApplication(app, startup_request)
         return medimager_app.run()
 
     except Exception as e:
@@ -322,7 +396,7 @@ if __name__ == "__main__":
         try:
             import ctypes
             # 设置AppUserModelID以在Windows任务栏上正确显示图标
-            myappid = 'medimager.dicom_viewer.1.0'  # 更具体的应用程序ID
+            myappid = 'medimager.dicom_viewer.2.6'  # 更具体的应用程序ID
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except Exception as e:
             print(f"Windows配置失败: {e}")

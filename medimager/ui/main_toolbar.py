@@ -1,8 +1,9 @@
 from PySide6.QtWidgets import (QToolBar, QMenu, QToolButton, QVBoxLayout,
-                              QHBoxLayout, QRadioButton, QButtonGroup, QCheckBox,
-                              QLabel, QFrame, QWidget, QWidgetAction, QSpinBox)
-from PySide6.QtGui import QAction, QIcon, QActionGroup, QFont
-from PySide6.QtCore import Qt, QPoint, QSize, Signal, QSignalBlocker
+                              QHBoxLayout, QBoxLayout, QRadioButton, QButtonGroup,
+                              QCheckBox, QLabel, QFrame, QWidget, QWidgetAction,
+                              QSpinBox, QSizePolicy, QLayout)
+from PySide6.QtGui import QAction, QColor, QIcon, QActionGroup, QFont, QPalette
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, Signal, QSignalBlocker
 
 from medimager.utils.logger import get_logger
 from medimager.utils.resource_path import get_icon_path
@@ -11,8 +12,42 @@ from medimager.utils.i18n import t
 logger = get_logger(__name__)
 
 # 工具栏统一尺寸常量
-_ICON_SIZE = QSize(20, 20)
-_BTN_HEIGHT = 32
+_ICON_SIZE = QSize(24, 24)
+_MIN_CONTROL_EXTENT = 36
+
+
+def _control_extent(icon_pixels: int) -> int:
+    """Return one stable square tile size for a toolbar icon."""
+
+    return max(_MIN_CONTROL_EXTENT, int(icon_pixels) + 12)
+
+
+def _relative_luminance(color: QColor) -> float:
+    """Return WCAG relative luminance for an opaque Qt color."""
+
+    channels = (color.redF(), color.greenF(), color.blueF())
+    linear = tuple(
+        value / 12.92
+        if value <= 0.04045
+        else ((value + 0.055) / 1.055) ** 2.4
+        for value in channels
+    )
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_ratio(foreground: QColor, background: QColor) -> float:
+    lighter = max(_relative_luminance(foreground), _relative_luminance(background))
+    darker = min(_relative_luminance(foreground), _relative_luminance(background))
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _readable_theme_text(foreground: QColor, background: QColor) -> QColor:
+    """Keep the theme text token unless it misses normal-text contrast."""
+
+    if foreground.isValid() and _contrast_ratio(foreground, background) >= 4.5:
+        return foreground
+    candidates = (QColor("#000000"), QColor("#FFFFFF"))
+    return max(candidates, key=lambda candidate: _contrast_ratio(candidate, background))
 
 
 class ViewerToolbar(QToolBar):
@@ -22,6 +57,254 @@ class ViewerToolbar(QToolBar):
     viewer_command_requested = Signal(str)
     voi_option_requested = Signal(object)
     voi_menu_about_to_show = Signal()
+
+
+class SquareSplitToolButton(QToolButton):
+    """Square split control with its menu affordance inside the tile.
+
+    ``QToolButton.MenuButtonPopup`` reserves a separate 14 px strip in Qt's
+    toolbar style.  That makes split controls wider than every ordinary tool.
+    DelayedPopup keeps the small corner indicator inside the button; this
+    subclass restores an immediate menu hit target on the right edge while a
+    click elsewhere continues to activate the currently selected sub-tool.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty("splitDropdown", True)
+        self.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+
+    def _menu_hit_rect(self) -> QRect:
+        hotspot = max(11, min(15, self.width() // 3))
+        return QRect(self.width() - hotspot, 0, hotspot, self.height())
+
+    def mousePressEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.menu() is not None
+            and self._menu_hit_rect().contains(event.position().toPoint())
+        ):
+            event.accept()
+            self.showMenu()
+            return
+        super().mousePressEvent(event)
+
+
+class _ToolbarItemHost(QWidget):
+    """Give QWidgetAction controls the same cross-axis alignment as QAction."""
+
+    def __init__(self, child: QWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.child = child
+        self.setObjectName(f"{child.objectName() or type(child).__name__}Host")
+        self.setProperty("toolbarItemHost", True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        layout.addWidget(child, 0, Qt.AlignmentFlag.AlignCenter)
+        self._layout = layout
+        self.set_orientation(Qt.Orientation.Horizontal)
+
+    def set_orientation(self, orientation: Qt.Orientation) -> None:
+        horizontal = orientation == Qt.Orientation.Horizontal
+        self.setSizePolicy(
+            QSizePolicy.Policy.Fixed if horizontal else QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding if horizontal else QSizePolicy.Policy.Fixed,
+        )
+        setter = getattr(self.child, "set_orientation", None)
+        if callable(setter):
+            setter(orientation)
+        self.updateGeometry()
+
+
+class ActiveToolChip(QFrame):
+    """Compact current-tool indicator with a QLabel compatibility anchor."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        theme_manager=None,
+    ) -> None:
+        super().__init__(parent)
+        self._theme_manager = theme_manager
+        self.setObjectName("ActiveToolChipContainer")
+        self.setProperty("toolbarGroup", "feedback")
+        self.setProperty("toolbarRole", "feedback")
+        self.setMinimumWidth(148)
+        self.setMaximumWidth(196)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 3, 6, 3)
+        layout.setSpacing(5)
+        self._layout = layout
+
+        self.icon_label = QLabel(self)
+        self.icon_label.setObjectName("ActiveToolChipIcon")
+        self.icon_label.setFixedSize(18, 18)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.icon_label)
+
+        # Keep this exact QLabel name: older integrations locate it with
+        # toolbar.findChild(QLabel, "ActiveToolChip").
+        self.name_label = QLabel(self)
+        self.name_label.setObjectName("ActiveToolChip")
+        self.name_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.name_label.setMinimumWidth(64)
+        layout.addWidget(self.name_label, 1)
+
+        self.shortcut_label = QLabel(self)
+        self.shortcut_label.setObjectName("ActiveToolShortcutHint")
+        self.shortcut_label.setAlignment(Qt.AlignCenter)
+        self.shortcut_label.setMinimumWidth(22)
+        layout.addWidget(self.shortcut_label)
+
+        register_component = getattr(theme_manager, "register_component", None)
+        if callable(register_component):
+            register_component(self)
+        else:
+            self.update_theme("")
+
+    def set_orientation(self, orientation: Qt.Orientation) -> None:
+        """Keep the status chip compact and centered in either toolbar axis."""
+
+        if orientation == Qt.Orientation.Vertical:
+            self.setMinimumWidth(132)
+            self.name_label.setMinimumWidth(48)
+        else:
+            self.setMinimumWidth(148)
+            self.name_label.setMinimumWidth(64)
+        self.setMaximumWidth(196)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.updateGeometry()
+
+    @staticmethod
+    def _palette_color(value, fallback: QColor) -> QColor:
+        color = QColor(str(value or ""))
+        return color if color.isValid() else QColor(fallback)
+
+    def update_theme(self, theme_name: str) -> None:
+        """Apply explicit semantic colors instead of OS-dependent palette roles.
+
+        ``ThemeManager`` intentionally themes through QSS and does not replace
+        QApplication's native palette.  On a Windows dark desktop that palette
+        can therefore still expose white ``Text`` while MedImager's light QSS
+        uses a white surface.  Resolve the active theme tokens here and mirror
+        them into the widget palettes so both native painting and QSS agree.
+        """
+
+        tokens = {}
+        get_tokens = getattr(self._theme_manager, "get_theme_tokens", None)
+        if callable(get_tokens):
+            tokens = get_tokens(theme_name or None)
+
+        native = self.palette()
+        background = self._palette_color(
+            tokens.get("surface_raised_color"),
+            native.color(QPalette.ColorRole.AlternateBase),
+        )
+        shortcut_background = self._palette_color(
+            tokens.get("surface_sunken_color"),
+            native.color(QPalette.ColorRole.Base),
+        )
+        border = self._palette_color(
+            tokens.get("border_color"),
+            native.color(QPalette.ColorRole.Mid),
+        )
+        requested_text = self._palette_color(
+            tokens.get("text_color"),
+            native.color(QPalette.ColorRole.Text),
+        )
+        foreground = _readable_theme_text(requested_text, background)
+        shortcut_foreground = _readable_theme_text(
+            requested_text,
+            shortcut_background,
+        )
+
+        foreground_css = foreground.name(QColor.NameFormat.HexRgb)
+        background_css = background.name(QColor.NameFormat.HexRgb)
+        shortcut_foreground_css = shortcut_foreground.name(QColor.NameFormat.HexRgb)
+        shortcut_background_css = shortcut_background.name(QColor.NameFormat.HexRgb)
+        border_css = border.name(QColor.NameFormat.HexRgb)
+        self.setStyleSheet(
+            "QFrame#ActiveToolChipContainer { padding: 0; border-radius: 5px; "
+            f"border: 1px solid {border_css}; background-color: {background_css}; "
+            f"color: {foreground_css}; }}"
+            "QLabel#ActiveToolChipIcon { background-color: transparent; }"
+            "QLabel#ActiveToolChip { background-color: transparent; "
+            f"color: {foreground_css}; }}"
+            "QLabel#ActiveToolShortcutHint { padding: 1px 4px; border-radius: 3px; "
+            f"border: 1px solid {border_css}; background-color: {shortcut_background_css}; "
+            f"color: {shortcut_foreground_css}; font-size: 9px; }}"
+        )
+
+        self._set_widget_palette(self, foreground, background)
+        self._set_widget_palette(self.name_label, foreground, background)
+        self._set_widget_palette(
+            self.shortcut_label,
+            shortcut_foreground,
+            shortcut_background,
+        )
+        main_contrast = _contrast_ratio(foreground, background)
+        shortcut_contrast = _contrast_ratio(
+            shortcut_foreground,
+            shortcut_background,
+        )
+        self.setProperty("contrastForeground", foreground_css)
+        self.setProperty("contrastBackground", background_css)
+        self.setProperty("shortcutContrastForeground", shortcut_foreground_css)
+        self.setProperty("shortcutContrastBackground", shortcut_background_css)
+        self.setProperty("minimumContrastRatio", min(main_contrast, shortcut_contrast))
+
+    @staticmethod
+    def _set_widget_palette(widget: QWidget, foreground: QColor, background: QColor) -> None:
+        palette = widget.palette()
+        for group in (
+            QPalette.ColorGroup.Active,
+            QPalette.ColorGroup.Inactive,
+            QPalette.ColorGroup.Disabled,
+        ):
+            for role in (
+                QPalette.ColorRole.Text,
+                QPalette.ColorRole.WindowText,
+                QPalette.ColorRole.ButtonText,
+            ):
+                palette.setColor(group, role, foreground)
+            palette.setColor(group, QPalette.ColorRole.Window, background)
+            palette.setColor(group, QPalette.ColorRole.Base, background)
+            palette.setColor(group, QPalette.ColorRole.AlternateBase, background)
+        widget.setPalette(palette)
+
+    def set_tool(
+        self, icon: QIcon, label: str, shortcut_hint: str = "", tool_name: str = ""
+    ) -> None:
+        label = str(label or "")
+        shortcut_hint = str(shortcut_hint or "").strip()
+        self.icon_label.setPixmap(icon.pixmap(QSize(18, 18)))
+        self.icon_label.setVisible(not icon.isNull())
+        self.name_label.setText(label)
+        self.shortcut_label.setText(shortcut_hint)
+        self.shortcut_label.setVisible(bool(shortcut_hint))
+        self.setProperty("activeTool", str(tool_name or ""))
+        self.setProperty("shortcutHint", shortcut_hint)
+
+        description = label
+        if shortcut_hint:
+            description = f"{label} ({shortcut_hint})"
+        tooltip = t("mainwindow.current_tool_value").replace("%1", description)
+        self.setToolTip(tooltip)
+        self.name_label.setToolTip(tooltip)
+        self.icon_label.setToolTip(tooltip)
+        self.shortcut_label.setToolTip(tooltip)
+        self.setAccessibleName(tooltip)
+        self.setAccessibleDescription(tooltip)
 
 
 def _set_accessibility(widget, name: str, description: str = "") -> None:
@@ -54,37 +337,58 @@ def _semantic_icon(main_window, name: str) -> QIcon:
     )
 
 
-def _tag_toolbar_action(toolbar: QToolBar, action: QAction, group: str, shortcut_hint: str = "") -> None:
+def _themed_icon(
+    main_window,
+    icon_path: str,
+    *,
+    preserve_on_color: bool = False,
+) -> QIcon:
+    """Create a themed icon while supporting lightweight legacy stubs."""
+
+    creator = main_window.theme_manager.create_themed_icon
+    if preserve_on_color:
+        try:
+            return creator(icon_path, preserve_on_color=True)
+        except TypeError:
+            pass
+    return creator(icon_path)
+
+
+def _tag_toolbar_action(
+    toolbar: QToolBar,
+    action: QAction,
+    group: str,
+    shortcut_hint: str = "",
+    *,
+    role: str = "command",
+) -> None:
     action.setProperty("toolbarGroup", group)
     action.setProperty("shortcutHint", shortcut_hint)
+    action.setProperty("toolbarRole", role)
     label = action.text()
     if shortcut_hint:
         action.setToolTip(f"{label} ({shortcut_hint})")
     button = toolbar.widgetForAction(action)
     if button is not None:
         button.setProperty("toolbarGroup", group)
+        button.setProperty("toolbarRole", role)
+        button.setProperty("toolbarControl", True)
         _set_accessibility(button, label, action.toolTip() or label)
 
 
 def _setup_button(btn: QToolButton):
     """统一设置普通工具按钮"""
+    btn.setProperty("toolbarControl", True)
     btn.setIconSize(_ICON_SIZE)
-    btn.setFixedHeight(_BTN_HEIGHT)
-
-
-_ARROW_STRIP_W = 14  # ::menu-button 箭头条宽度，与 stylesheet 保持一致
+    extent = _control_extent(_ICON_SIZE.width())
+    btn.setFixedSize(extent, extent)
 
 def _setup_split_dropdown(btn: QToolButton):
-    """分体式下拉按钮：图标区点击激活工具，右侧箭头条点击弹出菜单。
-    适用于 ROI、测量等需要区分"使用当前工具"和"切换子工具"的场景。
-    总宽度 = 正方形图标区 + 箭头条，箭头条不侵入图标区。"""
-    btn.setPopupMode(QToolButton.MenuButtonPopup)
+    """Configure a square split control without a width-consuming arrow strip."""
+    btn.setProperty("splitDropdown", True)
+    btn.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
     btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-    btn.setIconSize(_ICON_SIZE)
-    btn.setFixedHeight(_BTN_HEIGHT)
-    btn.setMinimumWidth(_BTN_HEIGHT + _ARROW_STRIP_W)
-    # padding-right 补偿箭头条宽度，让图标在左侧正方形区域内居中
-    btn.setStyleSheet(f"QToolButton {{ padding-right: {_ARROW_STRIP_W}px; }}")
+    _setup_button(btn)
 
 
 def _setup_menu_button(btn: QToolButton):
@@ -92,8 +396,32 @@ def _setup_menu_button(btn: QToolButton):
     适用于窗宽窗位预设、图像变换、同步等纯菜单按钮。"""
     btn.setPopupMode(QToolButton.InstantPopup)
     btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-    btn.setIconSize(_ICON_SIZE)
-    btn.setFixedHeight(_BTN_HEIGHT)
+    _setup_button(btn)
+
+
+def _add_toolbar_widget(
+    toolbar: QToolBar,
+    widget: QWidget,
+    group: str,
+    *,
+    role: str = "command",
+) -> QAction:
+    """Add a custom control through a host that centers on the cross axis."""
+
+    widget.setProperty("toolbarGroup", group)
+    widget.setProperty("toolbarRole", role)
+    host = _ToolbarItemHost(widget, toolbar)
+    host.setProperty("toolbarGroup", group)
+    host.setProperty("toolbarRole", role)
+    action = toolbar.addWidget(host)
+    action.setProperty("toolbarGroup", group)
+    action.setProperty("toolbarRole", role)
+    hosts = getattr(toolbar, "_custom_hosts", None)
+    if hosts is None:
+        hosts = []
+        toolbar._custom_hosts = hosts
+    hosts.append(host)
+    return action
 
 
 def create_main_toolbar(main_window) -> QToolBar:
@@ -110,7 +438,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     toolbar.setObjectName("MainToolBar")
     toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
     toolbar.setIconSize(_ICON_SIZE)
-    toolbar.setProperty("logicalGroups", "interaction,annotation,display,layout-sync-cine")
+    toolbar.setProperty("logicalGroups", "browse,measure,compare,advanced")
     toolbar.setAccessibleName(t("mainwindow.main_toolbar"))
 
     tool_action_group = QActionGroup(main_window)
@@ -134,12 +462,12 @@ def create_main_toolbar(main_window) -> QToolBar:
     tool_action_group.addAction(action)
     default_action = action
     main_window.tool_actions["default"] = action
-    _tag_toolbar_action(toolbar, action, "interaction", "P")
+    _tag_toolbar_action(toolbar, action, "browse", "P", role="mode")
 
     interaction_actions = {}
     for mode, icon_name, label, hint in (
-        ("pan", "pan", "Pan", "H"),
-        ("zoom", "zoom_in", "Zoom", "Z"),
+        ("pan", "pan", t("mainwindow.pan"), "H"),
+        ("zoom", "zoom_in", t("mainwindow.zoom"), "Z"),
     ):
         mode_action = QAction(_semantic_icon(main_window, icon_name), label, main_window)
         mode_action.setCheckable(True)
@@ -151,12 +479,12 @@ def create_main_toolbar(main_window) -> QToolBar:
         tool_action_group.addAction(mode_action)
         main_window.tool_actions[mode] = mode_action
         interaction_actions[mode] = mode_action
-        _tag_toolbar_action(toolbar, mode_action, "interaction", hint)
+        _tag_toolbar_action(toolbar, mode_action, "browse", hint, role="mode")
 
     toolbar.addSeparator()
 
     # 2. ROI工具按钮（带下拉菜单）
-    roi_button = QToolButton(main_window)
+    roi_button = SquareSplitToolButton(main_window)
     roi_button.setObjectName("RoiToolButton")
     roi_button.setCheckable(True)
     _setup_split_dropdown(roi_button)
@@ -164,6 +492,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     ellipse_icon_path = get_icon_path("ellipse.svg")
     ellipse_icon = main_window.theme_manager.create_themed_icon(ellipse_icon_path)
     roi_button.setIcon(ellipse_icon)
+    roi_button.setText(t("mainwindow.ellipse"))
     roi_button.setToolTip(t("mainwindow.select_roi_tool_type"))
     roi_button._icon_path = ellipse_icon_path
     roi_button._active_tool_name = "ellipse_roi"
@@ -208,16 +537,15 @@ def create_main_toolbar(main_window) -> QToolBar:
         roi_button.setIcon(main_window.theme_manager.create_themed_icon(icon_path))
 
     roi_button.refresh_icon = refresh_roi_icon
-    toolbar.addWidget(roi_button)
+    _add_toolbar_widget(toolbar, roi_button, "measure", role="mode")
 
     main_window.tool_actions["ellipse_roi"] = ellipse_action
     main_window.tool_actions["rectangle_roi"] = rect_action
     main_window.tool_actions["circle_roi"] = circle_action
-    roi_button.setProperty("toolbarGroup", "annotation")
     _set_accessibility(roi_button, t("mainwindow.select_roi_tool_type"))
 
     # 3. 测量工具按钮（带下拉菜单）
-    measure_button = QToolButton(main_window)
+    measure_button = SquareSplitToolButton(main_window)
     measure_button.setObjectName("MeasurementToolButton")
     measure_button.setCheckable(True)
     _setup_split_dropdown(measure_button)
@@ -225,6 +553,7 @@ def create_main_toolbar(main_window) -> QToolBar:
     ruler_icon_path = get_icon_path("ruler.svg")
     ruler_icon = main_window.theme_manager.create_themed_icon(ruler_icon_path)
     measure_button.setIcon(ruler_icon)
+    measure_button.setText(t("mainwindow.line_measurement"))
     measure_button.setToolTip(t("mainwindow.measurement_tool"))
     measure_button._icon_path = ruler_icon_path
     measure_button._active_tool_name = "measurement"
@@ -260,54 +589,126 @@ def create_main_toolbar(main_window) -> QToolBar:
         measure_button.setIcon(main_window.theme_manager.create_themed_icon(icon_path))
 
     measure_button.refresh_icon = refresh_measure_icon
-    toolbar.addWidget(measure_button)
+    _add_toolbar_widget(toolbar, measure_button, "measure", role="mode")
 
     main_window.tool_actions["measurement"] = ruler_action
     main_window.tool_actions["angle"] = angle_action
-    measure_button.setProperty("toolbarGroup", "annotation")
     _set_accessibility(measure_button, t("mainwindow.measurement_tool"))
 
     toolbar.addSeparator()
 
     # 4. Window/level interaction and DICOM VOI presets
     wl_button = create_wl_preset_button(main_window, toolbar)
-    wl_button.setProperty("toolbarGroup", "display")
-    toolbar.addWidget(wl_button)
+    _add_toolbar_widget(toolbar, wl_button, "browse", role="mode")
 
     for command, icon_name, label, hint in (
-        ("fit", "fit", "Fit image", "F"),
-        ("actual_size", "actual_size", "Actual pixels (1:1)", "1"),
-        ("reset_view", "reset", "Reset view", "Home"),
+        ("fit", "fit", t("mainwindow.fit_image"), "F"),
+        ("actual_size", "actual_size", t("mainwindow.actual_pixels"), "1"),
+        ("reset_view", "reset", t("mainwindow.reset_view"), ""),
     ):
         command_action = QAction(_semantic_icon(main_window, icon_name), label, main_window)
         command_action.triggered.connect(
             lambda checked=False, requested=command: toolbar.viewer_command_requested.emit(requested)
         )
         toolbar.addAction(command_action)
-        _tag_toolbar_action(toolbar, command_action, "display", hint)
+        _tag_toolbar_action(toolbar, command_action, "browse", hint)
 
     # 5. Image transform menu
     transform_button = create_transform_button(main_window)
-    transform_button.setProperty("toolbarGroup", "display")
     _set_accessibility(transform_button, t("mainwindow.image_transform"))
-    toolbar.addWidget(transform_button)
+    _add_toolbar_widget(toolbar, transform_button, "browse", role="menu")
 
     toolbar.addSeparator()
 
     # 6. 布局选择器按钮
     layout_button = create_layout_selector_button(main_window)
-    layout_button.setProperty("toolbarGroup", "layout-sync-cine")
-    toolbar.addWidget(layout_button)
+    _add_toolbar_widget(toolbar, layout_button, "compare", role="menu")
 
     # 7. Sync status and controls
     sync_button = create_sync_button(main_window)
-    sync_button.setProperty("toolbarGroup", "layout-sync-cine")
-    toolbar.addWidget(sync_button)
+    _add_toolbar_widget(toolbar, sync_button, "compare", role="sync")
+
+    # Plane intersections and the patient-space cursor are independent
+    # compare aids. Keep both discoverable instead of burying them in the
+    # generic synchronization menu.
+    try:
+        from medimager.utils.settings import get_settings_manager
+
+        compare_settings = getattr(main_window, "settings_manager", None)
+        if compare_settings is None:
+            compare_settings = get_settings_manager()
+        reference_default = bool(
+            compare_settings.get_setting("sync.reference_lines", True)
+        )
+        cursor_default = bool(
+            compare_settings.get_setting("sync.shared_cursor", True)
+        )
+    except Exception:
+        compare_settings = None
+        reference_default = True
+        cursor_default = True
+
+    compare_toggle_actions = {}
+    for key, name, icon_file, label, checked in (
+        (
+            "sync.reference_lines",
+            "reference_lines",
+            "reference-lines.svg",
+            t("settingsdialog.sync_reference_lines"),
+            reference_default,
+        ),
+        (
+            "sync.shared_cursor",
+            "shared_cursor",
+            "shared-cursor.svg",
+            t("settingsdialog.sync_shared_cursor"),
+            cursor_default,
+        ),
+    ):
+        icon_path = get_icon_path(icon_file)
+        toggle = QAction(
+            _themed_icon(main_window, icon_path, preserve_on_color=True),
+            label,
+            main_window,
+        )
+        toggle.setCheckable(True)
+        toggle.setChecked(checked)
+        toggle._icon_path = icon_path
+        toggle._preserve_on_color = True
+        toolbar.addAction(toggle)
+        _tag_toolbar_action(toolbar, toggle, "compare", role="toggle")
+        compare_toggle_actions[name] = toggle
+
+        def _apply_compare_toggle(
+            enabled=False,
+            *,
+            setting_key=key,
+        ):
+            if compare_settings is not None:
+                compare_settings.set_setting(setting_key, bool(enabled))
+            manager = getattr(main_window, "sync_manager", None)
+            setter = getattr(manager, "set_cross_reference_visibility", None)
+            if callable(setter):
+                setter(
+                    reference_lines=compare_toggle_actions[
+                        "reference_lines"
+                    ].isChecked(),
+                    shared_cursor=compare_toggle_actions[
+                        "shared_cursor"
+                    ].isChecked(),
+                )
+            mode_getter = getattr(main_window, "_sync_mode_from_setting", None)
+            if manager is not None and callable(mode_getter):
+                manager.set_sync_mode(mode_getter())
+
+        toggle.toggled.connect(_apply_compare_toggle)
+    toolbar.reference_lines_action = compare_toggle_actions["reference_lines"]
+    toolbar.shared_cursor_action = compare_toggle_actions["shared_cursor"]
 
     # 8. Orthogonal MPR workspace
     mpr_icon_path = get_icon_path('mpr.svg')
     mpr_action = QAction(
-        main_window.theme_manager.create_themed_icon(mpr_icon_path),
+        _themed_icon(main_window, mpr_icon_path, preserve_on_color=True),
         t('mpr.enter'),
         main_window,
     )
@@ -317,17 +718,23 @@ def create_main_toolbar(main_window) -> QToolBar:
     if callable(mpr_handler):
         mpr_action.triggered.connect(mpr_handler)
     mpr_action._icon_path = mpr_icon_path
+    mpr_action._preserve_on_color = True
     toolbar.addAction(mpr_action)
-    _tag_toolbar_action(toolbar, mpr_action, 'layout-sync-cine', 'M')
+    _tag_toolbar_action(toolbar, mpr_action, 'advanced', 'M', role="toggle")
     main_window.mpr_action = mpr_action
     if not hasattr(main_window, '_image_required_actions'):
         main_window._image_required_actions = []
-    main_window._image_required_actions.append(mpr_action)
+    main_window._image_required_actions.extend(
+        [
+            toolbar.reference_lines_action,
+            toolbar.shared_cursor_action,
+            mpr_action,
+        ]
+    )
 
     # 9. Cine playback
     cine_controls = create_cine_controls(main_window)
-    cine_controls.setProperty("toolbarGroup", "layout-sync-cine")
-    toolbar.addWidget(cine_controls)
+    _add_toolbar_widget(toolbar, cine_controls, "advanced", role="composite")
 
     if not hasattr(main_window, '_image_required_widgets'):
         main_window._image_required_widgets = []
@@ -341,6 +748,27 @@ def create_main_toolbar(main_window) -> QToolBar:
     roi_tools = {"ellipse_roi", "rectangle_roi", "circle_roi"}
     measurement_tools = {"measurement", "angle"}
 
+    toolbar.addSeparator()
+    active_tool_chip = ActiveToolChip(
+        toolbar,
+        getattr(main_window, "theme_manager", None),
+    )
+    active_tool_action = _add_toolbar_widget(
+        toolbar,
+        active_tool_chip,
+        "feedback",
+        role="feedback",
+    )
+    _set_accessibility(active_tool_chip, t("mainwindow.current_tool"))
+
+    def action_shortcut_hint(selected_action: QAction | None) -> str:
+        if selected_action is None:
+            return ""
+        hint = str(selected_action.property("shortcutHint") or "").strip()
+        if hint:
+            return hint
+        return selected_action.shortcut().toString().strip()
+
     def set_active_tool_feedback(tool_name: str) -> None:
         """Keep every interaction/annotation control visibly selected."""
         default_action.setChecked(tool_name == "default")
@@ -349,6 +777,28 @@ def create_main_toolbar(main_window) -> QToolBar:
         wl_button.setChecked(tool_name == "window_level")
         roi_button.setChecked(tool_name in roi_tools)
         measure_button.setChecked(tool_name in measurement_tools)
+        selected_action = main_window.tool_actions.get(tool_name)
+        active_label = (
+            selected_action.text()
+            if selected_action is not None
+            else t("mainwindow.pointer")
+        )
+        active_icon = (
+            selected_action.icon()
+            if selected_action is not None
+            else default_action.icon()
+        )
+        shortcut_hint = action_shortcut_hint(selected_action)
+        if tool_name == "window_level":
+            active_label = t("toolbar.window_level")
+            active_icon = wl_button.icon()
+            shortcut_hint = "W"
+        active_tool_chip.set_tool(
+            active_icon,
+            active_label,
+            shortcut_hint,
+            tool_name,
+        )
 
     for tool_name, tool_action in main_window.tool_actions.items():
         tool_action.triggered.connect(
@@ -357,9 +807,205 @@ def create_main_toolbar(main_window) -> QToolBar:
 
     # Expose a small toolbar-level API for programmatic tool changes.
     toolbar.set_active_tool_feedback = set_active_tool_feedback
+    toolbar.active_tool_chip = active_tool_chip
     toolbar.set_dicom_voi_options = wl_button.set_dicom_voi_options
     toolbar.set_cine_fps = cine_controls.set_fps
     toolbar.sync_button = sync_button
+    set_active_tool_feedback("default")
+
+    # QWidgetAction objects created by addWidget inherit their logical group
+    # from the hosted widget so visibility and ordering have one source.
+    for toolbar_action in toolbar.actions():
+        widget = toolbar.widgetForAction(toolbar_action)
+        if widget is not None and widget.property("toolbarGroup"):
+            toolbar_action.setProperty(
+                "toolbarGroup", widget.property("toolbarGroup")
+            )
+
+    grouped_actions = {}
+    for toolbar_action in toolbar.actions():
+        group = str(toolbar_action.property("toolbarGroup") or "")
+        if group:
+            grouped_actions.setdefault(group, []).append(toolbar_action)
+    toolbar._group_actions = grouped_actions
+
+    preference_state = {
+        "icon_pixels": _ICON_SIZE.width(),
+        "show_labels": False,
+    }
+
+    def _sync_action_widget_metadata() -> None:
+        """Reapply metadata when Qt recreates QAction-backed buttons."""
+
+        for toolbar_action in toolbar.actions():
+            widget = toolbar.widgetForAction(toolbar_action)
+            if not isinstance(widget, QToolButton):
+                continue
+            group = str(toolbar_action.property("toolbarGroup") or "")
+            if not group:
+                continue
+            widget.setProperty("toolbarGroup", group)
+            widget.setProperty(
+                "toolbarRole",
+                str(toolbar_action.property("toolbarRole") or "command"),
+            )
+            widget.setProperty("toolbarControl", True)
+            _set_accessibility(
+                widget,
+                toolbar_action.text(),
+                toolbar_action.toolTip() or toolbar_action.text(),
+            )
+
+    def _apply_control_geometry() -> None:
+        """Apply one orientation-aware sizing and label strategy."""
+
+        icon_pixels = int(preference_state["icon_pixels"])
+        show_labels = bool(preference_state["show_labels"])
+        orientation = toolbar.orientation()
+        horizontal = orientation == Qt.Orientation.Horizontal
+        icon_size_value = QSize(icon_pixels, icon_pixels)
+        extent = _control_extent(icon_pixels)
+        style = (
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            if horizontal
+            else Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+        ) if show_labels else Qt.ToolButtonStyle.ToolButtonIconOnly
+
+        toolbar.setIconSize(icon_size_value)
+        toolbar.setToolButtonStyle(style)
+        toolbar.setProperty("toolbarLabelsVisible", show_labels)
+        toolbar.setProperty("toolbarControlExtent", extent)
+
+        for host in getattr(toolbar, "_custom_hosts", ()):
+            host.set_orientation(orientation)
+        _sync_action_widget_metadata()
+
+        controls = [
+            button
+            for button in toolbar.findChildren(QToolButton)
+            if bool(button.property("toolbarControl"))
+        ]
+        for button in controls:
+            button.setIconSize(icon_size_value)
+            button.setToolButtonStyle(style)
+            button.setMinimumSize(0, 0)
+            button.setMaximumSize(16777215, 16777215)
+            if not show_labels:
+                button.setSizePolicy(
+                    QSizePolicy.Policy.Fixed,
+                    QSizePolicy.Policy.Fixed,
+                )
+                button.setFixedSize(extent, extent)
+            elif horizontal:
+                button.setSizePolicy(
+                    QSizePolicy.Policy.Preferred,
+                    QSizePolicy.Policy.Fixed,
+                )
+                button.setMinimumWidth(extent)
+                button.setFixedHeight(extent)
+
+        if show_labels and not horizontal and controls:
+            cell_width = max(extent, *(button.sizeHint().width() for button in controls))
+            cell_height = max(extent, *(button.sizeHint().height() for button in controls))
+            for button in controls:
+                button.setSizePolicy(
+                    QSizePolicy.Policy.Fixed,
+                    QSizePolicy.Policy.Fixed,
+                )
+                button.setFixedSize(cell_width, cell_height)
+
+        main_window._cine_fps_spin.setFixedHeight(extent)
+        toolbar.updateGeometry()
+        toolbar.update()
+
+    def apply_preferences(
+        *,
+        density: str = "compact",
+        icon_size: int | None = None,
+        show_labels: bool = False,
+        visible_groups=None,
+        group_order=None,
+    ) -> None:
+        density_pixels = {
+            "compact": 24,
+            "comfortable": 28,
+            "standard": 28,
+            "touch": 32,
+        }.get(str(density), 24)
+        try:
+            icon_pixels = max(16, min(40, int(icon_size or density_pixels)))
+        except (TypeError, ValueError):
+            icon_pixels = density_pixels
+        preference_state["icon_pixels"] = icon_pixels
+        preference_state["show_labels"] = bool(show_labels)
+
+        order = list(group_order or ("browse", "measure", "compare", "advanced"))
+        order = [
+            group for group in order
+            if group in {"browse", "measure", "compare", "advanced"}
+        ]
+        for fallback in ("browse", "measure", "compare", "advanced"):
+            if fallback not in order:
+                order.append(fallback)
+        visible = set(
+            visible_groups
+            or ("browse", "measure", "compare", "advanced")
+        )
+
+        for action in list(toolbar.actions()):
+            toolbar.removeAction(action)
+        # Keep the active-tool identity ahead of overflow-prone groups.  Qt
+        # moves actions at the far end of a toolbar into its extension menu
+        # first, so placing feedback last could collapse the icon/name/shortcut
+        # to a few pixels at the canonical 1280px reading-workstation width.
+        toolbar.addAction(active_tool_action)
+        toolbar.addSeparator()
+        added_visible_group = False
+        for index, group in enumerate(order):
+            actions = grouped_actions.get(group, ())
+            group_is_visible = group in visible and bool(actions)
+            if added_visible_group and group_is_visible:
+                toolbar.addSeparator()
+            for action in actions:
+                action.setVisible(group in visible)
+                toolbar.addAction(action)
+            added_visible_group = added_visible_group or group_is_visible
+        active_tool_chip.setVisible(True)
+        toolbar.setProperty("groupOrder", ",".join(order))
+        toolbar.setProperty("visibleGroups", ",".join(sorted(visible)))
+        _apply_control_geometry()
+
+    toolbar.apply_preferences = apply_preferences
+    toolbar.apply_control_geometry = _apply_control_geometry
+    toolbar.orientationChanged.connect(
+        lambda _orientation: _apply_control_geometry()
+    )
+    try:
+        from medimager.utils.settings import get_settings_manager
+
+        settings = get_settings_manager()
+        raw_order = settings.get_setting(
+            "toolbar.group_order", ["browse", "measure", "compare", "advanced"]
+        )
+        if isinstance(raw_order, str):
+            raw_order = [value for value in raw_order.split(",") if value]
+        raw_visible = settings.get_setting(
+            "toolbar.visible_groups",
+            ["browse", "measure", "compare", "advanced"],
+        )
+        if isinstance(raw_visible, str):
+            raw_visible = [value for value in raw_visible.split(",") if value]
+        apply_preferences(
+            density=str(settings.get_setting("ui.density", "compact")),
+            icon_size=settings.get_setting("ui.icon_size", 24),
+            show_labels=bool(
+                settings.get_setting("toolbar.show_labels", False)
+            ),
+            visible_groups=raw_visible,
+            group_order=raw_order,
+        )
+    except Exception:
+        apply_preferences()
     set_active_tool_feedback("default")
 
     return toolbar
@@ -369,7 +1015,9 @@ def _on_roi_tool_selected(main_window, roi_tool_button, action, tool_name):
     """当ROI工具被选中时，更新工具栏按钮并切换工具"""
     # 更新工具栏按钮的图标和文本
     roi_tool_button.setIcon(action.icon())
+    roi_tool_button.setText(action.text())
     roi_tool_button.setToolTip(action.text())
+    _set_accessibility(roi_tool_button, action.text())
     roi_tool_button._icon_path = action._icon_path
     roi_tool_button._active_action = action
     roi_tool_button._active_tool_name = tool_name
@@ -388,7 +1036,9 @@ def _on_roi_tool_selected(main_window, roi_tool_button, action, tool_name):
 def _on_measure_tool_selected(main_window, measure_button, action, tool_name):
     """当测量工具被选中时，更新工具栏按钮并切换工具"""
     measure_button.setIcon(action.icon())
+    measure_button.setText(action.text())
     measure_button.setToolTip(action.text())
+    _set_accessibility(measure_button, action.text())
     measure_button._icon_path = action._icon_path
     measure_button._active_action = action
     measure_button._active_tool_name = tool_name
@@ -411,7 +1061,8 @@ def _activate_split_tool(button: QToolButton) -> None:
 
 def create_wl_preset_button(main_window, toolbar: ViewerToolbar | None = None) -> QToolButton:
     """创建窗宽窗位预设按钮"""
-    wl_button = QToolButton(main_window)
+    wl_button = SquareSplitToolButton(main_window)
+    wl_button.setText(t("toolbar.window_level"))
     wl_button.setToolTip(t("mainwindow.window_level_presets") + " (W)")
     wl_button.setCheckable(True)
     _setup_split_dropdown(wl_button)
@@ -462,7 +1113,10 @@ def create_wl_preset_button(main_window, toolbar: ViewerToolbar | None = None) -
         safe_options = [dict(option) for option in (options or [])]
         dicom_separator.setVisible(bool(safe_options))
         for index, option in enumerate(safe_options):
-            option_action = QAction(str(option.get("label") or "DICOM VOI"), wl_menu)
+            option_action = QAction(
+                str(option.get("label") or t("toolbar.dicom_voi_fallback")),
+                wl_menu,
+            )
             option_action.setCheckable(True)
             option_action.setChecked(active_index == index)
             option_action.setData(option)
@@ -486,6 +1140,7 @@ def create_wl_preset_button(main_window, toolbar: ViewerToolbar | None = None) -
 def create_transform_button(main_window) -> QToolButton:
     """创建图像变换按钮（翻转/旋转/反色）"""
     btn = QToolButton(main_window)
+    btn.setText(t("mainwindow.image_transform"))
     btn.setToolTip(t("mainwindow.image_transform"))
     _setup_menu_button(btn)
 
@@ -528,20 +1183,23 @@ def create_transform_button(main_window) -> QToolButton:
 def create_cine_controls(main_window) -> QWidget:
     """创建 Cine 播放控件"""
     container = QWidget(main_window)
-    layout = QHBoxLayout(container)
-    layout.setContentsMargins(2, 0, 2, 0)
+    layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, container)
+    layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
+    layout.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
+    container.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     # 播放/暂停按钮
     play_btn = QToolButton(main_window)
     play_icon_path = get_icon_path("play.svg")
     play_btn.setIcon(main_window.theme_manager.create_themed_icon(play_icon_path))
+    play_btn.setText(t("mainwindow.cine_play_pause"))
     play_btn.setToolTip(t("mainwindow.cine_play_pause"))
     play_btn._icon_path = play_icon_path
     play_btn.setCheckable(True)
     _setup_button(play_btn)
     play_btn.toggled.connect(lambda checked: main_window._cine_toggle_play())
-    layout.addWidget(play_btn)
+    layout.addWidget(play_btn, 0, Qt.AlignmentFlag.AlignCenter)
 
     # 帧率控制
     fps_spin = QSpinBox(main_window)
@@ -549,15 +1207,20 @@ def create_cine_controls(main_window) -> QWidget:
     fps_spin.setValue(max(1, min(60, int(getattr(main_window, "_cine_fps", 10)))))
     fps_spin.setSuffix(t("settingsdialog.fps_suffix"))
     fps_spin.setFixedWidth(72)
-    fps_spin.setFixedHeight(_BTN_HEIGHT)
+    fps_spin.setFixedHeight(_control_extent(_ICON_SIZE.width()))
     fps_spin.valueChanged.connect(main_window._cine_set_fps)
-    layout.addWidget(fps_spin)
+    layout.addWidget(fps_spin, 0, Qt.AlignmentFlag.AlignCenter)
 
     # 存储引用以便状态更新
     main_window._cine_play_btn = play_btn
     main_window._cine_fps_spin = fps_spin
     _set_accessibility(play_btn, t("mainwindow.cine_play_pause"), "Space")
-    fps_spin.setAccessibleName(t("mainwindow.cine_play_pause"))
+    frame_rate_name = t("toolbar.cine.frame_rate")
+    if frame_rate_name == "toolbar.cine.frame_rate":
+        frame_rate_name = t("settingsdialog.default_frame_rate").rstrip(":：")
+    fps_spin.setAccessibleName(frame_rate_name)
+    fps_spin.setAccessibleDescription(frame_rate_name)
+    fps_spin.setToolTip(frame_rate_name)
 
     def set_fps(value: int) -> None:
         blocker = QSignalBlocker(fps_spin)
@@ -565,6 +1228,17 @@ def create_cine_controls(main_window) -> QWidget:
         del blocker
 
     container.set_fps = set_fps
+
+    def set_orientation(orientation: Qt.Orientation) -> None:
+        layout.setDirection(
+            QBoxLayout.Direction.LeftToRight
+            if orientation == Qt.Orientation.Horizontal
+            else QBoxLayout.Direction.TopToBottom
+        )
+        container.updateGeometry()
+        container.adjustSize()
+
+    container.set_orientation = set_orientation
 
     def refresh_icon():
         icon_p = getattr(play_btn, '_icon_path', play_icon_path)
@@ -579,6 +1253,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
     layout_button = QToolButton(main_window)
     layout_button.setObjectName("LayoutSelectorButton")
     layout_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+    layout_button.setText(t("mainwindow.select_view_layout"))
     _setup_button(layout_button)
     
     # 设置图标
@@ -601,7 +1276,31 @@ def create_layout_selector_button(main_window) -> QToolButton:
             layout_dropdown.layout_selected.connect(lambda config: main_window._set_layout(config))
             layout_dropdown.auto_assign_requested.connect(main_window._auto_assign_all_series)
             layout_dropdown.clear_bindings_requested.connect(main_window._clear_all_bindings)
+            preset_handler = getattr(
+                main_window, "_apply_layout_preset_by_id", None
+            )
+            if callable(preset_handler):
+                layout_dropdown.preset_requested.connect(preset_handler)
+            save_handler = getattr(main_window, "_save_current_layout_preset", None)
+            if callable(save_handler):
+                layout_dropdown.save_current_requested.connect(save_handler)
+            favorite_handler = getattr(
+                main_window, "_toggle_layout_favorite", None
+            )
+            if callable(favorite_handler):
+                layout_dropdown.favorite_toggled.connect(favorite_handler)
             layout_button._dropdown = layout_dropdown
+
+        mpr_action = getattr(main_window, "mpr_action", None)
+        reason = ""
+        if mpr_action is not None:
+            reason = mpr_action.toolTip() or mpr_action.statusTip()
+            layout_button._dropdown.set_mpr_availability(
+                mpr_action.isEnabled(), reason
+            )
+        layout_store = getattr(main_window, "_user_layout_store", None)
+        if layout_store is not None:
+            layout_button._dropdown.set_user_presets(layout_store.load())
         
         global_pos = layout_button.mapToGlobal(QPoint(0, layout_button.height()))
         layout_button._dropdown.show_at_position(global_pos)
@@ -612,11 +1311,13 @@ def create_layout_selector_button(main_window) -> QToolButton:
         """设置当前布局显示"""
         if isinstance(layout_config, tuple) and len(layout_config) == 2:
             rows, cols = layout_config
-            layout_button.setToolTip(
+            tooltip = (
                 t("layoutselectorbutton.current_layout_size").replace("%1", str(rows)).replace("%2", str(cols))
             )
         else:
-            layout_button.setToolTip(t("layoutselectorbutton.current_layout_special_layout"))
+            tooltip = t("layoutselectorbutton.current_layout_special_layout")
+        layout_button.setToolTip(tooltip)
+        layout_button.setAccessibleDescription(tooltip)
     
     layout_button.set_current_layout = set_current_layout
     
@@ -627,6 +1328,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
         layout_button.setIcon(layout_icon)
     
     layout_button.refresh_icon = refresh_icon
+    main_window.layout_selector_button = layout_button
     
     return layout_button
 
@@ -634,6 +1336,7 @@ def create_layout_selector_button(main_window) -> QToolButton:
 def create_sync_button(main_window) -> QToolButton:
     """创建同步按钮"""
     sync_button = QToolButton(main_window)
+    sync_button.setText(t("mainwindow.sync_settings"))
     sync_button.setToolTip(t("mainwindow.sync_settings"))
     sync_button.setCheckable(True)
     sync_button.setProperty("syncState", "partial")
@@ -641,7 +1344,9 @@ def create_sync_button(main_window) -> QToolButton:
     _set_accessibility(sync_button, t("mainwindow.sync_settings"))
     
     chain_icon_path = get_icon_path("chain.svg")
-    sync_button.setIcon(main_window.theme_manager.create_themed_icon(chain_icon_path))
+    sync_button.setIcon(
+        _themed_icon(main_window, chain_icon_path, preserve_on_color=True)
+    )
     sync_button._icon_path = chain_icon_path
     
     # 创建同步下拉菜单
@@ -679,9 +1384,11 @@ def create_sync_button(main_window) -> QToolButton:
             summary = "all"
         else:
             summary = "partial"
+        state_label = t(f"toolbar.sync.state_{summary}")
         sync_button.setProperty("syncState", summary)
         sync_button.setChecked(summary != "off")
-        sync_button.setToolTip(f"{t('mainwindow.sync_settings')}: {summary}")
+        sync_button.setToolTip(t("toolbar.sync.summary", state=state_label))
+        sync_button.setAccessibleName(t("mainwindow.sync_settings"))
         sync_button.setAccessibleDescription(sync_button.toolTip())
         sync_button.style().unpolish(sync_button)
         sync_button.style().polish(sync_button)
@@ -698,7 +1405,11 @@ def create_sync_button(main_window) -> QToolButton:
         """刷新图标以适应主题变化"""
         icon_path = getattr(sync_button, '_icon_path', chain_icon_path)
         if icon_path:
-            new_icon = main_window.theme_manager.create_themed_icon(icon_path)
+            new_icon = _themed_icon(
+                main_window,
+                icon_path,
+                preserve_on_color=True,
+            )
             sync_button.setIcon(new_icon)
     
     for state_signal in (

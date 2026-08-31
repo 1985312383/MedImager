@@ -140,10 +140,23 @@ class IconRegistry:
             raise KeyError(f"Unknown icon name: {name}") from error
         return get_icon_path(filename)
 
-    def icon(self, name: str) -> QIcon:
-        return self.icon_from_path(self.path(name))
+    def icon(
+        self,
+        name: str,
+        *,
+        preserve_on_color: bool = False,
+    ) -> QIcon:
+        return self.icon_from_path(
+            self.path(name),
+            preserve_on_color=preserve_on_color,
+        )
 
-    def icon_from_path(self, svg_path: str | Path) -> QIcon:
+    def icon_from_path(
+        self,
+        svg_path: str | Path,
+        *,
+        preserve_on_color: bool = False,
+    ) -> QIcon:
         path = Path(svg_path)
         try:
             svg_template = path.read_text(encoding="utf-8")
@@ -152,7 +165,13 @@ class IconRegistry:
             probe = QSvgRenderer(QByteArray(svg_template.encode("utf-8")))
             if not probe.isValid():
                 raise ValueError("invalid SVG")
-            return QIcon(SemanticSvgIconEngine(svg_template, self._mode_colors()))
+            colors = self._mode_colors()
+            if preserve_on_color:
+                # Outlined toolbar toggles retain a neutral surface when on;
+                # using the filled-button selected color would make their SVG
+                # white-on-white in the light theme.
+                colors["selected"] = colors["normal"]
+            return QIcon(SemanticSvgIconEngine(svg_template, colors))
         except Exception as error:
             logger.warning("Unable to create semantic icon %s: %s", path, error)
             return QIcon(str(path))

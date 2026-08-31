@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from medimager.core.annotation_persistence import save_annotations
 from medimager.core.image_data_model import ImageDataModel, MeasurementData
+from medimager.core.local_source import LocalSourceKind, index_local_source
 from medimager.core.multi_series_manager import SeriesInfo
 from medimager.core.roi import RectangleROI
 from medimager.core.series_view_binding import BindingStrategy
@@ -100,7 +101,7 @@ def test_single_file_entry_submits_worker_without_loading_inline(
     def worker_callable(*_args, **_kwargs):
         raise AssertionError("worker callable must not run on the UI call stack")
 
-    class DeferredFuture:
+    class DeferredDecodeFuture:
         def __init__(self):
             self.callback = None
 
@@ -110,7 +111,7 @@ def test_single_file_entry_submits_worker_without_loading_inline(
     class RecordingPool:
         def __init__(self):
             self.submissions = []
-            self.future = DeferredFuture()
+            self.future = DeferredDecodeFuture()
 
         def submit(self, function, *args):
             self.submissions.append((function, args))
@@ -125,7 +126,31 @@ def test_single_file_entry_submits_worker_without_loading_inline(
         lambda: performance_manager,
     )
 
+    class DeferredIndexFuture:
+        def __init__(self):
+            self.callback = None
+            self.request = None
+
+        def add_done_callback(self, callback):
+            self.callback = callback
+
+        def result(self):
+            return index_local_source(self.request)
+
+    index_future = DeferredIndexFuture()
+
+    def submit_index(request, **_kwargs):
+        index_future.request = request
+        return index_future
+
+    monkeypatch.setattr(window.local_study_controller, "submit", submit_index)
+
     window._load_single_image_file(str(image_path))
+
+    assert index_future.request.kind is LocalSourceKind.IMAGE
+    assert window.series_manager.get_series_count() == 0
+    assert index_future.callback is not None
+    window._on_local_index_finished(index_future.request.request_id, index_future)
 
     assert len(pool.submissions) == 1
     submitted_function, submitted_args = pool.submissions[0]

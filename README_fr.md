@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.5 complète le noyau MPR orthogonal par un espace Patient→Étude→Série, la synchronisation inter-séries en espace patient, de vraies lignes de repérage, des protocoles d’accrochage, la restauration d’état et le cache/préchargement en arrière-plan.
+MedImager est un visualiseur d'images médicales et outil d'analyse open source avec l'objectif à long terme de se rapprocher de flux de lecture de type RadiAnt. La version 2.6 transforme le noyau 2D/MPR en espace d’examen visuel facile à découvrir, avec centre de démarrage, navigation DICOMDIR en lecture seule, séries filtrables, galerie de dispositions, Centre de réglages 2.0, présentation privée et trois examens d’exemple hors ligne.
 
 ## 1. Vision du Projet
 
-Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.5 associe la MPR orthogonale validée géométriquement à un espace de lecture centré sur l’étude ; les versions suivantes ajouteront DICOMDIR/PACS, la reconstruction oblique et des flux plus complets.
+Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de travail de type RadiAnt. MedImager 2.6 associe MPR orthogonale validée, découverte des médias locaux et lecture inter-séries. PACS, reconstruction oblique, rendu 3D, fusion et validation diagnostique restent des travaux futurs.
 
 <div align="center">
 
@@ -69,12 +69,19 @@ Créer un visualiseur open source pragmatique pouvant évoluer vers des flux de 
     - [x] Baselines de performance pour chargement de grandes séries, affichage window/level, accès cache et conversion QImage.
     - [x] Persistance JSON versionnée pour les annotations ROI, mesures de distance et mesures d'angle.
 
+### ✅ V2.6 - Espace Visuel d’Examens et Centre d’Exemples
+- [x] Centre de démarrage, examens récents respectueux de la confidentialité et navigateur DICOMDIR Patient→Étude→Série en lecture seule.
+- [x] Navigation compacte avec recherche/filtres, comparaison, galerie clinique et dispositions utilisateur.
+- [x] Barre adaptative de 24 px, commandes MPR orthogonales enrichies et Centre de réglages 2.0.
+- [x] Présentation privée, nettoyage sûr du cache et exemples CT, MR et Geometry Lab déterministes.
+
 ### Prochaine Feuille de Route - Flux Type RadiAnt
 - [x] **Reconstruction multiplanaire orthogonale (MPR) :** Vues axiale, coronale et sagittale liées dans l’espace patient LPS.
 - [ ] **Rendu de Volume 3D :** Visualisation 3D de base des séries DICOM.
 - [ ] **Fusion d'Images :** Superposer deux séries différentes (ex. PET/CT).
-- [ ] **DICOMDIR / PACS :** Navigation sur médias locaux et requête/récupération DICOM réseau après stabilisation de la base 2D.
-- [x] **Hanging Protocols :** Préréglages CT/MR/vue d’ensemble et restauration d’état (v2.5).
+- [x] **DICOMDIR :** Navigation locale en lecture seule et sélection d’examens/séries (v2.6).
+- [ ] **PACS :** Requête et récupération DICOM réseau.
+- [x] **Protocoles d’accrochage :** Préréglages CT/MR/vue d’ensemble, galerie visuelle et restauration par examen (v2.6).
 - [ ] **Système de Plugins :** Permettre aux utilisateurs d'étendre les fonctionnalités via des scripts Python personnalisés pour la recherche.
 
 ## 3. Stack Technologique
@@ -181,6 +188,12 @@ D'abord, assurez-vous d'avoir [uv](https://github.com/astral-sh/uv) installé. C
     # `uv run` exécute la commande dans l'environnement virtuel du projet,
     # évitant le besoin de l'activer dans votre shell.
     uv run python medimager/main.py
+    ```
+    Vous pouvez aussi ouvrir directement une source locale ou lancer un exemple déterministe pour l'automatisation de l'interface :
+    ```bash
+    uv run python medimager/main.py "D:\DICOM\Study"
+    uv run python medimager/main.py --demo ct_multiphase
+    # --demo accepte également mr_brain et geometry_lab
     ```
     Pour les développeurs qui préfèrent un environnement actif :
     ```bash

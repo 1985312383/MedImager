@@ -1,0 +1,37 @@
+{
+  "schema": "medimager.demo_catalog",
+  "schema_version": 1,
+  "generator_version": "2.6.0",
+  "studies": [
+    {
+      "id": "ct_multiphase",
+      "title_key": "demo.ct_multiphase.title",
+      "description_key": "demo.ct_multiphase.description",
+      "preview_resource": "previews/ct_multiphase.png",
+      "estimated_bytes": 11534336,
+      "expected_series_count": 4,
+      "default_hanging_protocol": "study_overview",
+      "default_active_role": "ct_noncontrast_axial"
+    },
+    {
+      "id": "mr_brain",
+      "title_key": "demo.mr_brain.title",
+      "description_key": "demo.mr_brain.description",
+      "preview_resource": "previews/mr_brain.png",
+      "estimated_bytes": 10485760,
+      "expected_series_count": 4,
+      "default_hanging_protocol": "mr_neuro",
+      "default_active_role": "mr_t1_mprage"
+    },
+    {
+      "id": "geometry_lab",
+      "title_key": "demo.geometry_lab.title",
+      "description_key": "demo.geometry_lab.description",
+      "preview_resource": "previews/geometry_lab.png",
+      "estimated_bytes": 2097152,
+      "expected_series_count": 12,
+      "default_hanging_protocol": "study_overview",
+      "default_active_role": "geometry_regular_axial"
+    }
+  ]
+}

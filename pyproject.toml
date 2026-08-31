@@ -1,6 +1,6 @@
 [project]
 name = "medimager"
-version = "2.5.0"
+version = "2.6.0"
 description = "A modern, cross-platform open-source DICOM viewer and medical image analysis tool"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,6 +38,8 @@ medimager = [
     "themes/measurement/*.toml",
     "i18n/compiled/*.json",
     "i18n/manifest.yml",
+    "demo/catalog.json",
+    "demo/previews/*.png",
 ]
 
 [tool.setuptools.packages.find]

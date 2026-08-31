@@ -122,11 +122,11 @@ jobs:
 
 ## 测试数据
 
-### DICOM测试数据
-- `dcm/gammex_phantom/` - Gammex体模的DICOM切片
-- `dcm/water_phantom/` - 水体模的DICOM切片
+### DICOM 测试数据
 
-这些测试数据由 `scripts/` 目录下的脚本生成，用于测试DICOM解析和图像处理功能。
+DICOM 解析器测试在 pytest 临时目录中按固定 seed 动态生成最小数据集，
+仓库不再保存二进制患者或体模切片。面向用户的 CT、MR 和 Geometry Lab
+示例由 `medimager/demo/` 的确定性 builder 在首次点击时生成。
 
 ## 开发指南
 
@@ -159,7 +159,7 @@ jobs:
 
 1. **导入错误**：确保项目根目录在Python路径中
 2. **Qt应用程序错误**：确保在测试中正确初始化QApplication
-3. **DICOM文件缺失**：检查测试数据是否存在于 `dcm/` 目录
+3. **DICOM生成失败**：检查 pytest 临时目录是否可写，并运行 `tests/test_demo_studies.py`
 4. **覆盖度过低**：检查是否有未测试的代码路径
 
 ### 调试技巧

@@ -152,6 +152,32 @@ def test_failed_series_thumbnail_caches_placeholder(qapp, monkeypatch):
     qapp.processEvents()
 
 
+def test_series_browser_privacy_preview_is_not_overwritten_by_persisted_value(qapp):
+    manager = MultiSeriesManager()
+    manager.add_series(
+        SeriesInfo(
+            series_id="private-series",
+            patient_name="Visible^Patient",
+            patient_id="VISIBLE-ID",
+            study_instance_uid="1.2.3",
+            study_description="Visible study",
+            series_instance_uid="1.2.3.4",
+            series_description="Visible series",
+        )
+    )
+    widget = SeriesListWidget(manager)
+
+    patient_index = widget._browser_model.index(0, 0)
+    assert "Visible" in str(widget._browser_model.data(patient_index))
+
+    widget.set_privacy_mode(True)
+    patient_index = widget._browser_model.index(0, 0)
+    assert "Visible" not in str(widget._browser_model.data(patient_index))
+    assert "01" in str(widget._browser_model.data(patient_index))
+    widget.deleteLater()
+    qapp.processEvents()
+
+
 def _add_window_series(window, series_id, source_path, uid):
     model = ImageDataModel()
     assert model.load_single_image(

@@ -42,6 +42,8 @@ runtime_datas = [
     ('medimager\\themes', 'medimager/themes'),
     ('medimager\\i18n\\compiled', 'medimager/i18n/compiled'),
     ('medimager\\i18n\\manifest.yml', 'medimager/i18n'),
+    ('medimager\\demo\\catalog.json', 'medimager/demo'),
+    ('medimager\\demo\\previews', 'medimager/demo/previews'),
     ('pyproject.toml', '.'),
     ('CHANGELOG.md', '.'),
 ]

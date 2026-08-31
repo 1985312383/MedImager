@@ -19,14 +19,14 @@
 
 </div>
 
-MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.5 adds a study-centric Patient → Study → Series workspace, patient-space cross-series synchronization, true localizer lines, hanging protocols, study-state restoration, and background thumbnail/prefetch caching on top of the v2.4 orthogonal MPR core.
+MedImager is an open-source medical image viewer and analysis tool with a long-term goal of approaching RadiAnt-class reading workflows. Version 2.6 turns the patient-space 2D/MPR core into a discoverable visual study workbench: it adds a start center, read-only DICOMDIR browsing, a filterable series navigator, transactional layout presets, Settings Center 2.0, privacy presentation, and three deterministic offline example studies.
 
 > [!WARNING]
 > **Research and teaching use only — not diagnostic grade.** MedImager has not completed DICOM GSDF conformance or calibrated diagnostic-display validation. Do not use it for primary diagnosis or other clinical decisions.
 
 ## 1. Project Vision
 
-Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.5 combines geometry-validated orthogonal MPR with a study workspace and practical cross-series reading flow; later versions can build on it with DICOMDIR/PACS, oblique reconstruction, 3D rendering, and fusion.
+Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflows. MedImager 2.6 combines geometry-validated orthogonal MPR with local-media study discovery and a practical cross-series reading flow. PACS, oblique reconstruction, 3D rendering, fusion, and diagnostic-grade validation remain future work.
 
 <div align="center">
 
@@ -85,11 +85,20 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 - [x] Per-study restoration of layout, binding, display, and synchronization state.
 - [x] Active-study load ordering, persistent thumbnail cache, and neighboring-slice prefetch.
 
+### ✅ V2.6 - Visual Study Workbench and Example Center
+- [x] Start center for DICOM folders, multiple folders, DICOMDIR media, ordinary images, privacy-aware recent studies, and sample studies.
+- [x] Read-only DICOMDIR Patient → Study → Series selection with safe media-root path validation and visible issue reporting.
+- [x] Searchable/filterable compact series navigator, multi-select comparison, clinical layout gallery, and geometry-only user layouts.
+- [x] Adaptive 24 px reading toolbar and expanded orthogonal MPR controls with per-plane position, linked state, and 3-column/1+2 layouts.
+- [x] Typed Settings Center 2.0, workspace schema v2, screen privacy presentation, and whitelist-based cache cleanup.
+- [x] Deterministic CT Multiphase, MR Brain, and Geometry Lab studies generated asynchronously without bundling DICOM pixels.
+
 ### Next Roadmap - RadiAnt-Class Workflow
 - [ ] **3D Volume Rendering:** Basic 3D visualization of DICOM series.
 - [ ] **Image Fusion:** Overlay two different series (e.g., PET/CT).
-- [ ] **DICOMDIR / PACS:** Local media browsing and DICOM network query/retrieve after the 2D parser baseline is stable.
-- [x] **Hanging Protocols:** Study-scoped CT/MR/overview presets with state restoration (v2.5).
+- [x] **DICOMDIR:** Read-only local-media browsing and study/series selection (v2.6).
+- [ ] **PACS:** DICOM network query/retrieve.
+- [x] **Hanging Protocols:** Study-scoped CT/MR/overview presets with state restoration and a visual gallery (v2.6).
 - [ ] **Plugin System:** Allow users to extend features via custom Python scripts for research.
 
 ## 3. Tech Stack
@@ -107,73 +116,42 @@ Create a pragmatic open-source viewer that can grow toward RadiAnt-grade workflo
 The project follows an MVC-like pattern to separate data logic, UI, and user interaction.
 
 ```
-medimager/
-├── main.py                 # Application entry point
-├── icons/                  # UI icons and SVG resources
-├── i18n/                   # YAML source catalogs and compiled JSON runtime catalogs
-├── themes/                 # Theme configuration files
-│   ├── ui/                 # UI themes (dark.toml, light.toml)
-│   ├── roi/                # ROI appearance themes
-│   └── measurement/        # Measurement tool themes
-│
-├── core/                   # Core logic, UI-independent (MVC Model)
-│   ├── __init__.py
-│   ├── dicom_parser.py     # DICOM loading/parsing via pydicom
-│   ├── image_data_model.py # Data model for single image or DICOM series
-│   ├── multi_series_manager.py # Multi-series management and layout control
-│   ├── series_view_binding.py  # Series-view binding management
-│   ├── sync_manager.py     # Cross-viewport synchronization
-│   ├── volume_geometry.py  # Patient-space volume geometry and MPR resampling
-│   ├── render_pipeline.py  # Pure 2D/MPR display rendering
-│   ├── roi.py              # ROI shapes and logic
-│   └── analysis.py         # Statistical calculations (HU stats, etc.)
-│
-├── ui/                     # All UI components (MVC View & Controller)
-│   ├── __init__.py
-│   ├── main_window.py      # Main window with multi-series support
-│   ├── main_toolbar.py     # Unified toolbar management (tools, layout, sync)
-│   ├── image_viewer.py     # Core 2D image viewer (QGraphicsView)
-│   ├── mpr_workspace.py    # Orthogonal three-plane MPR workspace
-│   ├── multi_viewer_grid.py# Multi-viewport grid layout manager
-│   ├── panels/             # Dockable panels
-│   │   ├── __init__.py
-│   │   ├── series_panel.py     # Multi-series management panel
-│   │   └── dicom_tag_panel.py  # DICOM tag panel
-│   ├── tools/              # Interactive tool implementations
-│   │   ├── __init__.py
-│   │   ├── base_tool.py        # Abstract base class for tools
-│   │   ├── default_tool.py     # Default pointer/pan/zoom/window tool
-│   │   ├── roi_tool.py         # ROI tools (ellipse, rectangle, circle)
-│   │   ├── measurement_tool.py # Distance measurement tool
-│   │   └── angle_tool.py       # Angle measurement tool
-│   ├── dialogs/            # Dialog windows
-│   │   ├── custom_wl_dialog.py # Custom window/level dialog
-│   │   └── settings_dialog.py  # Application settings dialog
-│   └── widgets/            # Custom UI widgets
-│       ├── __init__.py
-│       ├── magnifier.py        # Magnifier widget
-│       ├── roi_stats_box.py    # ROI statistics display
-│       ├── layout_grid_selector.py # Layout selection widget
-│       └── panel_toggle_strip.py   # Panel toggle strip widget
-│
-├── utils/                  # General utilities (MVC Model Support)
-│   ├── __init__.py
-│   ├── logger.py           # Global logging configuration
-│   ├── settings.py         # User settings management
-│   ├── theme_manager.py    # Theme system with icon management
-│   ├── resource_path.py    # Resource/icon path resolution
-│   └── i18n.py             # Internationalization utilities
-│
-├── tests/                  # Unit/integration tests
-│   ├── __init__.py
-│   ├── dcm/                # Test DICOM data
-│   ├── scripts/            # Test data generation scripts
-│   ├── test_dicom_parser.py
-│   ├── test_roi.py
-│   └── test_multi_series_components.py
-│
-├── pyproject.toml          # Project metadata and dependencies
-└── README_zh.md            # Chinese documentation
+MedImager/
+├── medimager/
+│   ├── main.py                 # Application entry point
+│   ├── app_info.py             # Version, build, and About metadata
+│   ├── core/                   # UI-independent DICOM, geometry, state, and source services
+│   │   ├── dicom_parser.py     # DICOM series loading via pydicom
+│   │   ├── dicomdir_index.py   # Safe read-only DICOMDIR indexing
+│   │   ├── local_source.py     # Typed local-source controller and recent studies
+│   │   ├── layout_presets.py   # Transactional built-in and user layouts
+│   │   ├── settings_registry.py# Typed settings and apply policies
+│   │   ├── storage_cleanup.py  # Whitelist-based cache/recovery cleanup
+│   │   ├── study_model.py      # Stable Patient → Study → Series hierarchy
+│   │   ├── sync_manager.py     # Patient-space cross-view synchronization
+│   │   └── volume_geometry.py  # Volume geometry and MPR resampling
+│   ├── demo/                   # Offline catalog, deterministic generator, manifest, and service
+│   ├── i18n/                   # YAML sources and compiled JSON runtime catalogs
+│   ├── icons/                  # Theme-aware SVG resources and application artwork
+│   ├── performance/            # Reproducible loading/rendering baselines
+│   ├── themes/                 # UI, ROI, and measurement TOML themes
+│   ├── ui/
+│   │   ├── main_window.py      # Workspace stack and application orchestration
+│   │   ├── main_toolbar.py     # Adaptive reading toolbar
+│   │   ├── start_center.py     # Study launch center
+│   │   ├── media_browser.py    # Read-only local-media selector
+│   │   ├── mpr_workspace.py    # Orthogonal MPR console
+│   │   ├── multi_viewer_grid.py# 2D grid and special layouts
+│   │   ├── panels/             # Series navigator and DICOM tags
+│   │   ├── dialogs/            # Settings and workflow dialogs
+│   │   ├── tools/              # Pointer, ROI, distance, and angle tools
+│   │   └── widgets/            # Reusable view and layout widgets
+│   └── utils/                  # Settings, themes, resources, logging, and i18n
+├── tests/                      # Unit, integration, UI, geometry, and release tests
+├── translation_tools/          # YAML validation and JSON catalog compiler
+├── MedImager.spec              # PyInstaller build definition
+├── pyproject.toml              # Package metadata and dependencies
+└── uv.lock                     # Reproducible dependency lock
 ```
 
 ## 5. Usage
@@ -200,14 +178,21 @@ First, ensure you have [uv](https://github.com/astral-sh/uv) installed. It is an
     uv run python medimager/main.py
     ```
 
+    Open a local source directly, or launch a deterministic example for UI automation:
+    ```bash
+    uv run python medimager/main.py "D:\DICOM\Study"
+    uv run python medimager/main.py --demo ct_multiphase
+    # --demo also accepts mr_brain and geometry_lab
+    ```
+
     Run the full test suite:
     ```bash
     uv run pytest
     ```
 
-    Record the release-scale v2.4 MPR baseline (512×512×500 CT):
+    Record the release-scale v2.6 MPR baseline (512×512×500 CT):
     ```bash
-    uv run python -m medimager.performance.baseline --slices 500 --rows 512 --cols 512 --repeats 1 --output performance_baseline_v2.4.json
+    uv run python -m medimager.performance.baseline --slices 500 --rows 512 --cols 512 --repeats 1 --output performance_baseline_v2.6.json
     ```
     For developers who prefer an active environment:
     ```bash

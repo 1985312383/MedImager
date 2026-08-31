@@ -16,6 +16,7 @@ from medimager.ui.image_viewer import ImageViewer
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.core.multi_series_manager import MultiSeriesManager, ViewPosition
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.layout_presets import LayoutSpec
 from medimager.core.view_presentation_state import (
     ViewPresentationState,
     render_display_slice,
@@ -70,6 +71,9 @@ class ViewFrame(QFrame):
         self._presentation_state: Optional[ViewPresentationState] = None
         self._display_cache_key = None
         self._display_cache_qimage = None
+        self._series_info = ""
+        self._privacy_enabled = False
+        self._privacy_alias = ""
         
         # 启用拖拽接收
         self.setAcceptDrops(True)
@@ -338,8 +342,30 @@ class ViewFrame(QFrame):
             self._status_bar.setVisible(show_status)
             if hasattr(self._image_viewer, "apply_runtime_settings"):
                 self._image_viewer.apply_runtime_settings()
+            show_pixel_value = self._to_bool(
+                settings.get_setting("overlay.show_pixel_value", False)
+            )
+            self._pixel_value_label.setVisible(show_status and show_pixel_value)
         except Exception as e:
             logger.debug(f"[ViewFrame.apply_runtime_settings] 应用显示设置失败: {e}")
+
+    def set_privacy_mode(self, enabled: bool, alias: str = "") -> None:
+        """Replace potentially identifying viewport copy without touching data."""
+
+        self._privacy_enabled = bool(enabled)
+        if alias:
+            self._privacy_alias = str(alias)
+        self._refresh_series_copy()
+
+    def _refresh_series_copy(self) -> None:
+        if self._series_id is None:
+            text = t("viewframe.no_serial_number")
+        elif self._privacy_enabled:
+            text = self._privacy_alias or t("multiviewergrid.series")
+        else:
+            text = self._series_info or t("viewframe.no_serial_number")
+        self._series_label.setText(text)
+        self._image_viewer.set_corner_overlay_info(title=text)
 
     @staticmethod
     def _to_bool(value) -> bool:
@@ -364,10 +390,10 @@ class ViewFrame(QFrame):
             
             self._series_id = series_id
             self._image_model = image_model
+            self._series_info = str(series_info or "")
             
             # 更新UI显示
-            self._series_label.setText(series_info)
-            self._image_viewer.set_corner_overlay_info(title=series_info)
+            self._refresh_series_copy()
             state_key = (series_id, self._view_id)
             state = self._presentation_state_store.get(state_key)
             if state is None:
@@ -454,7 +480,8 @@ class ViewFrame(QFrame):
     def show_loading_state(self, series_id: str, series_info: str) -> None:
         """显示已绑定但仍在后台解码的序列状态。"""
         self._series_id = series_id
-        self._series_label.setText(series_info)
+        self._series_info = str(series_info or "")
+        self._refresh_series_copy()
         self._state_overlay.setText(t('viewframe.loading_hint'))
         self._viewer_stack.setCurrentWidget(self._state_overlay)
         self._state_overlay.show()
@@ -481,6 +508,7 @@ class ViewFrame(QFrame):
 
                 self._series_id = None
                 self._image_model = None
+                self._series_info = ""
                 self._image_viewer.display_qimage(None)
                 
                 # 更新UI
@@ -898,6 +926,7 @@ class MultiViewerGrid(QWidget):
     """
     
     layout_changed = Signal(tuple)
+    layout_geometry_changed = Signal(object)
     view_activated = Signal(str)
     binding_requested = Signal(str, str)
     
@@ -914,6 +943,16 @@ class MultiViewerGrid(QWidget):
         self._series_manager = series_manager
         self._sync_manager = None  # 将由主窗口设置
         self._current_layout = (1, 1)
+        self._current_layout_spec = LayoutSpec()
+        self._privacy_enabled = False
+        self._privacy_aliases: Dict[str, str] = {}
+        self._active_splitters: Dict[str, QSplitter] = {}
+        self._layout_geometry_timer = QTimer(self)
+        self._layout_geometry_timer.setSingleShot(True)
+        self._layout_geometry_timer.setInterval(400)
+        self._layout_geometry_timer.timeout.connect(
+            self._emit_layout_geometry_changed
+        )
         self._view_frames: Dict[str, ViewFrame] = {}
         self._viewer_state_store: Dict[tuple[str, str], Dict[str, QRectF]] = {}
         # Per-pane state is persistent across layout rebuilds and is never stored
@@ -955,6 +994,25 @@ class MultiViewerGrid(QWidget):
                 view_frame.image_viewer.sync_manager = sync_manager
 
         logger.debug("[MultiViewerGrid.set_sync_manager] 同步管理器设置完成")
+
+    def set_privacy_mode(self, enabled: bool) -> None:
+        """Apply stable session aliases to every visible viewport title."""
+
+        self._privacy_enabled = bool(enabled)
+        for frame in self._view_frames.values():
+            frame.set_privacy_mode(
+                self._privacy_enabled,
+                self._privacy_alias_for(frame.series_id),
+            )
+
+    def _privacy_alias_for(self, series_id: Optional[str]) -> str:
+        if not series_id:
+            return ""
+        alias = self._privacy_aliases.get(series_id)
+        if alias is None:
+            alias = f"Series {len(self._privacy_aliases) + 1:02d}"
+            self._privacy_aliases[series_id] = alias
+        return alias
 
     def _connect_sync_signals(self) -> None:
         """连接同步管理器信号"""
@@ -1076,6 +1134,10 @@ class MultiViewerGrid(QWidget):
             self._rebuilding = True
 
             self._current_layout = (rows, cols)
+            self._current_layout_spec = LayoutSpec(
+                kind="grid", rows=rows, columns=cols
+            )
+            self._active_splitters.clear()
 
             # 清除现有视图
             self._clear_grid()
@@ -1124,7 +1186,9 @@ class MultiViewerGrid(QWidget):
                 return False
 
             old_layout = self._current_layout
-            self._current_layout = layout_config
+            self._current_layout = dict(layout_config)
+            self._current_layout_spec = LayoutSpec.from_legacy(layout_config)
+            self._active_splitters.clear()
             self._clear_grid()
             self._create_view_frames_for_positions(positions)
 
@@ -1138,6 +1202,7 @@ class MultiViewerGrid(QWidget):
                 # 特殊布局重新排列了widget，需要再次延迟自适应
                 self._fit_all_bound_views_to_window()
                 logger.info(f"[MultiViewerGrid.set_special_layout] 特殊布局设置成功: {old_layout} -> {layout_type}")
+                self.layout_geometry_changed.emit(self.current_layout_spec())
                 return True
             else:
                 logger.error(f"[MultiViewerGrid.set_special_layout] 特殊布局排列失败: {layout_type}")
@@ -1233,6 +1298,7 @@ class MultiViewerGrid(QWidget):
 
             # 创建垂直分割器
             main_splitter = QSplitter(Qt.Vertical)
+            self._register_splitter("main", main_splitter)
 
             # 设置分割比例
             top_ratio = layout_config.get('top_ratio', 0.6)
@@ -1243,9 +1309,13 @@ class MultiViewerGrid(QWidget):
             if layout_config.get('bottom_split', False) and len(view_frames) >= 3:
                 # 下半部分需要左右分割
                 bottom_splitter = QSplitter(Qt.Horizontal)
+                self._register_splitter("bottom", bottom_splitter)
                 bottom_splitter.addWidget(view_frames[1])
                 bottom_splitter.addWidget(view_frames[2])
-                bottom_splitter.setSizes([50, 50])  # 下半部分左右等分
+                bottom_ratio = float(layout_config.get('bottom_ratio', 0.5))
+                bottom_splitter.setSizes(
+                    [int(1000 * bottom_ratio), int(1000 * (1.0 - bottom_ratio))]
+                )
 
                 main_splitter.addWidget(bottom_splitter)
             elif len(view_frames) >= 2:
@@ -1287,6 +1357,7 @@ class MultiViewerGrid(QWidget):
 
             # 创建水平分割器
             main_splitter = QSplitter(Qt.Horizontal)
+            self._register_splitter("main", main_splitter)
 
             # 设置分割比例
             left_ratio = layout_config.get('left_ratio', 0.6)
@@ -1297,9 +1368,13 @@ class MultiViewerGrid(QWidget):
             if layout_config.get('right_split', False) and len(view_frames) >= 3:
                 # 右半部分需要上下分割
                 right_splitter = QSplitter(Qt.Vertical)
+                self._register_splitter("right", right_splitter)
                 right_splitter.addWidget(view_frames[1])
                 right_splitter.addWidget(view_frames[2])
-                right_splitter.setSizes([50, 50])  # 右半部分上下等分
+                right_ratio = float(layout_config.get('right_ratio', 0.5))
+                right_splitter.setSizes(
+                    [int(1000 * right_ratio), int(1000 * (1.0 - right_ratio))]
+                )
 
                 main_splitter.addWidget(right_splitter)
             elif len(view_frames) >= 2:
@@ -1341,6 +1416,7 @@ class MultiViewerGrid(QWidget):
 
             # 创建主水平分割器
             main_splitter = QSplitter(Qt.Horizontal)
+            self._register_splitter("main", main_splitter)
 
             # 设置分割比例
             left_ratio = layout_config.get('left_ratio', 0.33)
@@ -1356,16 +1432,31 @@ class MultiViewerGrid(QWidget):
                 # 中间和右边都分割
                 # 中列分割
                 middle_splitter = QSplitter(Qt.Vertical)
+                self._register_splitter("middle", middle_splitter)
                 middle_splitter.addWidget(view_frames[1])
                 middle_splitter.addWidget(view_frames[2])
-                middle_splitter.setSizes([50, 50])
+                middle_ratio_y = float(
+                    layout_config.get('middle_split_ratio', 0.5)
+                )
+                middle_splitter.setSizes(
+                    [
+                        int(1000 * middle_ratio_y),
+                        int(1000 * (1.0 - middle_ratio_y)),
+                    ]
+                )
                 main_splitter.addWidget(middle_splitter)
 
                 # 右列分割
                 right_splitter = QSplitter(Qt.Vertical)
+                self._register_splitter("right", right_splitter)
                 right_splitter.addWidget(view_frames[3])
                 right_splitter.addWidget(view_frames[4])
-                right_splitter.setSizes([50, 50])
+                right_ratio = float(
+                    layout_config.get('right_split_ratio', 0.5)
+                )
+                right_splitter.setSizes(
+                    [int(1000 * right_ratio), int(1000 * (1.0 - right_ratio))]
+                )
                 main_splitter.addWidget(right_splitter)
             else:
                 # 只有右边分割
@@ -1375,9 +1466,18 @@ class MultiViewerGrid(QWidget):
                 # 右列分割
                 if len(view_frames) >= 4:
                     right_splitter = QSplitter(Qt.Vertical)
+                    self._register_splitter("right", right_splitter)
                     right_splitter.addWidget(view_frames[2])
                     right_splitter.addWidget(view_frames[3])
-                    right_splitter.setSizes([50, 50])
+                    right_ratio = float(
+                        layout_config.get('right_split_ratio', 0.5)
+                    )
+                    right_splitter.setSizes(
+                        [
+                            int(1000 * right_ratio),
+                            int(1000 * (1.0 - right_ratio)),
+                        ]
+                    )
                     main_splitter.addWidget(right_splitter)
 
             # 设置分割比例
@@ -1395,6 +1495,33 @@ class MultiViewerGrid(QWidget):
         except Exception as e:
             logger.error(f"[MultiViewerGrid._arrange_triple_column_layout] 排列三列布局失败: {e}", exc_info=True)
             return False
+
+    def _register_splitter(self, role: str, splitter: QSplitter) -> None:
+        """Track a special-layout splitter without persisting Qt state blobs."""
+
+        splitter.setObjectName(f"ReadingLayoutSplitter_{role}")
+        self._active_splitters[role] = splitter
+        splitter.splitterMoved.connect(
+            lambda _position, _index: self._layout_geometry_timer.start()
+        )
+
+    @staticmethod
+    def _splitter_ratio(splitter: Optional[QSplitter], index: int = 0) -> float:
+        if splitter is None:
+            return 0.5
+        sizes = splitter.sizes()
+        total = sum(max(0, value) for value in sizes)
+        if total <= 0 or index >= len(sizes):
+            return 0.5
+        return max(0.05, min(0.95, float(sizes[index]) / float(total)))
+
+    def _emit_layout_geometry_changed(self) -> None:
+        if self._current_layout_spec.kind != "special":
+            return
+        spec = self.current_layout_spec()
+        self._current_layout_spec = spec
+        self._current_layout = spec.to_legacy()
+        self.layout_geometry_changed.emit(spec)
     
     def _clear_grid_layout(self) -> None:
         """清除网格布局但保留视图框架
@@ -1402,6 +1529,7 @@ class MultiViewerGrid(QWidget):
         注意：此方法只负责清理，不会创建新布局。
         调用方需要自行在 _grid_container 上创建所需的布局。
         """
+        self._active_splitters.clear()
         old_layout = self._grid_container.layout()
         if old_layout:
             # 移除所有视图框架但不删除
@@ -1485,6 +1613,7 @@ class MultiViewerGrid(QWidget):
                 
                 # 创建视图框架
                 view_frame = ViewFrame(view_id, position, self)
+                view_frame.set_privacy_mode(self._privacy_enabled)
 
                 # 传播同步管理器到 ImageViewer
                 if self._sync_manager and view_frame.image_viewer:
@@ -1537,6 +1666,7 @@ class MultiViewerGrid(QWidget):
                 view_id = f"view_{position.value[0]}_{position.value[1]}"
 
             view_frame = ViewFrame(view_id, position, self)
+            view_frame.set_privacy_mode(self._privacy_enabled)
 
             if self._sync_manager and view_frame.image_viewer:
                 view_frame.image_viewer.sync_manager = self._sync_manager
@@ -1586,6 +1716,10 @@ class MultiViewerGrid(QWidget):
                 
                 # 绑定到视图框架
                 view_frame.bind_series(series_id, image_model, series_desc)
+                view_frame.set_privacy_mode(
+                    self._privacy_enabled,
+                    self._privacy_alias_for(series_id),
+                )
                 
                 logger.debug(f"[MultiViewerGrid._bind_series_to_view_frame] "
                            f"绑定成功: {view_frame.view_id} -> {series_id}")
@@ -1594,6 +1728,10 @@ class MultiViewerGrid(QWidget):
                     view_frame.show_loading_state(
                         series_id,
                         self._format_series_description(series_info),
+                    )
+                    view_frame.set_privacy_mode(
+                        self._privacy_enabled,
+                        self._privacy_alias_for(series_id),
                     )
                 logger.warning(f"[MultiViewerGrid._bind_series_to_view_frame] "
                              f"序列信息或数据模型不存在: series_id={series_id}")
@@ -1720,9 +1858,67 @@ class MultiViewerGrid(QWidget):
     
     # 查询方法
     
-    def get_current_layout(self) -> Tuple[int, int]:
+    def get_current_layout(self) -> object:
         """获取当前布局"""
         return self._current_layout
+
+    def current_layout_spec(self) -> LayoutSpec:
+        """Return the current layout including live special splitter ratios."""
+
+        spec = self._current_layout_spec
+        if spec.kind == "grid":
+            return spec
+        main = self._active_splitters.get("main")
+        nested_right = self._active_splitters.get("right")
+        nested_middle = self._active_splitters.get("middle")
+        nested_bottom = self._active_splitters.get("bottom")
+        if spec.special_type == "vertical_split":
+            ratios = (
+                self._splitter_ratio(main),
+                self._splitter_ratio(nested_bottom),
+            )
+        elif spec.special_type == "horizontal_split":
+            ratios = (
+                self._splitter_ratio(main),
+                self._splitter_ratio(nested_right),
+            )
+        elif spec.special_type == "triple_column_right_split":
+            main_sizes = main.sizes() if main is not None else []
+            total = sum(main_sizes)
+            left = main_sizes[0] / total if total and len(main_sizes) >= 3 else 0.33
+            middle = (
+                main_sizes[1] / total if total and len(main_sizes) >= 3 else 0.34
+            )
+            ratios = (
+                max(0.05, min(0.95, left)),
+                max(0.05, min(0.95, middle)),
+                self._splitter_ratio(nested_right),
+            )
+        else:
+            main_sizes = main.sizes() if main is not None else []
+            total = sum(main_sizes)
+            left = main_sizes[0] / total if total and len(main_sizes) >= 3 else 0.33
+            middle = (
+                main_sizes[1] / total if total and len(main_sizes) >= 3 else 0.34
+            )
+            ratios = (
+                max(0.05, min(0.95, left)),
+                max(0.05, min(0.95, middle)),
+                self._splitter_ratio(nested_middle),
+                self._splitter_ratio(nested_right),
+            )
+        return LayoutSpec(
+            kind="special",
+            special_type=spec.special_type,
+            ratios=tuple(float(value) for value in ratios),
+        )
+
+    def apply_layout_spec(self, spec: LayoutSpec) -> bool:
+        """Apply a stable spec after the caller updates the series manager."""
+
+        if spec.kind == "grid":
+            return self.set_layout(spec.rows, spec.columns)
+        return self.set_special_layout(spec.to_legacy())
     
     def get_view_frame(self, view_id: str) -> Optional[ViewFrame]:
         """获取指定的视图框架"""

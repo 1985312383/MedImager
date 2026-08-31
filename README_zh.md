@@ -19,7 +19,7 @@
 
 </div>
 
-MedImager 是一款开源医学影像查看与分析工具，长期目标是逐步接近 RadiAnt 级阅片工作流。2.5 版本在 v2.4 正交 MPR 核心之上新增 Patient→Study→Series 检查工作区、患者空间跨序列联动、真实定位线、挂片预设、检查状态恢复，以及后台缩略图与邻层预取。
+MedImager 是一款开源医学影像查看与分析工具，长期目标是逐步接近 RadiAnt 级阅片工作流。2.6 版本把现有 2D/MPR 核心扩展为可发现的可视化检查工作台，新增启动中心、只读 DICOMDIR 浏览、可筛选序列导航、布局画廊、设置中心 2.0、隐私显示和三套离线示例检查。
 
 <div align="center">
 
@@ -29,7 +29,7 @@ MedImager 是一款开源医学影像查看与分析工具，长期目标是逐�
 
 ## 1. 项目愿景
 
-创建一款可逐步成长到 RadiAnt 级工作流的开源医学影像查看器。MedImager 2.5 已把经过几何校验的正交 MPR 与检查级阅片工作区结合；后续版本将在此基础上推进 DICOMDIR/PACS、斜位重建和更完整的临床式阅片工作流。
+创建一款可逐步成长到 RadiAnt 级工作流的开源医学影像查看器。MedImager 2.6 已把经过几何校验的正交 MPR、本地介质发现和跨序列阅片流程结合；PACS、斜位重建、3D 渲染、融合与诊断级验证仍属于后续方向。
 
 ## 2. 核心功能
 
@@ -69,12 +69,19 @@ MedImager 是一款开源医学影像查看与分析工具，长期目标是逐�
     - [x] 大序列加载、窗宽窗位显示、缓存命中和 QImage 转换性能基准。
     - [x] 以版本化 JSON 保存和重新加载 ROI、距离测量和角度测量标注。
 
+### ✅ V2.6 - 可视化检查工作台与示例中心
+- [x] 检查启动中心、隐私安全的最近检查和只读 DICOMDIR Patient→Study→Series 浏览。
+- [x] 可搜索/筛选的紧凑序列导航、一键对比、临床布局画廊和用户布局。
+- [x] 自适应 24 px 工具栏、增强的正交 MPR 控制台和设置中心 2.0。
+- [x] 屏幕隐私显示、白名单缓存清理，以及确定性生成的 CT、MR 和 Geometry Lab 离线示例。
+
 ### 后续路线 - RadiAnt 级工作流
 - [x] **正交多平面重建 (MPR)**: 在统一 LPS 患者空间中联动查看轴位、冠状位和矢状位。
 - [ ] **3D 容积渲染**: 对 DICOM 序列进行基本的 3D 可视化。
 - [ ] **图像融合**: 叠加两个不同的序列 (例如 PET/CT)。
-- [ ] **DICOMDIR / PACS**: 在 2D 解析基线稳定后，支持本地介质浏览和 DICOM 网络查询/取回。
-- [x] **挂片布局**: 已提供 CT/MR/检查概览预设及检查状态恢复（v2.5）。
+- [x] **DICOMDIR**: 只读本地介质浏览及检查/序列选择（v2.6）。
+- [ ] **PACS**: DICOM 网络查询/取回。
+- [x] **挂片布局**: 已提供 CT/MR/检查概览预设、可视化画廊及检查状态恢复（v2.6）。
 - [ ] **插件系统**: 允许用户通过自定义 Python 脚本扩展功能，以促进学术研究。
 
 ## 3. 技术栈
@@ -151,9 +158,7 @@ medimager/
 │   ├── __init__.py
 │   ├── test_dicom_parser.py
 │   ├── test_roi.py
-│   └── dcm/                    # 测试用DICOM文件
-│       ├── water_phantom/
-│       └── gammex_phantom/
+│   └── test_demo_studies.py    # 临时目录中确定性生成示例 DICOM
 │
 ├── pyproject.toml              # 项目元数据和依赖项
 └── README.md                   # 英文版文档
@@ -181,6 +186,12 @@ medimager/
     # `uv run` 会自动使用 .venv 环境，无需手动激活，
     # 这样可以避免影响当前终端环境。
     uv run python medimager/main.py
+    ```
+    也可以直接打开本地来源，或为界面自动化启动固定示例：
+    ```bash
+    uv run python medimager/main.py "D:\DICOM\Study"
+    uv run python medimager/main.py --demo ct_multiphase
+    # --demo 还支持 mr_brain 和 geometry_lab
     ```
     对于希望激活环境进行开发的开发者：
     ```bash

@@ -11,7 +11,8 @@ import copy
 import json
 import hashlib
 import tempfile
-import time
+import threading
+from dataclasses import replace
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Set
@@ -23,7 +24,15 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QListView, QTreeView, QLineEdit, QTextEdit,
     QPlainTextEdit, QDockWidget, QInputDialog, QStackedWidget,
 )
-from PySide6.QtCore import Qt, QDir, QEvent, QTimer, Signal
+from PySide6.QtCore import (
+    Qt,
+    QDir,
+    QEvent,
+    QObject,
+    QSignalBlocker,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QAction, QKeySequence, QActionGroup
 from PySide6.QtWidgets import QApplication # Added for QApplication.processEvents()
 
@@ -31,6 +40,33 @@ from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.hanging_protocols import (
     HangingProtocolId,
     build_hanging_plan,
+)
+from medimager.core.layout_presets import (
+    LayoutApplicationService,
+    LayoutContext,
+    LayoutPreset,
+    LayoutSpec,
+    UserLayoutPresetStore,
+    builtin_layout_presets,
+)
+from medimager.core.local_source import (
+    LocalIndexResult,
+    LocalOpenOrigin,
+    LocalOpenRequest,
+    LocalSelection,
+    LocalSourceKind,
+    LocalStudyCandidate,
+    RecentStudyStore,
+    index_local_source,
+)
+from medimager.core.privacy import get_privacy_service
+from medimager.core.study_workspace import (
+    MprWorkspaceSnapshot,
+    StudyWorkspaceState,
+    StudyWorkspaceStore,
+    WorkspaceSyncState,
+    build_series_key_index,
+    study_key_for_uid as workspace_study_key_for_uid,
 )
 from medimager.core.study_model import classify_orientation
 from medimager.core.series_view_binding import SeriesViewBindingManager, BindingStrategy
@@ -46,8 +82,15 @@ from medimager.core.annotation_persistence import (
 from medimager.core.dicom_parser import DicomParser
 from medimager.app_info import APP_NAME, get_about_html
 from medimager.ui.multi_viewer_grid import MultiViewerGrid
-from medimager.ui.mpr_workspace import MprWorkspace
-from medimager.core.volume_geometry import GeometryStatus, VolumeBuilder
+from medimager.ui.mpr_workspace import MprLayoutMode, MprWorkspace
+from medimager.ui.media_browser import MediaBrowserPage
+from medimager.ui.start_center import (
+    RecentAvailability,
+    StartCenter,
+    StartCenterSample,
+)
+from medimager.demo import DemoBuildResult, DemoStudyService, get_demo_study_spec, load_demo_catalog
+from medimager.core.volume_geometry import GeometryStatus, MprPlane, VolumeBuilder
 from medimager.core.view_presentation_state import (
     InterpolationMode,
     prefetch_display_slices,
@@ -69,6 +112,17 @@ from medimager.ui.main_toolbar import create_main_toolbar
 from medimager.utils.i18n import t
 
 logger = get_logger(__name__)
+
+
+def _v26_text(key: str, fallback: str, **params) -> str:
+    """Translate new workspace copy while keeping source builds readable."""
+    rendered = t(key, **params)
+    if rendered != key:
+        return rendered
+    try:
+        return fallback.format(**params)
+    except (KeyError, ValueError):
+        return fallback
 
 
 # Drafts from the same process are not crash-recovery candidates.  Marking
@@ -122,6 +176,94 @@ class _FolderScanResult:
         self.error = ''
 
 
+class LocalStudyController(QObject):
+    """Thread-pool boundary for immutable local-study indexing requests."""
+
+    started = Signal(str, object)
+    progress = Signal(str, int, int)
+    completed = Signal(str, object)
+    failed = Signal(str, str)
+    cancelled = Signal(str)
+
+    def __init__(self, executor=None, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._executor = executor or get_performance_manager().get_thread_pool()
+        self._futures: Dict[str, object] = {}
+        self._cancel_events: Dict[str, threading.Event] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def pending_request_ids(self) -> Tuple[str, ...]:
+        with self._lock:
+            return tuple(self._futures)
+
+    def submit(
+        self,
+        request: LocalOpenRequest,
+        *,
+        recursive: bool = True,
+        include_extensionless: bool = True,
+        strict_metadata: bool = False,
+    ):
+        request_id = request.request_id
+        with self._lock:
+            current = self._futures.get(request_id)
+            if current is not None and not current.done():
+                return current
+            cancel_event = threading.Event()
+            future = self._executor.submit(
+                index_local_source,
+                request,
+                recursive=recursive,
+                include_extensionless=include_extensionless,
+                strict_metadata=strict_metadata,
+                cancelled=cancel_event.is_set,
+            )
+            self._futures[request_id] = future
+            self._cancel_events[request_id] = cancel_event
+        self.started.emit(request_id, request)
+        self.progress.emit(request_id, 0, 0)
+        future.add_done_callback(
+            lambda done, current=request_id: self._relay_result(current, done)
+        )
+        return future
+
+    def cancel(self, request_id: str) -> bool:
+        with self._lock:
+            future = self._futures.get(str(request_id))
+            event = self._cancel_events.get(str(request_id))
+            if future is None or event is None or future.done():
+                return False
+            event.set()
+        future.cancel()
+        return True
+
+    def cancel_all(self) -> Tuple[str, ...]:
+        request_ids = self.pending_request_ids
+        for request_id in request_ids:
+            self.cancel(request_id)
+        return request_ids
+
+    def _relay_result(self, request_id: str, future) -> None:
+        try:
+            result = future.result()
+        except CancelledError:
+            self.cancelled.emit(request_id)
+        except Exception as error:
+            self.failed.emit(request_id, str(error))
+        else:
+            if getattr(result, "cancelled", False):
+                self.cancelled.emit(request_id)
+            else:
+                self.progress.emit(request_id, 1, 1)
+                self.completed.emit(request_id, result)
+        finally:
+            with self._lock:
+                if self._futures.get(request_id) is future:
+                    self._futures.pop(request_id, None)
+                    self._cancel_events.pop(request_id, None)
+
+
 def _scan_dicom_folder_task(
     folder_path: str,
     recursive: bool,
@@ -163,8 +305,8 @@ def _scan_dicom_folder_task(
                 if strict_metadata and missing:
                     result.skipped_count += 1
                     logger.warning(
-                        "[_scan_dicom_folder_task] 严格模式跳过缺少 %s 的序列: %s",
-                        missing, series_files[0],
+                        "[_scan_dicom_folder_task] 严格模式跳过缺少 %s 的序列",
+                        missing,
                     )
                     continue
                 if len(series_files) == 1:
@@ -198,10 +340,16 @@ def _scan_dicom_folder_task(
                 })
             except Exception as error:
                 result.skipped_count += 1
-                logger.warning("[_scan_dicom_folder_task] 预读序列失败: %s", error)
+                logger.warning(
+                    "[_scan_dicom_folder_task] 预读序列失败 (%s)",
+                    type(error).__name__,
+                )
     except Exception as error:
         result.error = str(error)
-        logger.error("[_scan_dicom_folder_task] 文件夹扫描失败: %s", error, exc_info=True)
+        logger.error(
+            "[_scan_dicom_folder_task] 文件夹扫描失败 (%s)",
+            type(error).__name__,
+        )
     return result
 
 
@@ -229,7 +377,9 @@ def _load_series_task(file_paths: List[str], series_id: str) -> _SeriesLoadResul
     except Exception as e:
         result.error = str(e)
         result.error_key = 'mainwindow.background_load_failed'
-        logger.error(f"[_load_series_task] 序列加载异常: {e}", exc_info=True)
+        logger.error(
+            "[_load_series_task] 序列加载异常 (%s)", type(e).__name__
+        )
     return result
 
 
@@ -345,7 +495,10 @@ def _load_single_image_task(
     except Exception as error:
         result.error = str(error)
         result.error_key = 'mainwindow.background_load_failed'
-        logger.error("[_load_single_image_task] 单文件加载异常: %s", error, exc_info=True)
+        logger.error(
+            "[_load_single_image_task] 单文件加载异常 (%s)",
+            type(error).__name__,
+        )
     return result
 
 
@@ -358,6 +511,8 @@ class MainWindow(QMainWindow):
     # 线程安全信号：从工作线程通知主线程序列加载完成
     _series_load_done = Signal(str, object)  # (series_id, future)
     _folder_scan_done = Signal(str, object)  # (folder_path, future)
+    _local_index_done = Signal(str, object)  # (request_id, future)
+    _recent_availability_done = Signal(str, bool)  # (entry_id, available)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """初始化主窗口"""
@@ -367,17 +522,50 @@ class MainWindow(QMainWindow):
         # 连接线程安全的序列加载完成信号
         self._series_load_done.connect(self._on_series_loading_finished)
         self._folder_scan_done.connect(self._on_folder_scan_finished)
+        self._local_index_done.connect(self._on_local_index_finished)
+        self._recent_availability_done.connect(self._on_recent_availability_finished)
 
         # 布局切换守卫标志（必须在信号连接之前初始化）
         self._setting_layout = False
 
         # 使用全局单例设置管理器和主题管理器
         self.settings_manager = get_settings_manager()
+        self._workspace_store = StudyWorkspaceStore(self.settings_manager)
         self.theme_manager = ThemeManager(self.settings_manager, self)
+        self.recent_study_store = RecentStudyStore(self.settings_manager, self)
+        self.privacy_service = get_privacy_service(self.settings_manager)
+        self.demo_study_service = DemoStudyService(parent=self)
+        self.local_study_controller = LocalStudyController(parent=self)
+        try:
+            self._demo_catalog = load_demo_catalog()
+        except Exception as error:
+            logger.error("[MainWindow] Failed to load demo catalog: %s", error)
+            self._demo_catalog = ()
 
         # UI 创建和首次状态刷新会访问这些字段，必须先于工具栏初始化。
         self._loading_futures: Dict[str, object] = {}
         self._folder_scan_futures: Dict[str, object] = {}
+        self._local_index_futures: Dict[str, object] = {}
+        self._local_index_requests: Dict[str, LocalOpenRequest] = {}
+        self._local_index_browser_requests: Set[str] = set()
+        self._local_index_batches: Dict[str, Dict[str, object]] = {}
+        self._local_index_batch_by_request: Dict[str, str] = {}
+        self._aggregate_local_context: Dict[
+            str, Dict[Tuple[str, str], Tuple[LocalOpenRequest, LocalStudyCandidate]]
+        ] = {}
+        self._cancelled_local_indexes: Set[str] = set()
+        self._active_local_index_request_id: Optional[str] = None
+        self._media_index_result: Optional[LocalIndexResult] = None
+        self._local_series_context: Dict[
+            str, Tuple[LocalOpenRequest, LocalStudyCandidate]
+        ] = {}
+        self._local_request_pending: Dict[str, Set[str]] = {}
+        self._local_request_successes: Dict[str, int] = {}
+        self._local_request_demo_protocols: Dict[str, HangingProtocolId] = {}
+        self._recent_recorded_studies: Set[Tuple[str, str]] = set()
+        self._recent_availability_futures: Dict[str, object] = {}
+        self._recent_availability: Dict[str, RecentAvailability] = {}
+        self._active_demo_id: Optional[str] = None
         self._loading_errors: List[str] = []
         self._load_requests: Dict[str, Dict] = {}
         self._failed_load_requests: Dict[str, Dict] = {}
@@ -418,15 +606,34 @@ class MainWindow(QMainWindow):
         self._image_required_widgets: List[QWidget] = []
         self._mpr_active = False
         self._mpr_series_id: Optional[str] = None
+        self._pending_mpr_workspace_snapshot: Optional[
+            Tuple[str, MprWorkspaceSnapshot]
+        ] = None
+        self._auto_mpr_restore_attempted_studies: Set[str] = set()
         self._workspace_state_timer = QTimer(self)
         self._workspace_state_timer.setSingleShot(True)
         self._workspace_state_timer.timeout.connect(self._save_study_workspace_state)
         self._restored_study_keys: Set[str] = set()
         self._restoring_workspace = False
         self._prefetch_pending: Set[str] = set()
+        self._privacy_screen_active = False
+        self._privacy_info_dock_was_visible: Optional[bool] = None
 
         # 初始化UI
         self._init_ui()
+        self._user_layout_store = UserLayoutPresetStore(
+            self.settings_manager.get_setting,
+            self.settings_manager.set_setting,
+        )
+        self._layout_application_service = LayoutApplicationService(
+            capture=self._capture_layout_transaction,
+            restore=self._restore_layout_transaction,
+            apply_layout=self._apply_layout_spec,
+            apply_hanging=self._apply_hanging_for_layout_service,
+            enter_mpr=self._enter_mpr_for_layout_service,
+            persist=self._schedule_workspace_state_save,
+        )
+        self._refresh_layout_presets()
         self.shortcut_registry = ShortcutRegistry(self)
         self._init_shortcuts()
         
@@ -441,6 +648,8 @@ class MainWindow(QMainWindow):
         
         # 更新UI状态
         self._update_ui_state()
+        self._refresh_recent_studies()
+        self._apply_runtime_settings(clear_cache=False)
         
         # 初始工具传播 - 确保所有视图都使用正确的工具
         logger.info("[MainWindow.__init__] 准备进行初始工具传播")
@@ -469,17 +678,54 @@ class MainWindow(QMainWindow):
         }
         return mapping.get(str(value), (1, 1))
 
+    def _workspace_startup_mode(self) -> str:
+        value = str(
+            self.settings_manager.get_setting(
+                "workspace.startup_mode", "restore"
+            )
+        )
+        return value if value in {"restore", "default_layout", "hanging_protocol"} else "restore"
+
+    def _configured_startup_hanging_protocol(
+        self,
+    ) -> Optional[HangingProtocolId]:
+        if self._workspace_startup_mode() != "hanging_protocol":
+            return None
+        value = str(
+            self.settings_manager.get_setting(
+                "workspace.default_hanging_protocol", "none"
+            )
+        )
+        return {
+            "study_overview": HangingProtocolId.STUDY_OVERVIEW,
+            "ct_phase": HangingProtocolId.CT_COMPARISON,
+            "ct_comparison": HangingProtocolId.CT_COMPARISON,
+            "mr_neuro": HangingProtocolId.MR_NEURO,
+        }.get(value)
+
     def _sync_mode_from_setting(self):
         from medimager.core.sync_manager import SyncMode
 
-        value = self.settings_manager.get_setting("multiview.default_sync_mode", "basic")
-        mapping = {
-            "none": SyncMode.NONE,
-            "basic": SyncMode.BASIC,
-            "advanced": SyncMode.ADVANCED,
-            "full": SyncMode.FULL,
-        }
-        return mapping.get(str(value), SyncMode.BASIC)
+        # v2.6 exposes each safe synchronization dimension directly.  The
+        # legacy preset remains readable in SettingsDialog, but the granular
+        # values are authoritative so their documented defaults are also the
+        # actual runtime defaults.
+        mode = SyncMode.NONE
+        if self._bool_setting("sync.window_level", True):
+            mode |= SyncMode.WINDOW_LEVEL
+        if str(
+            self.settings_manager.get_setting("sync.position_mode", "auto_lps")
+        ) != "none":
+            mode |= SyncMode.SLICE
+        if self._bool_setting("sync.zoom", False):
+            mode |= SyncMode.ZOOM
+        if self._bool_setting("sync.pan", False):
+            mode |= SyncMode.PAN
+        if self._bool_setting("sync.reference_lines", True) or self._bool_setting(
+            "sync.shared_cursor", True
+        ):
+            mode |= SyncMode.CROSS_REFERENCE
+        return mode
 
     def _sync_group_from_setting(self):
         from medimager.core.sync_manager import SyncGroup
@@ -574,14 +820,35 @@ class MainWindow(QMainWindow):
         self.series_dock.setWidget(self.series_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.series_dock)
 
-        # 中央工作区在常规 2-D 网格与三平面 MPR 之间切换。
+        # 中央工作区使用对象引用切换，避免页面顺序变化破坏状态恢复。
         self.workspace_stack = QStackedWidget(self)
+        self.start_center = StartCenter(self)
+        self.media_browser = MediaBrowserPage(self)
         self.multi_viewer_grid = MultiViewerGrid(self.series_manager, self)
         self.mpr_workspace = MprWorkspace(self)
         self.mpr_workspace.request_return_to_2d.connect(self._leave_mpr_workspace)
+        self.mpr_workspace.build_finished.connect(
+            self._on_mpr_build_finished_for_workspace
+        )
+        self.workspace_stack.addWidget(self.start_center)
+        self.workspace_stack.addWidget(self.media_browser)
         self.workspace_stack.addWidget(self.multi_viewer_grid)
         self.workspace_stack.addWidget(self.mpr_workspace)
-        self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        self.workspace_stack.setCurrentWidget(self.start_center)
+        self.start_center.set_samples(
+            tuple(
+                StartCenterSample(
+                    spec.id.value,
+                    _v26_text(
+                        spec.title_key,
+                        spec.id.value.replace("_", " ").title(),
+                    ),
+                    _v26_text(spec.description_key, "Offline generated sample study"),
+                    str(spec.preview_path),
+                )
+                for spec in self._demo_catalog
+            )
+        )
         main_layout.addWidget(self.workspace_stack, 1)
 
         # 右侧信息面板
@@ -640,6 +907,48 @@ class MainWindow(QMainWindow):
         # 序列面板信号
         self.series_panel.series_selected.connect(self._on_series_selected)
         self.series_panel.binding_requested.connect(self._on_binding_requested)
+        compare_signal = getattr(self.series_panel, 'compare_requested', None)
+        if compare_signal is not None:
+            compare_signal.connect(self._on_compare_requested)
+
+        # v2.6 local workspace pages expose stable request signals only; all
+        # indexing and decoding ownership remains in MainWindow.
+        self.start_center.open_folder_requested.connect(self._open_local_folder)
+        self.start_center.open_multiple_folders_requested.connect(
+            self._open_local_multiple_folders
+        )
+        self.start_center.open_dicomdir_requested.connect(self._open_dicomdir)
+        self.start_center.open_image_requested.connect(self._open_image_file)
+        self.start_center.recent_requested.connect(self._open_recent_study)
+        self.start_center.recent_remove_requested.connect(
+            self.recent_study_store.remove
+        )
+        self.start_center.recent_relocate_requested.connect(
+            self._relocate_recent_study
+        )
+        self.start_center.recent_pin_requested.connect(
+            self.recent_study_store.set_pinned
+        )
+        self.start_center.clear_recent_requested.connect(
+            self.recent_study_store.clear
+        )
+        self.start_center.sample_requested.connect(self._request_demo_study)
+        self.start_center.cancel_requested.connect(self._cancel_local_workspace_task)
+        self.start_center.paths_dropped.connect(self._open_dropped_paths)
+        self.media_browser.selection_confirmed.connect(
+            self._confirm_media_browser_selection
+        )
+        self.media_browser.back_requested.connect(self._leave_media_browser)
+        self.media_browser.cancel_requested.connect(self._cancel_local_workspace_task)
+        self.media_browser.scan_as_folder_requested.connect(
+            self._scan_media_root_as_folder
+        )
+        self.recent_study_store.changed.connect(self._on_recent_studies_changed)
+        self.demo_study_service.progress.connect(self._on_demo_progress)
+        self.demo_study_service.ready.connect(self._on_demo_ready)
+        self.demo_study_service.failed.connect(self._on_demo_failed)
+        self.demo_study_service.cancelled.connect(self._on_demo_cancelled)
+        self.privacy_service.enabled_changed.connect(self._apply_privacy_mode)
         
         # 监听活动视图变化以连接切片信号
         self.series_manager.active_view_changed.connect(self._on_view_activated)
@@ -647,6 +956,9 @@ class MainWindow(QMainWindow):
         # 多视图网格信号
         self.multi_viewer_grid.view_activated.connect(self._on_view_activated)
         self.multi_viewer_grid.layout_changed.connect(self._on_grid_layout_changed)
+        self.multi_viewer_grid.layout_geometry_changed.connect(
+            self._on_layout_geometry_changed
+        )
         self.multi_viewer_grid.binding_requested.connect(self._on_binding_requested)
         
         # 同步管理器信号
@@ -696,7 +1008,12 @@ class MainWindow(QMainWindow):
                         # 重新创建主题化图标
                         icon_path = getattr(action, '_icon_path', None)
                         if icon_path:
-                            new_icon = self.theme_manager.create_themed_icon(icon_path)
+                            new_icon = self.theme_manager.create_themed_icon(
+                                icon_path,
+                                preserve_on_color=bool(
+                                    getattr(action, '_preserve_on_color', False)
+                                ),
+                            )
                             action.setIcon(new_icon)
                             logger.debug(f"[MainWindow._on_theme_changed] 刷新了QAction图标: {icon_path}")
                         else:
@@ -730,6 +1047,18 @@ class MainWindow(QMainWindow):
         open_folder_action.setStatusTip(t("mainwindow.open_the_folder_containing_the_dicom_sequence"))
         open_folder_action.triggered.connect(self._open_dicom_folder)
         file_menu.addAction(open_folder_action)
+
+        open_dicomdir_action = QAction(
+            _v26_text("startcenter.open_dicomdir", "Open DICOMDIR media"), self
+        )
+        open_dicomdir_action.setStatusTip(
+            _v26_text(
+                "mediabrowser.open_dicomdir_hint",
+                "Inspect a removable-media DICOMDIR before loading images",
+            )
+        )
+        open_dicomdir_action.triggered.connect(self._open_dicomdir)
+        file_menu.addAction(open_dicomdir_action)
         
         # 打开图像文件
         open_image_action = QAction(t("mainwindow.open_image_file_i"), self)
@@ -740,12 +1069,27 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
-        # 导入测试数据
-        test_menu = file_menu.addMenu(t("mainwindow.test_data"))
-        
-        load_test_series_action = QAction(t("mainwindow.load_test_sequence"), self)
-        load_test_series_action.triggered.connect(self._load_test_series)
-        test_menu.addAction(load_test_series_action)
+        # 示例检查与启动中心共用同一确定性生成/正式索引流程。
+        self.example_studies_menu = file_menu.addMenu(
+            _v26_text("demo.example_studies", "Example studies")
+        )
+        for spec in self._demo_catalog:
+            demo_action = QAction(
+                _v26_text(
+                    spec.title_key,
+                    spec.id.value.replace("_", " ").title(),
+                ),
+                self,
+            )
+            demo_action.setStatusTip(
+                _v26_text(spec.description_key, "Generate an offline sample study")
+            )
+            demo_action.triggered.connect(
+                lambda checked=False, study_id=spec.id.value: (
+                    self._request_demo_study(study_id)
+                )
+            )
+            self.example_studies_menu.addAction(demo_action)
 
         file_menu.addSeparator()
 
@@ -893,6 +1237,13 @@ class MainWindow(QMainWindow):
             self._hanging_actions.append(action)
             self._image_required_actions.append(action)
 
+        self.user_layout_menu = hanging_menu.addMenu(
+            _v26_text("layoutgallery.saved_layouts", "Saved layouts")
+        )
+        self.user_layout_menu.aboutToShow.connect(
+            self._populate_user_layout_menu
+        )
+
         # 清除所有绑定
         self.clear_bindings_action = QAction(t("mainwindow.clear_all_bindings"), self)
         self.clear_bindings_action.triggered.connect(self._clear_all_bindings)
@@ -959,11 +1310,10 @@ class MainWindow(QMainWindow):
         self.addToolBar(main_toolbar)
         self._connect_viewer_toolbar(main_toolbar)
         
-        # 获取同步按钮的引用（工具栏创建时已添加）
-        for widget in main_toolbar.children():
-            if hasattr(widget, 'set_sync_states'):
-                self._sync_button = widget
-                break
+        # The custom controls are hosted in cross-axis centering wrappers.
+        # Keep the explicit toolbar contract instead of depending on QObject
+        # child depth or layout implementation details.
+        self._sync_button = main_toolbar.sync_button
         
         logger.debug("[MainWindow._init_toolbars] 主窗口工具栏初始化完成")
 
@@ -1118,6 +1468,9 @@ class MainWindow(QMainWindow):
             
             for view_id, view_frame in view_frames.items():
                 if view_frame and view_frame.image_viewer:
+                    self._connect_workspace_presentation_signal(
+                        view_frame.image_viewer
+                    )
                     # 为每个ImageViewer创建独立的工具实例
                     tool_copy = self._create_tool_copy(view_frame.image_viewer)
                     if tool_copy:
@@ -1182,6 +1535,9 @@ class MainWindow(QMainWindow):
         try:
             view_frame = self.multi_viewer_grid.get_view_frame(view_id)
             if view_frame and view_frame.image_viewer:
+                self._connect_workspace_presentation_signal(
+                    view_frame.image_viewer
+                )
                 tool_copy = self._create_tool_copy(view_frame.image_viewer)
                 if tool_copy:
                     view_frame.image_viewer.set_tool(tool_copy)
@@ -1189,6 +1545,15 @@ class MainWindow(QMainWindow):
                     
         except Exception as e:
             logger.error(f"[MainWindow._propagate_tool_to_single_viewer] 单个视图工具传播失败: {e}", exc_info=True)
+
+    def _connect_workspace_presentation_signal(self, viewer) -> None:
+        """Persist pane-local display changes once per recreated viewer."""
+        if viewer is None or bool(viewer.property("workspacePersistenceBound")):
+            return
+        viewer.presentation_changed.connect(
+            lambda _state=None: self._schedule_workspace_state_save()
+        )
+        viewer.setProperty("workspacePersistenceBound", True)
     
     def _init_statusbar(self) -> None:
         """初始化状态栏"""
@@ -1265,6 +1630,27 @@ class MainWindow(QMainWindow):
                           self._fit_active_view)
         registry.register('view.actual_size', '1', t('shortcut.actual_size'),
                           self._actual_size_active_view)
+        registry.register(
+            'tool.pointer', 'P', t('mainwindow.pointer'),
+            lambda: self._on_viewer_interaction_mode_requested('default')
+        )
+        registry.register(
+            'tool.pan', 'H', t('mainwindow.pan'),
+            lambda: self._on_viewer_interaction_mode_requested('pan')
+        )
+        registry.register(
+            'tool.zoom', 'Z', t('mainwindow.zoom'),
+            lambda: self._on_viewer_interaction_mode_requested('zoom')
+        )
+        registry.register(
+            'tool.window_level', 'W', t('toolbar.window_level'),
+            lambda: self._on_viewer_interaction_mode_requested('window_level')
+        )
+        registry.register(
+            'workspace.mpr', 'M', t('mpr.enter'),
+            lambda: self.mpr_action.trigger()
+            if self.mpr_action.isEnabled() else None
+        )
         registry.register('interaction.cancel', 'Esc', t('shortcut.cancel_interaction'),
                           self._cancel_active_interaction)
         if hasattr(self, '_cine_play_btn'):
@@ -1342,11 +1728,22 @@ class MainWindow(QMainWindow):
         action = getattr(self, 'mpr_action', None)
         if action is None:
             return
+
+        def update_action_copy(label: str, tooltip: str) -> None:
+            action.setText(label)
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            toolbar = getattr(self, 'main_toolbar', None)
+            button = toolbar.widgetForAction(action) if toolbar is not None else None
+            if button is not None:
+                button.setAccessibleName(label)
+                button.setAccessibleDescription(tooltip)
+
         if self._mpr_active:
             action.setEnabled(True)
             action.setChecked(True)
-            action.setText(t('mpr.return_to_2d'))
-            action.setToolTip(t('mpr.return_to_2d'))
+            label = t('mpr.return_to_2d')
+            update_action_copy(label, f"{label} (M)")
             return
         model = self._get_active_image_model()
         result = (
@@ -1357,25 +1754,137 @@ class MainWindow(QMainWindow):
         compatible = bool(result and result.status is GeometryStatus.COMPATIBLE)
         action.setEnabled(compatible)
         action.setChecked(False)
-        action.setText(t('mpr.enter'))
-        action.setToolTip(t('mpr.enter') if compatible else t(result.detail) if result else t('mpr.no_active_series'))
+        label = t('mpr.enter')
+        if compatible:
+            tooltip = f"{label} (M)"
+        else:
+            tooltip = t(result.detail) if result else t('mpr.no_active_series')
+        update_action_copy(label, tooltip)
 
-    def _toggle_mpr_workspace(self, checked: bool = False) -> None:
-        if self._mpr_active:
-            self._leave_mpr_workspace()
-            return
-        model = self._get_active_image_model()
-        series_id = self._active_series_id()
-        if model is None or series_id is None:
+    def _capture_mpr_workspace_snapshot(self) -> Optional[MprWorkspaceSnapshot]:
+        workspace = getattr(self, "mpr_workspace", None)
+        if workspace is None or not workspace.is_ready:
+            return None
+        series_id = getattr(workspace, "_series_id", None)
+        state = getattr(workspace, "_state", None)
+        info = self.series_manager.get_series_info(series_id) if series_id else None
+        if state is None or info is None or not info.series_instance_uid:
+            return None
+        try:
+            return MprWorkspaceSnapshot.capture(
+                series_uid=info.series_instance_uid,
+                cursor_lps=state.copy_cursor(),
+                plane_indices={
+                    plane.value: index
+                    for plane, index in state.plane_indices.items()
+                },
+                views={
+                    plane.value: viewport.presentation_state
+                    for plane, viewport in workspace.viewports.items()
+                },
+                layout_mode=workspace.layout_mode,
+                active_plane=getattr(workspace, "_active_plane", MprPlane.AXIAL),
+                intersection_lines_visible=getattr(
+                    workspace, "_intersection_lines_visible", True
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _mpr_snapshot_for_study(
+        self, study_instance_uid: str
+    ) -> Optional[MprWorkspaceSnapshot]:
+        live = self._capture_mpr_workspace_snapshot()
+        if live is not None:
+            return live
+        pending = self._pending_mpr_workspace_snapshot
+        if pending is None:
+            return None
+        series_id, snapshot = pending
+        info = self.series_manager.get_series_info(series_id)
+        if info is None or info.study_instance_uid != study_instance_uid:
+            return None
+        return snapshot
+
+    def _restore_pending_mpr_workspace(self) -> bool:
+        pending = self._pending_mpr_workspace_snapshot
+        workspace = getattr(self, "mpr_workspace", None)
+        if (
+            pending is None
+            or workspace is None
+            or not self._mpr_active
+            or not workspace.is_ready
+            or pending[0] != self._mpr_series_id
+        ):
+            return False
+        series_id, snapshot = pending
+        planes = {plane.value: plane for plane in MprPlane}
+        active_plane = planes.get(snapshot.active_plane, MprPlane.AXIAL)
+        workspace.set_active_plane(active_plane)
+        restored_states = {}
+        for plane_name, presentation in snapshot.views.items():
+            plane = planes.get(plane_name)
+            if plane is None:
+                continue
+            state = presentation.to_view_state(series_id=series_id)
+            viewport = workspace.viewports[plane]
+            viewport.presentation_state = state
+            restored_states[plane] = state
+            combo = getattr(workspace, "_interpolation_boxes", {}).get(plane)
+            if combo is not None:
+                for index in range(combo.count()):
+                    if InterpolationMode.coerce(combo.itemData(index)) is state.interpolation:
+                        with QSignalBlocker(combo):
+                            combo.setCurrentIndex(index)
+                        break
+        runtime_state = getattr(workspace, "_state", None)
+        if runtime_state is not None:
+            runtime_state.views.update(restored_states)
+        workspace.set_intersection_lines_visible(
+            snapshot.intersection_lines_visible
+        )
+        workspace.set_layout_mode(
+            MprLayoutMode(snapshot.layout_mode)
+            if snapshot.layout_mode in {item.value for item in MprLayoutMode}
+            else MprLayoutMode.THREE_COLUMNS
+        )
+        workspace.set_cursor(snapshot.cursor_lps)
+        workspace._apply_pending_cursor()
+        workspace.refresh()
+        for plane, state in restored_states.items():
+            viewport = workspace.viewports[plane]
+            if state.fit_mode:
+                viewport.fit_to_window()
+            else:
+                viewport.resetTransform()
+                viewport.scale(state.zoom, state.zoom)
+                viewport.centerOn(state.pan_center)
+                viewport._fit_mode = False
+        self._pending_mpr_workspace_snapshot = None
+        return True
+
+    def _on_mpr_build_finished_for_workspace(self, _payload: object) -> None:
+        """Apply a saved MPR snapshot only after a successful explicit build."""
+        self._restore_pending_mpr_workspace()
+
+    def _start_mpr_workspace_for_series(
+        self,
+        series_id: str,
+        *,
+        warn_if_incompatible: bool,
+    ) -> bool:
+        model = self.series_manager.get_series_model(series_id)
+        if model is None or not model.has_image():
             self._refresh_mpr_availability()
-            return
+            return False
         inspection = VolumeBuilder.inspect(
             model, memory_budget_bytes=self._mpr_memory_budget_bytes()
         )
         if inspection.status is not GeometryStatus.COMPATIBLE:
-            QMessageBox.warning(self, t('mpr.title'), t(inspection.detail))
+            if warn_if_incompatible:
+                QMessageBox.warning(self, t('mpr.title'), t(inspection.detail))
             self._refresh_mpr_availability()
-            return
+            return False
         self._cine_stop()
         self._mpr_active = True
         self._mpr_series_id = series_id
@@ -1384,14 +1893,65 @@ class MainWindow(QMainWindow):
             model, series_id, self._mpr_memory_budget_bytes()
         )
         self._refresh_mpr_availability()
+        return True
+
+    def _schedule_auto_mpr_workspace_restore(
+        self, study_key: str, series_id: str
+    ) -> None:
+        if (
+            not self._bool_setting("workspace.restore_mpr", False)
+            or study_key in self._auto_mpr_restore_attempted_studies
+        ):
+            return
+        self._auto_mpr_restore_attempted_studies.add(study_key)
+
+        def attempt_once() -> None:
+            pending = self._pending_mpr_workspace_snapshot
+            if (
+                self._closing
+                or self._mpr_active
+                or pending is None
+                or pending[0] != series_id
+            ):
+                return
+            self._start_mpr_workspace_for_series(
+                series_id,
+                warn_if_incompatible=False,
+            )
+
+        QTimer.singleShot(0, attempt_once)
+
+    def _toggle_mpr_workspace(self, checked: bool = False) -> None:
+        if self._mpr_active:
+            self._leave_mpr_workspace()
+            return
+        series_id = self._active_series_id()
+        if series_id is None:
+            self._refresh_mpr_availability()
+            return
+        self._start_mpr_workspace_for_series(
+            series_id,
+            warn_if_incompatible=True,
+        )
 
     def _leave_mpr_workspace(self) -> None:
         if hasattr(self, 'mpr_workspace'):
+            snapshot = self._capture_mpr_workspace_snapshot()
+            series_id = getattr(self.mpr_workspace, "_series_id", None)
+            if snapshot is not None and series_id:
+                self._pending_mpr_workspace_snapshot = (series_id, snapshot)
+                if self.isVisible() and not self._closing:
+                    self._save_study_workspace_state()
             self.mpr_workspace.clear()
         self._mpr_active = False
         self._mpr_series_id = None
         if hasattr(self, 'workspace_stack'):
-            self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+            target = (
+                self.multi_viewer_grid
+                if self.series_manager.get_series_count()
+                else self.start_center
+            )
+            self.workspace_stack.setCurrentWidget(target)
         self._refresh_mpr_availability()
 
     def _update_ui_state(self) -> None:
@@ -1405,6 +1965,17 @@ class MainWindow(QMainWindow):
         
         # 更新菜单和工具栏状态
         has_series = series_count > 0
+        if hasattr(self, "workspace_stack") and not self._mpr_active:
+            current_page = self.workspace_stack.currentWidget()
+            if not has_series and current_page is self.multi_viewer_grid:
+                self.workspace_stack.setCurrentWidget(self.start_center)
+            elif (
+                has_series
+                and current_page is self.start_center
+                and not self._local_index_futures
+                and self._active_demo_id is None
+            ):
+                self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
         active_model = self._get_active_image_model()
         has_active_image = bool(active_model and active_model.has_image())
         has_cine_frames = bool(has_active_image and active_model.get_slice_count() > 1)
@@ -1416,6 +1987,7 @@ class MainWindow(QMainWindow):
             self.empty_open_folder_button.setVisible(
                 not has_series
                 and not self._folder_scan_futures
+                and not self._local_index_futures
                 and not self._loading_futures
             )
         self._refresh_toolbar_dicom_voi_options()
@@ -1548,8 +2120,8 @@ class MainWindow(QMainWindow):
                 save_annotations(model, sidecar)
             except Exception as error:
                 logger.warning(
-                    '[MainWindow] 自动载入标注 sidecar 失败: %s', error,
-                    exc_info=True,
+                    '[MainWindow] 自动载入标注 sidecar 失败 (%s)',
+                    type(error).__name__,
                 )
         if not self._draft_recovery_enabled(series_id):
             return
@@ -1561,7 +2133,7 @@ class MainWindow(QMainWindow):
                 draft_metadata = document.get('draft_metadata')
                 if not isinstance(draft_metadata, dict):
                     logger.info(
-                        '[MainWindow] 忽略无法验证来源的旧版标注草稿: %s', draft
+                        '[MainWindow] 忽略无法验证来源的旧版标注草稿'
                     )
                     return
                 if draft_metadata.get('session_id') == _ANNOTATION_DRAFT_SESSION_ID:
@@ -1575,7 +2147,8 @@ class MainWindow(QMainWindow):
                 )
             except Exception as error:
                 logger.warning(
-                    '[MainWindow] 恢复标注草稿失败: %s', error, exc_info=True
+                    '[MainWindow] 恢复标注草稿失败 (%s)',
+                    type(error).__name__,
                 )
 
     def _schedule_annotation_draft(self, series_id: str) -> None:
@@ -1617,8 +2190,11 @@ class MainWindow(QMainWindow):
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_path, path)
-        except Exception:
-            logger.exception('[MainWindow] 写入标注恢复草稿失败: %s', path)
+        except Exception as error:
+            logger.exception(
+                '[MainWindow] 写入标注恢复草稿失败 (%s)',
+                type(error).__name__,
+            )
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
@@ -1635,7 +2211,7 @@ class MainWindow(QMainWindow):
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            logger.warning('[MainWindow] 无法删除标注草稿: %s', path)
+            logger.warning('[MainWindow] 无法删除标注草稿')
 
     def _save_model_annotations(
         self,
@@ -1668,7 +2244,10 @@ class MainWindow(QMainWindow):
             )
             return True
         except Exception as error:
-            logger.exception('[MainWindow] 保存标注失败: %s', path)
+            logger.exception(
+                '[MainWindow] 保存标注失败 (%s)',
+                type(error).__name__,
+            )
             QMessageBox.critical(
                 self,
                 t('mainwindow.error'),
@@ -1789,6 +2368,13 @@ class MainWindow(QMainWindow):
     def _toggle_info_panel(self, checked: bool) -> None:
         """切换信息面板显示状态"""
         logger.debug(f"[MainWindow._toggle_info_panel] 切换信息面板: {checked}")
+        if checked and self._privacy_screen_active:
+            if hasattr(self, "toggle_info_panel_action"):
+                self.toggle_info_panel_action.blockSignals(True)
+                self.toggle_info_panel_action.setChecked(False)
+                self.toggle_info_panel_action.blockSignals(False)
+            self.info_dock.hide()
+            return
         if checked:
             self.info_dock.show()
             self.dicom_tag_panel.show()
@@ -1799,6 +2385,9 @@ class MainWindow(QMainWindow):
     def _on_toggle_strip_clicked(self, visible: bool) -> None:
         """处理切换条点击事件"""
         logger.debug(f"[MainWindow._on_toggle_strip_clicked] 切换条点击: {visible}")
+        if visible and self._privacy_screen_active:
+            self.info_dock.hide()
+            return
         self.info_dock.setVisible(visible)
         if visible:
             self._flush_pending_dicom_tags()
@@ -1815,6 +2404,9 @@ class MainWindow(QMainWindow):
             self.toggle_series_panel_action.blockSignals(False)
 
     def _on_info_dock_visibility_changed(self, visible: bool) -> None:
+        if visible and self._privacy_screen_active:
+            self.info_dock.hide()
+            return
         if hasattr(self, 'toggle_info_panel_action'):
             self.toggle_info_panel_action.blockSignals(True)
             self.toggle_info_panel_action.setChecked(visible)
@@ -1832,12 +2424,16 @@ class MainWindow(QMainWindow):
             and event.type() == QEvent.Type.Show
             and hasattr(self, 'info_dock')
             and self.info_dock.isHidden()
+            and not self._privacy_screen_active
         ):
             self.info_dock.show()
         return super().eventFilter(watched, event)
 
     def _queue_dicom_tag_update(self, dataset) -> None:
         """缓存最新标签；仅在面板显示时以最多约 10 fps 重建树。"""
+        if self._privacy_screen_active:
+            self._pending_dicom_dataset = None
+            return
         self._pending_dicom_dataset = dataset
         if getattr(self, '_closing', False):
             return
@@ -1848,6 +2444,9 @@ class MainWindow(QMainWindow):
             timer.start(100)
 
     def _flush_pending_dicom_tags(self) -> None:
+        if self._privacy_screen_active:
+            self.dicom_tag_panel.clear()
+            return
         if not self.info_dock.isVisible():
             return
         dataset = getattr(self, '_pending_dicom_dataset', None)
@@ -1856,6 +2455,376 @@ class MainWindow(QMainWindow):
         else:
             self.dicom_tag_panel.update_tags(dataset)
     
+    def _capture_layout_transaction(self) -> dict:
+        bindings = tuple(
+            (
+                view_id,
+                binding.series_id,
+            )
+            for view_id in self.series_manager.get_all_view_ids()
+            if (binding := self.series_manager.get_view_binding(view_id)) is not None
+            and binding.series_id
+        )
+        presentations = tuple(
+            (
+                view_id,
+                copy.deepcopy(frame.image_viewer.presentation_state),
+            )
+            for view_id, frame in self.multi_viewer_grid.get_all_view_frames().items()
+            if frame is not None
+            and getattr(frame, "image_viewer", None) is not None
+            and getattr(frame.image_viewer, "presentation_state", None) is not None
+        )
+        return {
+            "layout": copy.deepcopy(
+                self.multi_viewer_grid.current_layout_spec()
+            ),
+            "bindings": bindings,
+            "presentations": presentations,
+            "active_view_id": self.series_manager.get_active_view_id(),
+            "sync_mode": self.sync_manager.get_sync_mode(),
+            "sync_group": self.sync_manager.get_sync_group(),
+            "mpr_active": self._mpr_active,
+            "mpr_series_id": self._mpr_series_id,
+        }
+
+    def _restore_layout_transaction(self, snapshot: object) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        restore_mpr = bool(snapshot.get("mpr_active"))
+        if self._mpr_active:
+            self._leave_mpr_workspace()
+        try:
+            spec = LayoutSpec.from_legacy(snapshot.get("layout", (1, 1)))
+        except (TypeError, ValueError):
+            spec = LayoutSpec()
+        if not self._apply_layout_spec(spec):
+            logger.error("[MainWindow] Could not restore layout transaction")
+            return
+        current_views = set(self.series_manager.get_all_view_ids())
+        for view_id, series_id in snapshot.get("bindings", ()):
+            if (
+                view_id in current_views
+                and self.series_manager.get_series_info(series_id) is not None
+            ):
+                self.series_manager.bind_series_to_view(view_id, series_id)
+        active_view_id = snapshot.get("active_view_id")
+        if active_view_id in current_views:
+            self.series_manager.set_active_view(active_view_id)
+        for view_id, presentation in snapshot.get("presentations", ()):
+            frame = self.multi_viewer_grid.get_view_frame(view_id)
+            viewer = getattr(frame, "image_viewer", None) if frame else None
+            if viewer is not None:
+                viewer.set_presentation_state(copy.deepcopy(presentation))
+        sync_mode = snapshot.get("sync_mode")
+        sync_group = snapshot.get("sync_group")
+        if sync_mode is not None:
+            self.sync_manager.set_sync_mode(sync_mode)
+        if sync_group is not None:
+            self.sync_manager.set_sync_group(sync_group)
+        if restore_mpr and snapshot.get("mpr_series_id"):
+            target_series = snapshot["mpr_series_id"]
+            target_view = self.series_manager.get_active_view_id()
+            if target_view and self.series_manager.get_series_info(target_series):
+                self.series_manager.bind_series_to_view(target_view, target_series)
+                self._toggle_mpr_workspace()
+
+    def _apply_layout_spec(self, spec: LayoutSpec) -> bool:
+        if self._mpr_active:
+            self._leave_mpr_workspace()
+        self._set_layout(spec.to_legacy())
+        if spec.kind == "grid":
+            return self.series_manager.get_current_layout() == (
+                spec.rows,
+                spec.columns,
+            )
+        current = self.multi_viewer_grid.get_current_layout()
+        return (
+            isinstance(current, dict)
+            and current.get("type") == spec.special_type
+        )
+
+    def _apply_hanging_for_layout_service(
+        self, protocol: HangingProtocolId
+    ) -> int:
+        active_series_id = self._active_series_id()
+        infos = [
+            self.series_manager.get_series_info(series_id)
+            for series_id in self.series_manager.get_all_series_ids()
+        ]
+        plan = build_hanging_plan(
+            protocol,
+            [info for info in infos if info is not None],
+            active_series_id,
+        )
+        if not plan.series_ids:
+            return 0
+        assigned = 0
+        view_ids = self.series_manager.get_all_view_ids()
+        for view_id, series_id in zip(view_ids, plan.series_ids):
+            if self.series_manager.bind_series_to_view(view_id, series_id):
+                assigned += 1
+        if assigned and view_ids:
+            self.series_manager.set_active_view(view_ids[0])
+        return assigned
+
+    def _enter_mpr_for_layout_service(self) -> bool:
+        if not self._mpr_active:
+            self._toggle_mpr_workspace()
+        return self._mpr_active
+
+    def _current_layout_context(self) -> LayoutContext:
+        model = self._get_active_image_model()
+        if model is None or not model.has_image():
+            compatible = False
+            reason = "mpr.no_active_series"
+        else:
+            inspection = VolumeBuilder.inspect(
+                model,
+                memory_budget_bytes=self._mpr_memory_budget_bytes(),
+            )
+            compatible = inspection.status is GeometryStatus.COMPATIBLE
+            reason = "" if compatible else inspection.detail
+        infos = tuple(
+            info
+            for series_id in self.series_manager.get_all_series_ids()
+            if (info := self.series_manager.get_series_info(series_id)) is not None
+        )
+        return LayoutContext(
+            active_series_id=self._active_series_id(),
+            study_series=infos,
+            mpr_available=compatible,
+            mpr_reason=reason,
+        )
+
+    def _refresh_layout_presets(self) -> None:
+        presets = tuple(builtin_layout_presets()) + tuple(
+            self._user_layout_store.load()
+        )
+        self._layout_presets_by_id = {
+            preset.preset_id: preset for preset in presets
+        }
+
+    def _apply_layout_preset_by_id(self, preset_id: str) -> bool:
+        self._refresh_layout_presets()
+        preset = self._layout_presets_by_id.get(str(preset_id))
+        if preset is None:
+            self.status_bar.showMessage(
+                _v26_text(
+                    "layoutgallery.preset_missing",
+                    "This saved layout is no longer available.",
+                ),
+                4000,
+            )
+            return False
+        result = self._layout_application_service.apply(
+            preset,
+            self._current_layout_context(),
+        )
+        if not result.success:
+            warning = result.error
+            if result.warning_keys:
+                key = result.warning_keys[0]
+                warning = _v26_text(
+                    key,
+                    key.replace("_", " ").replace(".", " ").capitalize(),
+                )
+            self.status_bar.showMessage(
+                _v26_text(
+                    "layoutgallery.apply_failed",
+                    "Could not apply this layout: {detail}",
+                    detail=warning or "unknown error",
+                ),
+                6000,
+            )
+            return False
+        self.status_bar.showMessage(
+            _v26_text(
+                "layoutgallery.applied",
+                "Layout applied ({count} series assigned).",
+                count=result.assigned_series,
+            ),
+            3000,
+        )
+        if not preset.builtin:
+            self._user_layout_store.mark_used(preset.preset_id)
+            self._refresh_layout_presets()
+        return True
+
+    def _save_current_layout_preset(self) -> Optional[LayoutPreset]:
+        title, accepted = QInputDialog.getText(
+            self,
+            _v26_text("layoutgallery.save_current", "Save current layout"),
+            _v26_text("layoutgallery.preset_name", "Layout name:"),
+        )
+        if not accepted:
+            return None
+        try:
+            layout = LayoutSpec.from_legacy(
+                self.multi_viewer_grid.get_current_layout()
+            )
+            preset = self._user_layout_store.save(title, layout)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                _v26_text("layoutgallery.save_current", "Save current layout"),
+                str(error),
+            )
+            return None
+        self._refresh_layout_presets()
+        self.status_bar.showMessage(
+            _v26_text(
+                "layoutgallery.saved",
+                "Saved layout “{name}”.",
+                name=preset.title_key,
+            ),
+            3000,
+        )
+        return preset
+
+    def _populate_user_layout_menu(self) -> None:
+        menu = getattr(self, "user_layout_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        presets = self._user_layout_store.load()
+        if not presets:
+            empty_action = menu.addAction(
+                _v26_text("layoutgallery.no_saved_layouts", "No saved layouts")
+            )
+            empty_action.setEnabled(False)
+            return
+
+        def add_apply_group(title: str, items) -> None:
+            if not items:
+                return
+            group = menu.addMenu(title)
+            for item in items:
+                action = group.addAction(item.title_key)
+                action.triggered.connect(
+                    lambda checked=False, current=item.preset_id:
+                    self._apply_layout_preset_by_id(current)
+                )
+
+        add_apply_group(
+            _v26_text("layoutgallery.favorites", "Favorites"),
+            self._user_layout_store.favorites(),
+        )
+        add_apply_group(
+            _v26_text("layoutgallery.recent", "Recently used"),
+            self._user_layout_store.recent(),
+        )
+        add_apply_group(
+            _v26_text("layoutgallery.all_saved", "All saved layouts"),
+            presets,
+        )
+        menu.addSeparator()
+        favorites_menu = menu.addMenu(
+            _v26_text("layoutgallery.manage_favorites", "Manage favorites")
+        )
+        for preset in presets:
+            action = favorites_menu.addAction(preset.title_key)
+            action.setCheckable(True)
+            action.setChecked(preset.favorite)
+            action.toggled.connect(
+                lambda checked, current=preset.preset_id:
+                self._toggle_layout_favorite(current, checked)
+            )
+
+    def _toggle_layout_favorite(
+        self, preset_id: str, favorite: bool
+    ) -> None:
+        updated = self._user_layout_store.toggle_favorite(
+            preset_id, favorite
+        )
+        if updated is None:
+            return
+        self._refresh_layout_presets()
+        button = getattr(self, "layout_selector_button", None)
+        dropdown = getattr(button, "_dropdown", None)
+        if dropdown is not None:
+            dropdown.set_user_presets(self._user_layout_store.load())
+
+    def _on_compare_requested(self, series_ids) -> None:
+        ordered = [
+            str(series_id)
+            for series_id in tuple(series_ids or ())
+            if self.series_manager.get_series_info(str(series_id)) is not None
+        ]
+        # Preserve selection order while removing accidental duplicates.
+        ordered = list(dict.fromkeys(ordered))
+        if not ordered:
+            return
+        if len(ordered) > 12:
+            ordered = ordered[:12]
+            self.status_bar.showMessage(
+                _v26_text(
+                    "seriespanel.compare_limit",
+                    "Comparison is limited to 12 series.",
+                ),
+                4000,
+            )
+        count = len(ordered)
+        if count == 1:
+            rows, columns = 1, 1
+        elif count == 2:
+            rows, columns = 1, 2
+        elif count == 3:
+            rows, columns = 1, 3
+        elif count == 4:
+            rows, columns = 2, 2
+        elif count <= 6:
+            rows, columns = 2, 3
+        elif count <= 8:
+            rows, columns = 2, 4
+        elif count == 9:
+            rows, columns = 3, 3
+        else:
+            rows, columns = 3, 4
+
+        snapshot = self._capture_layout_transaction()
+        preset = LayoutPreset(
+            "compare_selection",
+            "",
+            "",
+            "compare.svg",
+            LayoutSpec(rows=rows, columns=columns),
+            builtin=False,
+        )
+        result = self._layout_application_service.apply(
+            preset,
+            self._current_layout_context(),
+        )
+        if not result.success:
+            return
+        view_ids = self.series_manager.get_all_view_ids()
+        assigned = 0
+        for view_id, series_id in zip(view_ids, ordered):
+            if self.series_manager.bind_series_to_view(view_id, series_id):
+                assigned += 1
+        if assigned != len(ordered):
+            self._restore_layout_transaction(snapshot)
+            self.status_bar.showMessage(
+                _v26_text(
+                    "seriespanel.compare_failed",
+                    "Could not prepare the comparison layout.",
+                ),
+                5000,
+            )
+            return
+        if view_ids:
+            self.series_manager.set_active_view(view_ids[0])
+        self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        self._schedule_workspace_state_save()
+        self.status_bar.showMessage(
+            _v26_text(
+                "seriespanel.compare_ready",
+                "Comparing {count} series.",
+                count=assigned,
+            ),
+            3000,
+        )
+
     def _set_layout(self, layout_config: tuple) -> None:
         """设置视图布局"""
         logger.debug(f"[MainWindow._set_layout] 设置布局: {layout_config}")
@@ -1969,24 +2938,25 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _workspace_study_key(study_instance_uid: str) -> Optional[str]:
-        uid = str(study_instance_uid or "").strip()
-        if not uid:
-            return None
-        return hashlib.sha256(uid.encode("utf-8", "replace")).hexdigest()[:24]
+        return workspace_study_key_for_uid(study_instance_uid)
 
     def _schedule_workspace_state_save(self) -> None:
-        if not self._restoring_workspace and not self._closing:
+        if (
+            not self._restoring_workspace
+            and not self._closing
+            and self.isVisible()
+        ):
             self._workspace_state_timer.start(500)
 
-    def _save_study_workspace_state(self) -> None:
+    def _save_study_workspace_state(self, *, force: bool = False) -> None:
+        if self._restoring_workspace or (self._closing and not force):
+            return
         series_id = self._active_series_id()
         info = self.series_manager.get_series_info(series_id) if series_id else None
-        study_key = self._workspace_study_key(
-            info.study_instance_uid if info is not None else ""
-        )
-        if not study_key:
+        study_uid = info.study_instance_uid if info is not None else ""
+        if not str(study_uid or "").strip():
             return
-        bindings = {}
+        bindings: Dict[str, str] = {}
         presentations = {}
         for view_id in self.series_manager.get_all_view_ids():
             binding = self.series_manager.get_view_binding(view_id)
@@ -2001,129 +2971,164 @@ class MainWindow(QMainWindow):
             viewer = getattr(frame, "image_viewer", None) if frame else None
             state = getattr(viewer, "presentation_state", None)
             if state is not None:
-                presentations[view_id] = {
-                    "series_uid": uid,
-                    "slice": int(state.slice_index),
-                    "ww": float(state.window_width),
-                    "wl": float(state.window_level),
-                    "zoom": float(state.zoom),
-                    "pan": [float(state.pan_center.x()), float(state.pan_center.y())],
-                    "invert": bool(state.inverted),
-                    "interpolation": state.interpolation.value,
-                    "fit": bool(state.fit_mode),
-                }
-        states = self.settings_manager.get_setting("study_workspace.states", {})
-        if not isinstance(states, dict):
-            states = {}
-        states[study_key] = {
-            "updated": time.time(),
-            "layout": list(self.series_manager.get_current_layout()),
-            "bindings": bindings,
-            "presentations": presentations,
-            "active_view": self.series_manager.get_active_view_id() or "",
-            "sync_mode": int(self.sync_manager.get_sync_mode().value),
-        }
-        if len(states) > 20:
-            keep = sorted(
-                states,
-                key=lambda key: float(states[key].get("updated", 0.0)),
-                reverse=True,
-            )[:20]
-            states = {key: states[key] for key in keep}
-        self.settings_manager.set_setting("study_workspace.states", states)
+                presentations[view_id] = state
+        try:
+            layout = self.multi_viewer_grid.current_layout_spec()
+            splitter_ratios = (
+                {"workspace": tuple(layout.ratios)}
+                if layout.kind == "special" and layout.ratios
+                else {}
+            )
+            mode = self.sync_manager.get_sync_mode()
+            from medimager.core.sync_manager import SyncMode
+
+            position_mode = (
+                "auto_lps" if SyncMode.SLICE in mode else "none"
+            )
+            snapshot = StudyWorkspaceState.capture(
+                study_instance_uid=study_uid,
+                layout=layout,
+                splitter_ratios=splitter_ratios,
+                bindings=bindings,
+                presentations=presentations,
+                active_viewport=self.series_manager.get_active_view_id() or "",
+                sync=WorkspaceSyncState.from_runtime(
+                    mode,
+                    self.sync_manager.get_sync_group(),
+                    position_mode,
+                ),
+                mpr=self._mpr_snapshot_for_study(study_uid),
+            )
+            result = self._workspace_store.save_state(snapshot)
+            if not result.success and result.reason != "newer_schema":
+                logger.warning(
+                    "[MainWindow] Workspace snapshot was not persisted (%s)",
+                    result.reason or "unknown",
+                )
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError) as error:
+            logger.warning(
+                "[MainWindow] Workspace snapshot capture failed (%s)",
+                type(error).__name__,
+            )
 
     def _restore_study_workspace_for_series(self, series_id: str) -> bool:
         info = self.series_manager.get_series_info(series_id)
-        study_key = self._workspace_study_key(
-            info.study_instance_uid if info is not None else ""
-        )
+        study_uid = info.study_instance_uid if info is not None else ""
+        study_key = self._workspace_study_key(study_uid)
         if not study_key or study_key in self._restored_study_keys:
             return False
-        states = self.settings_manager.get_setting("study_workspace.states", {})
-        state = states.get(study_key) if isinstance(states, dict) else None
-        if not isinstance(state, dict):
+        state = self._workspace_store.get_for_study_uid(study_uid)
+        if state is None:
             self._restored_study_keys.add(study_key)
             return False
-        uid_to_series = {
-            candidate.series_instance_uid: candidate.series_id
+        candidates = tuple(
+            candidate
             for candidate in (
                 self.series_manager.get_series_info(sid)
                 for sid in self.series_manager.get_all_series_ids()
             )
             if candidate is not None and candidate.series_instance_uid
-        }
-        loaded_uids = {
-            candidate.series_instance_uid
-            for candidate in (
-                self.series_manager.get_series_info(sid)
-                for sid in self.series_manager.get_all_series_ids()
-            )
-            if candidate is not None
-            and candidate.series_instance_uid
-            and candidate.is_loaded
-        }
-        required_uids = set(state.get("bindings", {}).values())
-        if not required_uids.issubset(loaded_uids):
+        )
+        loaded_index = build_series_key_index(
+            {
+                candidate.series_id: candidate.series_instance_uid
+                for candidate in candidates
+                if candidate.is_loaded
+            }
+        )
+        if not state.required_series_keys.issubset(loaded_index):
             return False
-        self._restored_study_keys.add(study_key)
+        resolved_bindings = state.resolve_bindings(loaded_index)
+        if len(resolved_bindings) != len(state.bindings):
+            return False
+        mpr_series_id = state.resolve_mpr_series(loaded_index)
+        if state.mpr is not None and mpr_series_id is None:
+            return False
+        transaction = self._capture_layout_transaction()
         try:
             self._restoring_workspace = True
-            layout = state.get("layout", [1, 1])
+            layout = state.layout
+            ratios = state.splitter_ratios.get("workspace")
+            expected_ratio_counts = {
+                "vertical_split": 2,
+                "horizontal_split": 2,
+                "triple_column_right_split": 3,
+                "triple_column_middle_right_split": 4,
+            }
             if (
-                isinstance(layout, (list, tuple))
-                and len(layout) == 2
-                and all(isinstance(value, int) for value in layout)
+                layout.kind == "special"
+                and ratios
+                and len(ratios)
+                == expected_ratio_counts.get(layout.special_type, -1)
             ):
-                self._set_layout((layout[0], layout[1]))
-            for view_id, series_uid in state.get("bindings", {}).items():
-                target_series = uid_to_series.get(series_uid)
-                if target_series and self.series_manager.get_view_binding(view_id):
-                    self.series_manager.bind_series_to_view(view_id, target_series)
-            active_view = str(state.get("active_view", ""))
-            if self.series_manager.get_view_binding(active_view):
-                self.series_manager.set_active_view(active_view)
-            from medimager.core.sync_manager import SyncMode
-            try:
-                self.sync_manager.set_sync_mode(SyncMode(int(state.get("sync_mode", 0))))
-            except (TypeError, ValueError):
-                pass
-            self._apply_restored_presentations(state.get("presentations", {}), uid_to_series)
+                layout = replace(layout, ratios=tuple(ratios))
+            if not self._apply_layout_spec(layout):
+                raise RuntimeError("workspace layout could not be applied")
+            current_views = set(self.series_manager.get_all_view_ids())
+            for view_id, target_series in resolved_bindings.items():
+                if view_id not in current_views or not self.series_manager.bind_series_to_view(
+                    view_id, target_series
+                ):
+                    raise RuntimeError("workspace binding could not be applied")
+            if state.active_viewport in current_views:
+                self.series_manager.set_active_view(state.active_viewport)
+            from medimager.core.sync_manager import SyncGroup, SyncMode
+
+            self.sync_manager.set_sync_mode(SyncMode(state.sync.mode))
+            group = next(
+                (
+                    candidate
+                    for candidate in SyncGroup
+                    if candidate.value == state.sync.group
+                ),
+                SyncGroup.SAME_STUDY,
+            )
+            self.sync_manager.set_sync_group(group)
+            self._apply_restored_presentations(
+                state,
+                resolved_bindings,
+            )
+            if state.mpr is not None and mpr_series_id is not None:
+                self._pending_mpr_workspace_snapshot = (
+                    mpr_series_id,
+                    state.mpr,
+                )
+            self._restored_study_keys.add(study_key)
+        except (RuntimeError, TypeError, ValueError, OverflowError) as error:
+            logger.warning(
+                "[MainWindow] Workspace restore rolled back (%s)",
+                type(error).__name__,
+            )
+            self._restore_layout_transaction(transaction)
+            return False
         finally:
             self._restoring_workspace = False
         self.status_bar.showMessage(t("mainwindow.study_workspace_restored"), 2500)
+        if mpr_series_id is not None:
+            self._schedule_auto_mpr_workspace_restore(study_key, mpr_series_id)
         return True
 
-    def _apply_restored_presentations(self, saved: Dict, uid_to_series: Dict[str, str]) -> None:
-        if not isinstance(saved, dict):
-            return
-        for view_id, values in saved.items():
-            if not isinstance(values, dict):
-                continue
+    def _apply_restored_presentations(
+        self,
+        workspace: StudyWorkspaceState,
+        resolved_bindings: Dict[str, str],
+    ) -> None:
+        for view_id, snapshot in workspace.presentations.items():
             binding = self.series_manager.get_view_binding(view_id)
-            expected = uid_to_series.get(str(values.get("series_uid", "")))
+            expected = resolved_bindings.get(view_id)
             if not binding or binding.series_id != expected:
                 continue
             frame = self.multi_viewer_grid.get_view_frame(view_id)
             viewer = getattr(frame, "image_viewer", None) if frame else None
-            state = getattr(viewer, "presentation_state", None)
-            if state is None:
+            if viewer is None:
                 continue
-            state.slice_index = int(values.get("slice", state.slice_index))
-            state.window_width = float(values.get("ww", state.window_width))
-            state.window_level = float(values.get("wl", state.window_level))
-            state.zoom = float(values.get("zoom", state.zoom))
-            pan = values.get("pan", [state.pan_center.x(), state.pan_center.y()])
-            if isinstance(pan, (list, tuple)) and len(pan) == 2:
-                state.pan_center.setX(float(pan[0]))
-                state.pan_center.setY(float(pan[1]))
-            state.inverted = bool(values.get("invert", state.inverted))
-            state.interpolation = InterpolationMode.coerce(
-                values.get("interpolation", state.interpolation)
-            )
-            state.fit_mode = bool(values.get("fit", state.fit_mode))
             model = self.series_manager.get_series_model(expected)
-            state.clamp(model.get_slice_count() if model else None)
-            viewer.set_presentation_state(state)
+            viewer.set_presentation_state(
+                snapshot.to_view_state(
+                    series_id=expected,
+                    slice_count=model.get_slice_count() if model else None,
+                )
+            )
 
     def _clear_all_bindings(self) -> None:
         """清除所有绑定"""
@@ -2263,6 +3268,889 @@ class MainWindow(QMainWindow):
         
         logger.debug("[MainWindow._update_sync_button_states] 同步按钮状态更新完成")
     
+    def _open_local_folder(self) -> None:
+        """Start-center entry point; keep the legacy dialog method reusable."""
+        self._open_dicom_folder()
+
+    def _open_local_multiple_folders(self) -> None:
+        self._open_multiple_dicom_folders()
+
+    def _open_dicomdir(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            _v26_text("startcenter.open_dicomdir", "Open DICOMDIR media"),
+            QDir.homePath(),
+            _v26_text(
+                "mediabrowser.dicomdir_filter",
+                "DICOMDIR index (DICOMDIR);;All files (*)",
+            ),
+        )
+        if not path:
+            return
+        self._submit_local_index(
+            LocalOpenRequest.create(
+                LocalSourceKind.DICOMDIR,
+                path,
+                origin=LocalOpenOrigin.DIALOG,
+            ),
+            show_browser=True,
+        )
+
+    def _submit_local_index(
+        self,
+        request: LocalOpenRequest,
+        *,
+        show_browser: bool = False,
+        demo_protocol: Optional[HangingProtocolId] = None,
+        aggregate_batch_id: Optional[str] = None,
+    ) -> bool:
+        """Index a local source off the GUI thread.
+
+        The result is immutable and is consumed on the GUI thread before the
+        existing series decoder is invoked.
+        """
+        for active_request_id, active_request in self._local_index_requests.items():
+            if (
+                active_request.kind is request.kind
+                and active_request.source_path == request.source_path
+                and active_request_id in self._local_index_futures
+            ):
+                self.status_bar.showMessage(
+                    _v26_text(
+                        "startcenter.scan_in_progress",
+                        "This source is already being inspected.",
+                    ),
+                    2500,
+                )
+                return False
+
+        request_id = request.request_id
+        self._local_index_requests[request_id] = request
+        self._active_local_index_request_id = request_id
+        if aggregate_batch_id:
+            self._local_index_batch_by_request[request_id] = aggregate_batch_id
+        if show_browser:
+            self._local_index_browser_requests.add(request_id)
+        effective_protocol = demo_protocol
+        if effective_protocol is None and request.kind is not LocalSourceKind.IMAGE:
+            effective_protocol = self._configured_startup_hanging_protocol()
+        if effective_protocol is not None:
+            self._local_request_demo_protocols[request_id] = effective_protocol
+
+        try:
+            future = self.local_study_controller.submit(
+                request,
+                recursive=self._bool_setting("dicom.recursive_scan", True),
+                include_extensionless=self._bool_setting(
+                    "dicom.include_extensionless", True
+                ),
+                strict_metadata=self._bool_setting(
+                    "dicom.strict_metadata", False
+                ),
+            )
+        except Exception as error:
+            self._local_index_requests.pop(request_id, None)
+            self._local_index_browser_requests.discard(request_id)
+            self._local_request_demo_protocols.pop(request_id, None)
+            self._local_index_batch_by_request.pop(request_id, None)
+            self._active_local_index_request_id = None
+            message = _v26_text(
+                "startcenter.scan_failed",
+                "Unable to inspect this source: {detail}",
+                detail=str(error),
+            )
+            if show_browser:
+                self.media_browser.set_error(message)
+            else:
+                self.start_center.set_error(message)
+            self.status_bar.showMessage(message, 6000)
+            return False
+        self._local_index_futures[request_id] = future
+
+        def _on_done(done_future, current=request_id):
+            try:
+                self._local_index_done.emit(current, done_future)
+            except RuntimeError:
+                return
+
+        future.add_done_callback(_on_done)
+        # A completed Future invokes callbacks synchronously when registered.
+        # Do not overwrite the result/error page with a stale busy state.
+        if request_id not in self._local_index_futures:
+            return True
+        if aggregate_batch_id:
+            return True
+        source_name = (
+            request.kind.value
+            if self._privacy_screen_active
+            else (Path(request.source_path).name or request.kind.value)
+        )
+        message = _v26_text(
+            "startcenter.scanning_source",
+            "Inspecting {name}…",
+            name=source_name,
+        )
+        if show_browser:
+            self.media_browser.clear_index()
+            self.media_browser.set_busy(message)
+            self.workspace_stack.setCurrentWidget(self.media_browser)
+        else:
+            self.start_center.set_busy(message)
+            if self.series_manager.get_series_count() == 0:
+                self.workspace_stack.setCurrentWidget(self.start_center)
+        self.status_bar.showMessage(message)
+        return True
+
+    def _submit_local_indexes(self, requests) -> bool:
+        """Index multiple folders as one selectable, all-sources result."""
+        unique = []
+        seen = set()
+        for request in tuple(requests or ()):
+            identity = (request.kind, request.source_path)
+            if identity not in seen:
+                unique.append(request)
+                seen.add(identity)
+        if not unique:
+            return False
+        if len(unique) == 1:
+            return self._submit_local_index(unique[0])
+
+        batch_id = uuid.uuid4().hex
+        batch = {
+            "pending": {request.request_id for request in unique},
+            "results": [],
+            "failed": 0,
+            "total": len(unique),
+            "append_existing": self.series_manager.get_series_count() > 0,
+        }
+        self._local_index_batches[batch_id] = batch
+        for request in unique:
+            self._local_index_batch_by_request[request.request_id] = batch_id
+
+        message = _v26_text(
+            "startcenter.scanning_multiple_sources",
+            "Inspecting {count} folders…",
+            count=len(unique),
+        )
+        if not batch["append_existing"]:
+            self.media_browser.clear_index()
+            self.media_browser.set_busy(message)
+            self.workspace_stack.setCurrentWidget(self.media_browser)
+        self.status_bar.showMessage(message)
+
+        submitted = 0
+        for request in unique:
+            if self._submit_local_index(
+                request, aggregate_batch_id=batch_id
+            ):
+                submitted += 1
+                continue
+            self._local_index_batch_by_request.pop(request.request_id, None)
+            batch["pending"].discard(request.request_id)
+            batch["failed"] = int(batch["failed"]) + 1
+        if not batch["pending"]:
+            self._finish_local_index_batch(batch_id, "", None)
+        return submitted > 0
+
+    @staticmethod
+    def _local_series_context_key(
+        study_key: str, source
+    ) -> Tuple[str, str]:
+        identity = str(source.series_instance_uid or "")
+        if not identity:
+            identity = hashlib.sha256(
+                "\0".join(source.file_paths).encode("utf-8", "replace")
+            ).hexdigest()
+        return str(study_key), identity
+
+    def _merge_local_index_results(
+        self, results
+    ) -> Tuple[LocalIndexResult, Dict[Tuple[str, str], Tuple[LocalOpenRequest, LocalStudyCandidate]]]:
+        ordered_results = tuple(results)
+        first_request = ordered_results[0].request
+        aggregate_request = LocalOpenRequest.create(
+            LocalSourceKind.FOLDER,
+            first_request.source_path,
+            origin=LocalOpenOrigin.DIALOG,
+        )
+        studies_by_key: Dict[str, LocalStudyCandidate] = {}
+        context: Dict[
+            Tuple[str, str], Tuple[LocalOpenRequest, LocalStudyCandidate]
+        ] = {}
+        for result in ordered_results:
+            for study in result.studies:
+                existing = studies_by_key.get(study.study_key)
+                merged_series = list(existing.series if existing else ())
+                known = {
+                    self._local_series_context_key(study.study_key, source)
+                    for source in merged_series
+                }
+                for source in study.series:
+                    key = self._local_series_context_key(study.study_key, source)
+                    context.setdefault(key, (result.request, study))
+                    if key not in known:
+                        merged_series.append(source)
+                        known.add(key)
+                studies_by_key[study.study_key] = replace(
+                    existing or study,
+                    series=tuple(merged_series),
+                )
+        return (
+            LocalIndexResult(
+                request=aggregate_request,
+                studies=tuple(studies_by_key.values()),
+                issues=tuple(
+                    issue for result in ordered_results for issue in result.issues
+                ),
+                candidate_count=sum(
+                    result.candidate_count for result in ordered_results
+                ),
+                skipped_count=sum(result.skipped_count for result in ordered_results),
+            ),
+            context,
+        )
+
+    def _select_all_supported_media_studies(self) -> None:
+        browser = self.media_browser
+        browser._updating_checks = True
+        try:
+            for patient_index in range(browser.tree.topLevelItemCount()):
+                patient = browser.tree.topLevelItem(patient_index)
+                for study_index in range(patient.childCount()):
+                    study = patient.child(study_index)
+                    for series_index in range(study.childCount()):
+                        series = study.child(series_index)
+                        if bool(series.data(0, browser.VIEWABLE_ROLE)):
+                            series.setCheckState(0, Qt.CheckState.Checked)
+                    browser._refresh_parent_check_state(study)
+                browser._refresh_parent_check_state(patient)
+        finally:
+            browser._updating_checks = False
+        browser._update_summary()
+
+    def _finish_local_index_batch(
+        self,
+        batch_id: str,
+        request_id: str,
+        result: Optional[LocalIndexResult],
+    ) -> None:
+        batch = self._local_index_batches.get(batch_id)
+        if batch is None:
+            return
+        if request_id:
+            batch["pending"].discard(request_id)
+        if result is not None:
+            batch["results"].append(result)
+            if not result.is_usable:
+                batch["failed"] = int(batch["failed"]) + 1
+        else:
+            batch["failed"] = int(batch["failed"]) + 1
+        pending = batch["pending"]
+        total = int(batch["total"])
+        if pending:
+            self.media_browser.set_progress(total - len(pending), total)
+            return
+
+        self._local_index_batches.pop(batch_id, None)
+        results = tuple(batch["results"])
+        usable = tuple(result for result in results if result.is_usable)
+        if not usable:
+            message = _v26_text(
+                "startcenter.no_loadable_studies",
+                "No loadable studies were found in the selected folders.",
+            )
+            if batch["append_existing"]:
+                self.status_bar.showMessage(message, 6000)
+            else:
+                self.media_browser.set_error(
+                    message,
+                    allow_folder_scan=False,
+                )
+            return
+        aggregate, context = self._merge_local_index_results(results)
+        self._aggregate_local_context[aggregate.request.request_id] = context
+        if batch["append_existing"]:
+            selection = LocalSelection(
+                study_keys=tuple(study.study_key for study in aggregate.studies)
+            )
+            self._queue_local_selection(aggregate, selection)
+            self._aggregate_local_context.pop(aggregate.request.request_id, None)
+            return
+        self._media_index_result = aggregate
+        self.media_browser.set_index(aggregate)
+        self._select_all_supported_media_studies()
+        self.media_browser.set_idle()
+        self.workspace_stack.setCurrentWidget(self.media_browser)
+
+    @staticmethod
+    def _local_index_error(result: LocalIndexResult) -> str:
+        details = [
+            str(issue.detail).strip()
+            for issue in result.issues
+            if str(issue.detail).strip()
+        ]
+        return details[0] if details else _v26_text(
+            "startcenter.no_loadable_studies",
+            "No loadable studies were found in this source.",
+        )
+
+    @staticmethod
+    def _localized_local_index_result(
+        result: LocalIndexResult,
+    ) -> LocalIndexResult:
+        localized_issues = []
+        for issue in result.issues:
+            key = f"localsource.issue.{issue.code.value}"
+            fallback = (
+                str(issue.detail).strip()
+                or issue.code.value.replace("_", " ").capitalize() + "."
+            )
+            localized_issues.append(
+                replace(issue, detail=_v26_text(key, fallback))
+            )
+        return replace(result, issues=tuple(localized_issues))
+
+    def _clear_demo_workspace_states(self, result: LocalIndexResult) -> None:
+        """Reset only deterministic synthetic studies before one-click demos."""
+        if result.request.origin not in {
+            LocalOpenOrigin.DEMO,
+            LocalOpenOrigin.SAMPLE,
+        }:
+            return
+        demo_keys = {study.study_key for study in result.studies}
+        pending = self._pending_mpr_workspace_snapshot
+        if pending is not None:
+            info = self.series_manager.get_series_info(pending[0])
+            pending_study_key = self._workspace_study_key(
+                info.study_instance_uid if info is not None else ""
+            )
+            if pending_study_key in demo_keys:
+                self._pending_mpr_workspace_snapshot = None
+        for study in result.studies:
+            self._auto_mpr_restore_attempted_studies.discard(study.study_key)
+            write = self._workspace_store.remove_by_key(study.study_key)
+            if write.success or write.reason == "newer_schema":
+                self._restored_study_keys.discard(study.study_key)
+            else:
+                # A transient settings write failure must not make this
+                # one-click demo inherit an old, non-deterministic workspace.
+                self._restored_study_keys.add(study.study_key)
+
+    def _on_local_index_finished(self, request_id: str, future) -> None:
+        show_browser = request_id in self._local_index_browser_requests
+        batch_id = self._local_index_batch_by_request.pop(request_id, None)
+        request = self._local_index_requests.pop(request_id, None)
+        self._local_index_futures.pop(request_id, None)
+        self._local_index_browser_requests.discard(request_id)
+        if self._active_local_index_request_id == request_id:
+            self._active_local_index_request_id = next(
+                iter(self._local_index_futures), None
+            )
+        try:
+            if request_id in self._cancelled_local_indexes:
+                self._cancelled_local_indexes.discard(request_id)
+                try:
+                    future.result()
+                except Exception:
+                    pass
+                if show_browser:
+                    self._leave_media_browser()
+                if batch_id:
+                    self._finish_local_index_batch(batch_id, request_id, None)
+                self.start_center.set_idle()
+                return
+            if self._closing:
+                return
+            result = future.result()
+            if not isinstance(result, LocalIndexResult):
+                raise TypeError("local index returned an invalid result")
+            result = self._localized_local_index_result(result)
+            self._clear_demo_workspace_states(result)
+            if result.cancelled:
+                if show_browser:
+                    self._leave_media_browser()
+                if batch_id:
+                    self._finish_local_index_batch(batch_id, request_id, result)
+                self.start_center.set_idle()
+                return
+            if batch_id:
+                self._finish_local_index_batch(batch_id, request_id, result)
+                return
+            if show_browser:
+                self._media_index_result = result
+                self.media_browser.set_index(result)
+                if result.is_usable:
+                    self.media_browser.set_idle()
+                    self.workspace_stack.setCurrentWidget(self.media_browser)
+                else:
+                    self.media_browser.set_error(
+                        self._local_index_error(result),
+                        allow_folder_scan=bool(result.media_root),
+                    )
+                return
+            if not result.is_usable:
+                message = self._local_index_error(result)
+                self.start_center.set_error(message)
+                if self.series_manager.get_series_count() == 0:
+                    self.workspace_stack.setCurrentWidget(self.start_center)
+                else:
+                    self.status_bar.showMessage(message, 6000)
+                return
+            if (
+                request is not None
+                and request.kind is LocalSourceKind.FOLDER
+                and len(result.studies) > 1
+                and self.series_manager.get_series_count() == 0
+            ):
+                self._media_index_result = result
+                self.media_browser.set_index(result)
+                self.media_browser.set_idle()
+                self.workspace_stack.setCurrentWidget(self.media_browser)
+                return
+            selection = LocalSelection(
+                study_keys=tuple(study.study_key for study in result.studies)
+            )
+            self._queue_local_selection(result, selection)
+        except Exception as error:
+            logger.error(
+                "[MainWindow] Local source indexing failed (%s)",
+                type(error).__name__,
+            )
+            if batch_id:
+                self._finish_local_index_batch(batch_id, request_id, None)
+                return
+            message = _v26_text(
+                "startcenter.scan_failed",
+                "Unable to inspect this source: {detail}",
+                detail=str(error),
+            )
+            if show_browser:
+                self.media_browser.set_error(message)
+            else:
+                self.start_center.set_error(message)
+                if self.series_manager.get_series_count() == 0:
+                    self.workspace_stack.setCurrentWidget(self.start_center)
+            self._local_request_demo_protocols.pop(request_id, None)
+        finally:
+            if request is None:
+                self._local_request_demo_protocols.pop(request_id, None)
+            self._update_ui_state()
+            self._resume_close_after_async()
+
+    def _queue_local_selection(
+        self,
+        result: LocalIndexResult,
+        selection: LocalSelection,
+    ) -> int:
+        sources = result.select(selection)
+        if not sources:
+            self.status_bar.showMessage(
+                _v26_text(
+                    "mediabrowser.no_selection",
+                    "Select at least one series to open.",
+                ),
+                3000,
+            )
+            return 0
+
+        request = result.request
+        aggregate_context = self._aggregate_local_context.get(
+            request.request_id, {}
+        )
+        existing_uids = {
+            info.series_instance_uid
+            for series_id in self.series_manager.get_all_series_ids()
+            if (info := self.series_manager.get_series_info(series_id)) is not None
+            and info.series_instance_uid
+        }
+        added = 0
+        self._prepare_load_batch()
+        self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        self.start_center.set_idle()
+
+        for source in sources:
+            uid = source.series_instance_uid
+            if uid and uid in existing_uids:
+                continue
+            study = next(
+                (
+                    candidate
+                    for candidate in result.studies
+                    if source in candidate.series
+                ),
+                None,
+            )
+            if study is None:
+                continue
+            context_key = self._local_series_context_key(study.study_key, source)
+            source_request, source_study = aggregate_context.get(
+                context_key,
+                (request, study),
+            )
+            series_info = source.to_series_info(str(uuid.uuid4()))
+            series_id = self.series_manager.add_series(series_info)
+            self._local_series_context[series_id] = (
+                source_request,
+                source_study,
+            )
+            pending = self._local_request_pending.setdefault(
+                source_request.request_id, set()
+            )
+            self._local_request_successes.setdefault(
+                source_request.request_id, 0
+            )
+            pending.add(series_id)
+            if source_request.kind is LocalSourceKind.IMAGE:
+                self._load_single_image_in_background(
+                    series_id,
+                    str(source.file_paths[0]),
+                    series_info,
+                )
+            else:
+                self._load_series_in_background(
+                    series_id, list(source.file_paths), series_info
+                )
+            if uid:
+                existing_uids.add(uid)
+            added += 1
+
+        if added == 0:
+            self._local_request_pending.pop(request.request_id, None)
+            protocol = self._local_request_demo_protocols.pop(
+                request.request_id, None
+            )
+            if protocol is not None and self.series_manager.get_series_count():
+                QTimer.singleShot(
+                    0, lambda value=protocol: self._apply_hanging_protocol(value)
+                )
+            self.status_bar.showMessage(
+                _v26_text(
+                    "startcenter.already_open",
+                    "The selected series are already open.",
+                ),
+                3000,
+            )
+        else:
+            self.status_bar.showMessage(
+                _v26_text(
+                    "startcenter.loading_series",
+                    "Loading {count} series…",
+                    count=added,
+                )
+            )
+        self.media_browser.set_idle()
+        return added
+
+    def _complete_local_series(self, series_id: str, success: bool) -> None:
+        context = self._local_series_context.pop(series_id, None)
+        if context is None:
+            return
+        request, study = context
+        request_id = request.request_id
+        if success:
+            self._local_request_successes[request_id] = (
+                self._local_request_successes.get(request_id, 0) + 1
+            )
+            record_key = (request_id, study.study_key)
+            if (
+                request.kind is not LocalSourceKind.IMAGE
+                and record_key not in self._recent_recorded_studies
+            ):
+                self.recent_study_store.record_success(
+                    request,
+                    study,
+                    successful_series=1,
+                )
+                self._recent_recorded_studies.add(record_key)
+        pending = self._local_request_pending.get(request_id)
+        if pending is None:
+            return
+        pending.discard(series_id)
+        if pending:
+            return
+        self._local_request_pending.pop(request_id, None)
+        successful = self._local_request_successes.pop(request_id, 0)
+        protocol = self._local_request_demo_protocols.pop(request_id, None)
+        self._recent_recorded_studies = {
+            key for key in self._recent_recorded_studies if key[0] != request_id
+        }
+        if protocol is not None and successful:
+            QTimer.singleShot(
+                0, lambda value=protocol: self._apply_hanging_protocol(value)
+            )
+
+    def _confirm_media_browser_selection(self, selection: LocalSelection) -> None:
+        result = self._media_index_result
+        if result is None:
+            return
+        if self._queue_local_selection(result, selection):
+            self._aggregate_local_context.pop(result.request.request_id, None)
+            self._media_index_result = None
+
+    def _leave_media_browser(self) -> None:
+        if self._media_index_result is not None:
+            self._aggregate_local_context.pop(
+                self._media_index_result.request.request_id, None
+            )
+        self._media_index_result = None
+        self.media_browser.set_idle()
+        if self.series_manager.get_series_count():
+            self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
+        else:
+            self.workspace_stack.setCurrentWidget(self.start_center)
+
+    def _scan_media_root_as_folder(self, folder_path: str) -> None:
+        if not folder_path:
+            return
+        self._media_index_result = None
+        self._submit_local_index(
+            LocalOpenRequest.create(
+                LocalSourceKind.FOLDER,
+                folder_path,
+                origin=LocalOpenOrigin.DIALOG,
+            )
+        )
+
+    def _cancel_local_workspace_task(self) -> None:
+        if self._active_demo_id:
+            self.demo_study_service.cancel(self._active_demo_id)
+        for request_id, future in tuple(self._local_index_futures.items()):
+            self._cancelled_local_indexes.add(request_id)
+            self.local_study_controller.cancel(request_id)
+        if self._loading_futures or self._folder_scan_futures:
+            self._cancel_pending_loads()
+        self.status_bar.showMessage(
+            _v26_text("startcenter.cancelling", "Cancelling…")
+        )
+
+    def _open_dropped_paths(self, paths) -> None:
+        for raw_path in tuple(paths or ()):
+            path = Path(str(raw_path))
+            if path.is_dir():
+                self._submit_local_index(
+                    LocalOpenRequest.create(
+                        LocalSourceKind.FOLDER,
+                        path,
+                        origin=LocalOpenOrigin.DRAG_DROP,
+                    )
+                )
+            elif path.is_file() and path.name.upper() == "DICOMDIR":
+                self._submit_local_index(
+                    LocalOpenRequest.create(
+                        LocalSourceKind.DICOMDIR,
+                        path,
+                        origin=LocalOpenOrigin.DRAG_DROP,
+                    ),
+                    show_browser=True,
+                )
+            elif path.is_file():
+                self._submit_local_index(
+                    LocalOpenRequest.create(
+                        LocalSourceKind.IMAGE,
+                        path,
+                        origin=LocalOpenOrigin.DRAG_DROP,
+                    )
+                )
+
+    def _refresh_recent_studies(self, entries=None) -> None:
+        entries = tuple(entries) if entries is not None else self.recent_study_store.entries()
+        entry_ids = {entry.entry_id for entry in entries}
+        self._recent_availability = {
+            entry_id: value
+            for entry_id, value in self._recent_availability.items()
+            if entry_id in entry_ids
+        }
+        for entry in entries:
+            if entry.entry_id not in self._recent_availability:
+                self._recent_availability[entry.entry_id] = RecentAvailability.CHECKING
+        self.start_center.set_recent_entries(entries, self._recent_availability)
+
+        pool = get_performance_manager().get_thread_pool()
+        for entry in entries:
+            if entry.entry_id in self._recent_availability_futures:
+                continue
+            if self._recent_availability.get(entry.entry_id) is not RecentAvailability.CHECKING:
+                continue
+            future = pool.submit(RecentStudyStore.is_available, entry)
+            self._recent_availability_futures[entry.entry_id] = future
+
+            def _on_done(done_future, entry_id=entry.entry_id):
+                try:
+                    available = bool(done_future.result())
+                except Exception:
+                    available = False
+                try:
+                    self._recent_availability_done.emit(entry_id, available)
+                except RuntimeError:
+                    return
+
+            future.add_done_callback(_on_done)
+
+    def _on_recent_studies_changed(self, entries) -> None:
+        self._refresh_recent_studies(entries)
+
+    def _on_recent_availability_finished(
+        self, entry_id: str, available: bool
+    ) -> None:
+        self._recent_availability_futures.pop(entry_id, None)
+        value = (
+            RecentAvailability.AVAILABLE
+            if available
+            else RecentAvailability.MISSING
+        )
+        self._recent_availability[entry_id] = value
+        self.start_center.update_recent_availability(entry_id, value)
+
+    def _open_recent_study(self, entry_id: str) -> None:
+        entry = next(
+            (
+                candidate
+                for candidate in self.recent_study_store.entries()
+                if candidate.entry_id == entry_id
+            ),
+            None,
+        )
+        if entry is None:
+            self._refresh_recent_studies()
+            return
+        if not RecentStudyStore.is_available(entry):
+            self._relocate_recent_study(entry_id)
+            return
+        request = self.recent_study_store.resolve_request(entry_id)
+        if request is not None:
+            self._submit_local_index(request)
+
+    def _relocate_recent_study(self, entry_id: str) -> None:
+        entry = next(
+            (
+                candidate
+                for candidate in self.recent_study_store.entries()
+                if candidate.entry_id == entry_id
+            ),
+            None,
+        )
+        if entry is None:
+            return
+        if entry.source_kind is LocalSourceKind.FOLDER:
+            new_path = QFileDialog.getExistingDirectory(
+                self,
+                _v26_text("startcenter.relocate_recent", "Locate media…"),
+                str(Path(entry.source_path).parent),
+            )
+        else:
+            new_path, _selected_filter = QFileDialog.getOpenFileName(
+                self,
+                _v26_text("startcenter.relocate_recent", "Locate media…"),
+                str(Path(entry.source_path).parent),
+                _v26_text(
+                    "mediabrowser.dicomdir_filter",
+                    "DICOMDIR index (DICOMDIR);;All files (*)",
+                ),
+            )
+        if new_path:
+            replacement = self.recent_study_store.relocate(entry_id, new_path)
+            if replacement is not None:
+                self._open_recent_study(replacement.entry_id)
+
+    def _request_demo_study(self, study_id: str) -> None:
+        try:
+            spec = get_demo_study_spec(study_id)
+        except (KeyError, ValueError) as error:
+            self.status_bar.showMessage(str(error), 4000)
+            return
+        self._active_demo_id = spec.id.value
+        message = _v26_text(
+            "demo.preparing",
+            "Preparing {name}…",
+            name=_v26_text(
+                spec.title_key, spec.id.value.replace("_", " ").title()
+            ),
+        )
+        self.start_center.set_busy(message)
+        if self.series_manager.get_series_count() == 0:
+            self.workspace_stack.setCurrentWidget(self.start_center)
+        self.status_bar.showMessage(message)
+        try:
+            self.demo_study_service.ensure_ready(
+                spec.id,
+                force=not self._bool_setting("cache.demo.keep", True),
+            )
+        except Exception as error:
+            self._on_demo_failed(
+                spec.id.value,
+                "demo.generation_failed",
+                str(error),
+            )
+
+    def _on_demo_progress(self, study_id: str, current: int, total: int) -> None:
+        if study_id != self._active_demo_id:
+            return
+        message = _v26_text(
+            "demo.generating",
+            "Generating sample study… {current}/{total}",
+            current=current,
+            total=total,
+        )
+        self.start_center.set_busy(
+            message,
+            completed=current,
+            total=total,
+        )
+        self.status_bar.showMessage(message)
+
+    def _on_demo_ready(self, study_id: str, result: DemoBuildResult) -> None:
+        if study_id == self._active_demo_id:
+            self._active_demo_id = None
+        if self._closing:
+            self._resume_close_after_async()
+            return
+        try:
+            spec = get_demo_study_spec(study_id)
+            root = result.root
+        except Exception as error:
+            self._on_demo_failed(study_id, "demo.invalid_result", str(error))
+            return
+        request = LocalOpenRequest.create(
+            LocalSourceKind.DEMO,
+            root,
+            origin=LocalOpenOrigin.DEMO,
+        )
+        # Generated studies deliberately re-enter the real recursive indexer;
+        # no synthetic SeriesInfo objects bypass metadata validation.
+        self._submit_local_index(
+            request,
+            demo_protocol=spec.default_hanging_protocol,
+        )
+
+    def _on_demo_failed(self, study_id: str, code: str, detail: str) -> None:
+        if study_id == self._active_demo_id:
+            self._active_demo_id = None
+        if self._closing:
+            self._resume_close_after_async()
+            return
+        message = _v26_text(
+            code,
+            "Unable to prepare the sample study.",
+        )
+        if detail:
+            message = f"{message} ({detail})"
+        self.start_center.set_error(message)
+        if self.series_manager.get_series_count() == 0:
+            self.workspace_stack.setCurrentWidget(self.start_center)
+        self.status_bar.showMessage(message, 7000)
+
+    def _on_demo_cancelled(self, study_id: str) -> None:
+        if study_id == self._active_demo_id:
+            self._active_demo_id = None
+        if self._closing:
+            self._resume_close_after_async()
+            return
+        self.start_center.set_idle()
+        self.status_bar.showMessage(
+            _v26_text("demo.cancelled", "Sample generation cancelled."),
+            3000,
+        )
+
     def _open_multiple_dicom_folders(self) -> None:
         """打开多个DICOM文件夹"""
         logger.debug("[MainWindow._open_multiple_dicom_folders] 打开多个DICOM文件夹")
@@ -2280,9 +4168,14 @@ class MainWindow(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             folders = dialog.selectedFiles()
             logger.debug(f"[MainWindow._open_multiple_dicom_folders] 选择了{len(folders)}个文件夹")
-            
-            for folder in folders:
-                self._load_dicom_folder_as_series(folder)
+            self._submit_local_indexes(
+                LocalOpenRequest.create(
+                    LocalSourceKind.FOLDER,
+                    folder,
+                    origin=LocalOpenOrigin.DIALOG,
+                )
+                for folder in folders
+            )
     
     def _open_dicom_folder(self) -> None:
         """打开DICOM文件夹"""
@@ -2295,11 +4188,17 @@ class MainWindow(QMainWindow):
         )
         
         if folder:
-            self._load_dicom_folder_as_series(folder)
+            self._submit_local_index(
+                LocalOpenRequest.create(
+                    LocalSourceKind.FOLDER,
+                    folder,
+                    origin=LocalOpenOrigin.DIALOG,
+                )
+            )
     
     def _load_dicom_folder_as_series(self, folder_path: str) -> None:
         """提交后台 DICOM 扫描任务；文件遍历和头信息预读不阻塞 GUI。"""
-        logger.debug(f"[MainWindow._load_dicom_folder_as_series] 加载DICOM文件夹: {folder_path}")
+        logger.debug("[MainWindow._load_dicom_folder_as_series] 提交文件夹扫描")
         normalized = str(Path(folder_path).resolve())
         if normalized in self._folder_scan_futures:
             self.status_bar.showMessage(t("mainwindow.folder_scan_in_progress"), 2000)
@@ -2331,7 +4230,11 @@ class MainWindow(QMainWindow):
 
     def _finish_loading_ui_if_idle(self) -> None:
         """所有扫描和解码结束后统一收尾，避免并发任务争抢进度状态。"""
-        if self._folder_scan_futures or self._loading_futures:
+        if (
+            self._folder_scan_futures
+            or self._local_index_futures
+            or self._loading_futures
+        ):
             return
         self.loading_progress.setRange(0, 1)
         self.loading_progress.setValue(1)
@@ -2393,7 +4296,11 @@ class MainWindow(QMainWindow):
         }
 
     def _prepare_load_batch(self) -> None:
-        if self._folder_scan_futures or self._loading_futures:
+        if (
+            self._folder_scan_futures
+            or self._local_index_futures
+            or self._loading_futures
+        ):
             return
         self._loading_errors.clear()
         self._last_loading_errors.clear()
@@ -2469,7 +4376,7 @@ class MainWindow(QMainWindow):
                     'folder_path': folder_path,
                 }
                 logger.error(
-                    '[MainWindow] DICOM folder scan failed: %s', detail
+                    '[MainWindow] DICOM folder scan failed'
                 )
                 return
             if result.candidate_count == 0:
@@ -2488,7 +4395,7 @@ class MainWindow(QMainWindow):
             for item in ordered_series:
                 uid = item['series_instance_uid']
                 if uid and uid in existing_uids:
-                    logger.info("[MainWindow._on_folder_scan_finished] 跳过重复序列: %s", uid)
+                    logger.info("[MainWindow._on_folder_scan_finished] 跳过重复序列")
                     continue
                 series_info = SeriesInfo(series_id=str(uuid.uuid4()), **item)
                 series_id = self.series_manager.add_series(series_info)
@@ -2520,11 +4427,14 @@ class MainWindow(QMainWindow):
                     t("mainwindow.no_loadable_series_matching_metadata_rules"),
                 )
             logger.info(
-                "[MainWindow._on_folder_scan_finished] 扫描完成: folder=%s, added=%d",
-                folder_path, added,
+                "[MainWindow._on_folder_scan_finished] 扫描完成: added=%d",
+                added,
             )
         except Exception as error:
-            logger.error("[MainWindow._on_folder_scan_finished] 处理扫描结果失败: %s", error, exc_info=True)
+            logger.error(
+                "[MainWindow._on_folder_scan_finished] 处理扫描结果失败 (%s)",
+                type(error).__name__,
+            )
             detail = t("mainwindow.failed_to_load_dicom_folder_value").replace(
                 "%1", str(error)
             )
@@ -2553,7 +4463,7 @@ class MainWindow(QMainWindow):
         if missing:
             logger.warning(
                 "[MainWindow._warn_if_strict_metadata_incomplete] DICOM 缺失关键标签: "
-                f"{missing}, file={file_path}"
+                f"{missing}"
             )
             return False
         return True
@@ -2798,8 +4708,8 @@ class MainWindow(QMainWindow):
             self._load_single_image_file(file_path)
     
     def _load_single_image_file(self, file_path: str) -> None:
-        """提交单文件后台读取，避免压缩 DICOM 或大图阻塞界面。"""
-        logger.debug(f"[MainWindow._load_single_image_file] 加载图像文件: {file_path}")
+        """Submit an ordinary file through the unified local-source controller."""
+        logger.debug("[MainWindow._load_single_image_file] 提交单文件索引")
         path = Path(file_path)
         if not path.is_file():
             QMessageBox.critical(
@@ -2808,41 +4718,13 @@ class MainWindow(QMainWindow):
                 t("mainwindow.failed_to_load_image_file_value").replace("%1", str(path)),
             )
             return
-
-        series_info = SeriesInfo(
-            series_id=str(uuid.uuid4()),
-            patient_name=t("mainwindow.single_image"),
-            series_description=path.name,
-            modality="IMG",
-            series_number="1",
-            slice_count=0,
-            file_paths=[str(path)],
+        self._submit_local_index(
+            LocalOpenRequest.create(
+                LocalSourceKind.IMAGE,
+                path,
+                origin=LocalOpenOrigin.DIALOG,
+            )
         )
-        series_id = self.series_manager.add_series(series_info)
-        self._load_single_image_in_background(series_id, str(path), series_info)
-    
-    def _load_test_series(self) -> None:
-        """加载测试序列"""
-        logger.debug("[MainWindow._load_test_series] 加载测试序列")
-        
-        try:
-            from medimager.utils.resource_path import get_test_data_path, verify_resource_exists
-            
-            # 检查测试数据是否存在
-            test_data_path = Path(get_test_data_path("dcm"))
-            if not verify_resource_exists(str(test_data_path)):
-                QMessageBox.information(self, t("mainwindow.information"), t("mainwindow.test_data_does_not_exist"))
-                return
-            
-            # 加载所有测试序列
-            for series_folder in test_data_path.iterdir():
-                if series_folder.is_dir():
-                    self._load_dicom_folder_as_series(str(series_folder))
-            
-            logger.info("[MainWindow._load_test_series] 测试序列加载完成")
-            
-        except Exception as e:
-            logger.error(f"[MainWindow._load_test_series] 加载测试序列失败: {e}", exc_info=True)
     
     def _set_window_level_preset(self, width: int, level: int) -> None:
         """设置窗宽窗位预设"""
@@ -2972,6 +4854,23 @@ class MainWindow(QMainWindow):
         model = self._get_active_image_model()
         if not model or not model.has_image():
             QMessageBox.warning(self, t("mainwindow.warning"), t("mainwindow.no_current_slice_image_to_export"))
+            return
+
+        answer = QMessageBox.warning(
+            self,
+            _v26_text(
+                "mainwindow.raw_export_burned_in_warning_title",
+                "Export original image pixels",
+            ),
+            _v26_text(
+                "mainwindow.raw_export_burned_in_warning",
+                "The exported image can still contain patient information "
+                "burned into the source pixels. Continue?",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
 
         display_slice = model.get_display_slice()
@@ -3328,13 +5227,12 @@ class MainWindow(QMainWindow):
         logger.debug("[MainWindow._open_settings_dialog] 打开设置对话框")
 
         dialog = SettingsDialog(self.settings_manager, self)
+        dialog.settings_applied.connect(self._on_settings_applied)
+        dialog.storage_service.set_protected_drafts_provider(
+            self._active_dirty_draft_paths
+        )
 
         if dialog.exec_() == QDialog.Accepted:
-            # 应用新设置 - 使用set_theme确保发出信号
-            current_theme = self.theme_manager.get_current_theme()
-            self.theme_manager.set_theme(current_theme)
-            self._apply_runtime_settings()
-
             # 如果语言发生了变化，提示用户部分界面需要重启才能完全生效
             if getattr(dialog, '_language_changed', False):
                 QMessageBox.information(
@@ -3345,15 +5243,170 @@ class MainWindow(QMainWindow):
 
             logger.info("[MainWindow._open_settings_dialog] 设置更新完成")
 
-    def _apply_runtime_settings(self) -> None:
+    def _active_dirty_draft_paths(self) -> Tuple[Path, ...]:
+        """Return only live dirty recovery drafts for cleanup protection."""
+        protected = []
+        for series_id, history in self._annotation_histories.items():
+            model = history.get("model") if isinstance(history, dict) else None
+            if model is None or not has_unsaved_annotations(model):
+                continue
+            protected.append(self._draft_path(series_id, model))
+        return tuple(protected)
+
+    def _on_settings_applied(self, changed_keys: object = ()) -> None:
+        """Apply both the dialog's Apply and OK commits immediately."""
+        changed = {str(key) for key in tuple(changed_keys or ())}
+        if "ui_theme" in changed:
+            self.theme_manager.set_theme(self.theme_manager.get_current_theme())
+        self._apply_runtime_settings()
+
+    def _setting_string_list(
+        self, key: str, default: Tuple[str, ...]
+    ) -> Tuple[str, ...]:
+        raw = self.settings_manager.get_setting(key, list(default))
+        if isinstance(raw, str):
+            values = tuple(value.strip() for value in raw.split(",") if value.strip())
+        elif isinstance(raw, (list, tuple)):
+            values = tuple(str(value) for value in raw)
+        else:
+            values = ()
+        return values or default
+
+    def _apply_interface_preferences(self) -> None:
+        groups = ("browse", "measure", "compare", "advanced")
+        toolbar = getattr(self, "main_toolbar", None)
+        apply_toolbar = getattr(toolbar, "apply_preferences", None)
+        if callable(apply_toolbar):
+            apply_toolbar(
+                density=str(
+                    self.settings_manager.get_setting("ui.density", "compact")
+                ),
+                icon_size=self._int_setting("ui.icon_size", 24, 16, 40),
+                show_labels=self._bool_setting("toolbar.show_labels", False),
+                group_order=self._setting_string_list(
+                    "toolbar.group_order", groups
+                ),
+                visible_groups=self._setting_string_list(
+                    "toolbar.visible_groups", groups
+                ),
+            )
+        series_list = getattr(getattr(self, "series_panel", None), "_series_list", None)
+        set_density = getattr(series_list, "set_density", None)
+        if callable(set_density):
+            set_density(
+                str(self.settings_manager.get_setting("ui.density", "compact"))
+            )
+
+        application = QApplication.instance()
+        if application is not None:
+            base_property = "medimagerBaseFontPointSize"
+            base_size = application.property(base_property)
+            try:
+                base_size = float(base_size)
+            except (TypeError, ValueError):
+                base_size = float(application.font().pointSizeF())
+                if base_size <= 0:
+                    base_size = 9.0
+                application.setProperty(base_property, base_size)
+            font = application.font()
+            scale = self._int_setting("ui.font_scale", 100, 80, 150)
+            font.setPointSizeF(base_size * scale / 100.0)
+            application.setFont(font)
+
+    def _apply_runtime_settings(self, *, clear_cache: bool = True) -> None:
         """应用设置面板中可即时生效的选项。"""
+        self._apply_interface_preferences()
         self._cine_set_fps(self._int_setting('cine.default_fps', self._cine_fps, 1, 60))
+        reference_lines = self._bool_setting("sync.reference_lines", True)
+        shared_cursor = self._bool_setting("sync.shared_cursor", True)
+        toolbar = getattr(self, "main_toolbar", None)
+        for action_name, checked in (
+            ("reference_lines_action", reference_lines),
+            ("shared_cursor_action", shared_cursor),
+        ):
+            action = getattr(toolbar, action_name, None)
+            if action is not None:
+                blocker = QSignalBlocker(action)
+                action.setChecked(checked)
+                del blocker
         self.sync_manager.set_sync_mode(self._sync_mode_from_setting())
         self.sync_manager.set_sync_group(self._sync_group_from_setting())
+        self.sync_manager.set_cross_reference_visibility(
+            reference_lines=reference_lines,
+            shared_cursor=shared_cursor,
+        )
         if hasattr(self.multi_viewer_grid, "apply_runtime_settings"):
             self.multi_viewer_grid.apply_runtime_settings()
-        get_performance_manager().clear_cache()
+        self._apply_privacy_mode(self.privacy_service.enabled)
+        if clear_cache:
+            get_performance_manager().clear_cache()
         self._update_sync_button_states()
+
+    def _apply_privacy_mode(self, enabled: bool) -> None:
+        """Propagate the presentation-only privacy shield where supported."""
+        enabled = bool(enabled)
+        was_enabled = self._privacy_screen_active
+        if enabled and not was_enabled and hasattr(self, "info_dock"):
+            self._privacy_info_dock_was_visible = not self.info_dock.isHidden()
+        self._privacy_screen_active = enabled
+        for component in (
+            getattr(self, "series_panel", None),
+            getattr(getattr(self, "series_panel", None), "_series_list", None),
+            getattr(self, "start_center", None),
+            getattr(self, "media_browser", None),
+            getattr(self, "multi_viewer_grid", None),
+            getattr(self, "mpr_workspace", None),
+            getattr(self, "dicom_tag_panel", None),
+        ):
+            setter = getattr(component, "set_privacy_mode", None)
+            if callable(setter):
+                setter(enabled)
+        if hasattr(self, "toggle_info_panel_action"):
+            self.toggle_info_panel_action.blockSignals(True)
+            self.toggle_info_panel_action.setEnabled(not enabled)
+            if enabled:
+                self.toggle_info_panel_action.setChecked(False)
+            self.toggle_info_panel_action.blockSignals(False)
+        if hasattr(self, "dicom_tag_panel"):
+            self.dicom_tag_panel.setEnabled(not enabled)
+            copy_action = getattr(self.dicom_tag_panel, "copy_row_action", None)
+            if copy_action is not None:
+                copy_action.setEnabled(not enabled)
+            tree = getattr(self.dicom_tag_panel, "tree_widget", None)
+            if tree is not None:
+                tree.setContextMenuPolicy(
+                    Qt.ContextMenuPolicy.NoContextMenu
+                    if enabled
+                    else Qt.ContextMenuPolicy.CustomContextMenu
+                )
+        if enabled and hasattr(self, "dicom_tag_panel"):
+            # The legacy metadata tree has no redaction API. Clearing it is
+            # safer than leaving stale PHI visible while privacy mode is on.
+            self._pending_dicom_dataset = None
+            self.dicom_tag_panel.clear()
+            if hasattr(self, "info_dock"):
+                self.info_dock.hide()
+        elif not enabled and was_enabled and hasattr(self, "info_dock"):
+            # Restore the user's dock preference, but never reconstruct the
+            # cleared metadata tree from a stale dataset.
+            restore_visible = bool(self._privacy_info_dock_was_visible)
+            self._privacy_info_dock_was_visible = None
+            if restore_visible:
+                self.info_dock.show()
+                self.dicom_tag_panel.show()
+            else:
+                self.info_dock.hide()
+
+    def _resume_close_after_async(self) -> None:
+        if (
+            self._closing
+            and getattr(self, "_close_after_loading", False)
+            and not self._loading_futures
+            and not self._folder_scan_futures
+            and not self._local_index_futures
+            and self._active_demo_id is None
+        ):
+            QTimer.singleShot(0, self.close)
     
     def _show_about(self) -> None:
         """显示关于对话框"""
@@ -3373,6 +5426,8 @@ class MainWindow(QMainWindow):
     def _on_series_added(self, series_id: str) -> None:
         """处理序列添加事件"""
         logger.debug(f"[MainWindow._on_series_added] 序列添加: {series_id}")
+        if not self._mpr_active:
+            self.workspace_stack.setCurrentWidget(self.multi_viewer_grid)
         self._update_ui_state()
     
     def _on_series_loaded(self, series_id: str) -> None:
@@ -3390,11 +5445,17 @@ class MainWindow(QMainWindow):
         # 序列加载完成后可以进行自动分配
         if self.binding_manager.get_binding_strategy() == BindingStrategy.AUTO_ASSIGN:
             self.binding_manager.auto_assign_series_to_views([series_id])
-        self._restore_study_workspace_for_series(series_id)
+        # Real startup/local-source loads are dispatched after show().  Hidden
+        # preview and test windows must not consume or mutate a user's saved
+        # clinical workspace merely because they construct a SeriesInfo.
+        if self.isVisible() and self._workspace_startup_mode() == "restore":
+            self._restore_study_workspace_for_series(series_id)
+        self._complete_local_series(series_id, True)
         self._update_ui_state()
 
     def _on_series_removed(self, series_id: str) -> None:
         """移除序列对应的撤销历史，避免保留已销毁模型。"""
+        self._complete_local_series(series_id, False)
         if self._mpr_series_id == series_id:
             self._leave_mpr_workspace()
         timer = self._annotation_draft_timers.pop(series_id, None)
@@ -3682,6 +5743,12 @@ class MainWindow(QMainWindow):
         logger.debug(f"[MainWindow._on_grid_layout_changed] 网格布局变更: {layout}")
         # 这个信号来自MultiViewerGrid，通常不需要额外处理
         pass
+
+    def _on_layout_geometry_changed(self, _spec: object) -> None:
+        """Persist splitter changes after the grid's own 400 ms debounce."""
+        if not self._restoring_workspace and not self._closing:
+            self._workspace_state_timer.stop()
+            self._save_study_workspace_state()
     
     def _on_sync_mode_changed(self, mode) -> None:
         """处理同步模式变更事件"""
@@ -3689,6 +5756,7 @@ class MainWindow(QMainWindow):
         
         # 更新工具栏按钮状态
         self._update_sync_button_states()
+        self._schedule_workspace_state_save()
         logger.info(f"[MainWindow._on_sync_mode_changed] 同步模式已更新: {mode}")
     
     def _on_sync_group_changed(self, group) -> None:
@@ -3703,6 +5771,8 @@ class MainWindow(QMainWindow):
                     self._sync_group_combo.setCurrentIndex(i)
                     self._sync_group_combo.blockSignals(False)
                     break
+
+        self._schedule_workspace_state_save()
 
         logger.info(f"[MainWindow._on_sync_group_changed] 同步分组已更新: {group}")
     
@@ -3850,6 +5920,8 @@ class MainWindow(QMainWindow):
             self._cine_stop()
             if hasattr(self, 'mpr_workspace'):
                 self.mpr_workspace.cancel_build()
+            if self._active_demo_id:
+                self.demo_study_service.cancel(self._active_demo_id)
             dicom_tag_timer = getattr(self, '_dicom_tag_update_timer', None)
             if dicom_tag_timer is not None:
                 dicom_tag_timer.stop()
@@ -3858,11 +5930,18 @@ class MainWindow(QMainWindow):
             # 取消所有正在进行的加载任务
             self._cancelled_load_ids.update(self._loading_futures)
             self._cancelled_folder_scans.update(self._folder_scan_futures)
+            self._cancelled_local_indexes.update(self._local_index_futures)
+            self.local_study_controller.cancel_all()
             for future in list(self._loading_futures.values()) + list(self._folder_scan_futures.values()):
                 future.cancel()
             # 已经开始的解码无法被 Future.cancel() 中断。保持 Qt 事件循环和
             # 主窗口存活，直到结果回到 GUI 线程并安全 deleteLater()。
-            if self._loading_futures or self._folder_scan_futures:
+            if (
+                self._loading_futures
+                or self._folder_scan_futures
+                or self._local_index_futures
+                or self._active_demo_id
+            ):
                 self._close_after_loading = True
                 self.status_bar.showMessage(t('mainwindow.waiting_for_background_loads'))
                 self.setEnabled(False)
@@ -3871,7 +5950,8 @@ class MainWindow(QMainWindow):
             
             # 保存设置
             self._workspace_state_timer.stop()
-            self._save_study_workspace_state()
+            if self.isVisible():
+                self._save_study_workspace_state(force=True)
             self.settings_manager.save_settings()
             
             logger.info("[MainWindow.closeEvent] 应用程序正常关闭")

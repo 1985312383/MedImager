@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.5 ergänzt den orthogonalen MPR-Kern um einen Patient→Studie→Serie-Arbeitsbereich, patientenraumbasierte Serienkopplung, echte Referenzlinien, Hängeprotokolle, Zustandswiederherstellung sowie Hintergrund-Caching und Prefetch.
+MedImager ist ein Open-Source-Medizinbildbetrachter und Analysewerkzeug mit dem langfristigen Ziel, sich RadiAnt-ähnlichen Befundungsabläufen anzunähern. Version 2.6 macht aus dem 2D/MPR-Kern einen leicht auffindbaren Studienarbeitsplatz mit Startcenter, schreibgeschütztem DICOMDIR-Browser, filterbarer Seriennavigation, Layout-Galerie, Einstellungscenter 2.0, Datenschutzansicht und drei Offline-Beispielstudien.
 
 ## 1. Projektvision
 
-Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.5 verbindet geometrievalidierte orthogonale MPR mit einem studienzentrierten Befundungsarbeitsbereich; spätere Versionen ergänzen DICOMDIR/PACS, schräge Rekonstruktion und weitere klinikähnliche Workflows.
+Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen Workflows wachsen kann. MedImager 2.6 verbindet geometrievalidierte orthogonale MPR, lokale Medienerkennung und serienübergreifende Befundung. PACS, schräge Rekonstruktion, 3D-Rendering, Fusion und diagnostische Validierung bleiben zukünftige Arbeiten.
 
 <div align="center">
 
@@ -69,12 +69,19 @@ Erstellen Sie einen pragmatischen Open-Source-Viewer, der zu RadiAnt-ähnlichen 
     - [x] Performance-Baselines für große Serien, Window/Level-Anzeige, Cache-Hits und QImage-Konvertierung.
     - [x] Versionierte JSON-Persistenz für ROI-, Distanz- und Winkelmessungs-Annotationen.
 
+### ✅ V2.6 - Visueller Studienarbeitsplatz und Beispielcenter
+- [x] Startcenter, datenschutzfreundliche zuletzt geöffnete Studien und schreibgeschützter DICOMDIR-Browser Patient→Studie→Serie.
+- [x] Such- und filterbare kompakte Seriennavigation, Ein-Klick-Vergleich, klinische Layout-Galerie und Benutzerlayouts.
+- [x] Adaptive 24-px-Symbolleiste, erweiterte orthogonale MPR-Steuerung und Einstellungscenter 2.0.
+- [x] Datenschutzansicht, sichere Cache-Bereinigung sowie deterministisch erzeugte CT-, MR- und Geometry-Lab-Beispiele.
+
 ### Nächste Roadmap - RadiAnt-ähnliche Workflows
 - [x] **Orthogonale Multi-Planar-Rekonstruktion (MPR):** Verknüpfte axiale, koronare und sagittale Ansichten im LPS-Patientenraum.
 - [ ] **3D-Volumen-Rendering:** Grundlegende 3D-Visualisierung von DICOM-Serien.
 - [ ] **Bildfusion:** Überlagerung zweier verschiedener Serien (z.B. PET/CT).
-- [ ] **DICOMDIR / PACS:** Lokale Mediennavigation und DICOM-Netzwerkabfrage/-abruf nach stabiler 2D-Parser-Basis.
-- [x] **Hanging Protocols:** CT/MR/Übersichts-Presets und Studienzustandswiederherstellung (v2.5).
+- [x] **DICOMDIR:** Schreibgeschützte lokale Mediennavigation und Studien-/Serienauswahl (v2.6).
+- [ ] **PACS:** DICOM-Netzwerkabfrage und -abruf.
+- [x] **Hanging Protocols:** CT/MR/Übersichts-Presets, visuelle Galerie und Studienzustandswiederherstellung (v2.6).
 - [ ] **Plugin-System:** Ermöglicht Benutzern, Funktionen über benutzerdefinierte Python-Skripte für die Forschung zu erweitern.
 
 ## 3. Tech Stack
@@ -179,6 +186,12 @@ Stellen Sie zunächst sicher, dass Sie [uv](https://github.com/astral-sh/uv) ins
     # `uv run` führt den Befehl innerhalb der virtuellen Umgebung des Projekts aus,
     # wodurch die Notwendigkeit vermieden wird, sie in Ihrer Shell zu aktivieren.
     uv run python medimager/main.py
+    ```
+    Eine lokale Quelle kann direkt geöffnet werden; für UI-Automatisierung steht ein deterministisches Beispiel bereit:
+    ```bash
+    uv run python medimager/main.py "D:\DICOM\Study"
+    uv run python medimager/main.py --demo ct_multiphase
+    # --demo unterstützt außerdem mr_brain und geometry_lab
     ```
     Für Entwickler, die eine aktive Umgebung bevorzugen:
     ```bash

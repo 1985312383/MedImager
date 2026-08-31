@@ -1,0 +1,161 @@
+{
+  "metadata": {
+    "application": "MedImager",
+    "capture_shell": "VisualWorkbenchShell",
+    "captured_chrome": [
+      "menu_bar",
+      "ViewerToolbar",
+      "SeriesPanel",
+      "workspace",
+      "status_bar"
+    ],
+    "release": "2.6.0",
+    "scenario_count": 12,
+    "surface_provider": "RealMedImagerSurfaceProvider",
+    "target_dpr": 1.0,
+    "target_font": "Segoe UI 9",
+    "target_platform": "Windows",
+    "target_resolution": "1280x800"
+  },
+  "scenarios": {
+    "dark_zh_ct_overview": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_ct_overview.38c9495f2bd4fafeb45d7080.png",
+      "height": 800,
+      "key": "dark_zh_ct_overview",
+      "language": "zh_CN",
+      "sha256_rgba": "38c9495f2bd4fafeb45d70803dd39e43433ae4c8b51b4d6ac8d295fb56da4600",
+      "surface": "ct_2x2",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_ct_reference_lines": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_ct_reference_lines.833eb6ab4fb13f4e07162803.png",
+      "height": 800,
+      "key": "dark_zh_ct_reference_lines",
+      "language": "zh_CN",
+      "sha256_rgba": "833eb6ab4fb13f4e0716280334d2b1f8fe15827ab51ef8f1507956daadbb3016",
+      "surface": "reference_lines",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_geometry_rejection": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_geometry_rejection.37758b3b55b063a89776b52f.png",
+      "height": 800,
+      "key": "dark_zh_geometry_rejection",
+      "language": "zh_CN",
+      "sha256_rgba": "37758b3b55b063a89776b52f0877119b09efc47b12ad4989137d157cfab988f2",
+      "surface": "geometry_rejection",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_mpr_console": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_mpr_console.e6f0d36eed670306c4c1db8d.png",
+      "height": 800,
+      "key": "dark_zh_mpr_console",
+      "language": "zh_CN",
+      "sha256_rgba": "e6f0d36eed670306c4c1db8da65f8995e43f9d4b1ec47a3d14db9ff0ae290da3",
+      "surface": "mpr",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_mr_neuro": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_mr_neuro.b93bc65d3c726333bd1af02a.png",
+      "height": 800,
+      "key": "dark_zh_mr_neuro",
+      "language": "zh_CN",
+      "sha256_rgba": "b93bc65d3c726333bd1af02a813e13e4081f18214e405085fd2baf99a658635a",
+      "surface": "mr_2x2",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_settings_center": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_settings_center.7dc134804ea66375e3138808.png",
+      "height": 800,
+      "key": "dark_zh_settings_center",
+      "language": "zh_CN",
+      "sha256_rgba": "7dc134804ea66375e3138808d10e5ed8ffa204728d81ee29d787b1c726534e55",
+      "surface": "settings",
+      "theme": "dark",
+      "width": 1280
+    },
+    "dark_zh_start_center": {
+      "dpr": 1.0,
+      "file": "images/dark_zh_start_center.4fbbcd65f95061af25397172.png",
+      "height": 800,
+      "key": "dark_zh_start_center",
+      "language": "zh_CN",
+      "sha256_rgba": "4fbbcd65f95061af253971725b701c260f8cb75cfbbd73227352c975e25b943c",
+      "surface": "start_center",
+      "theme": "dark",
+      "width": 1280
+    },
+    "light_en_ct_overview": {
+      "dpr": 1.0,
+      "file": "images/light_en_ct_overview.58bf2fb5494d8e0569010542.png",
+      "height": 800,
+      "key": "light_en_ct_overview",
+      "language": "en_US",
+      "sha256_rgba": "58bf2fb5494d8e0569010542dfdaee2aa8957ce16b050d84e9332d50c151833c",
+      "surface": "ct_2x2",
+      "theme": "light",
+      "width": 1280
+    },
+    "light_en_mpr_console": {
+      "dpr": 1.0,
+      "file": "images/light_en_mpr_console.fb1256e29db0a8cde12dcfdc.png",
+      "height": 800,
+      "key": "light_en_mpr_console",
+      "language": "en_US",
+      "sha256_rgba": "fb1256e29db0a8cde12dcfdc2307ececcb0292a110629ba7487df6ca1db15103",
+      "surface": "mpr",
+      "theme": "light",
+      "width": 1280
+    },
+    "light_en_mr_neuro": {
+      "dpr": 1.0,
+      "file": "images/light_en_mr_neuro.a19ecfeeacbe859c83efa877.png",
+      "height": 800,
+      "key": "light_en_mr_neuro",
+      "language": "en_US",
+      "sha256_rgba": "a19ecfeeacbe859c83efa877e9230ceabac4141187b58328609ff0063628a304",
+      "surface": "mr_2x2",
+      "theme": "light",
+      "width": 1280
+    },
+    "light_en_settings_center": {
+      "dpr": 1.0,
+      "file": "images/light_en_settings_center.dbfcf9480ae6dd1e5181e3a4.png",
+      "height": 800,
+      "key": "light_en_settings_center",
+      "language": "en_US",
+      "sha256_rgba": "dbfcf9480ae6dd1e5181e3a4e1e9a6a1b65f5e56e41e54c9420e427d40ab7ceb",
+      "surface": "settings",
+      "theme": "light",
+      "width": 1280
+    },
+    "light_en_start_center": {
+      "dpr": 1.0,
+      "file": "images/light_en_start_center.24e0544073afccea7aaa1a33.png",
+      "height": 800,
+      "key": "light_en_start_center",
+      "language": "en_US",
+      "sha256_rgba": "24e0544073afccea7aaa1a337df06715a0392a81539eecd2598dca0e9f5df45a",
+      "surface": "start_center",
+      "theme": "light",
+      "width": 1280
+    }
+  },
+  "schema_version": 1,
+  "suite": "medimager-v2.6",
+  "thresholds": {
+    "mae": 2.0,
+    "outlier_delta": 12,
+    "outlier_ratio": 0.005
+  }
+}

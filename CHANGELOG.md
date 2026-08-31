@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.6.0 - 2026-08-31
+
+### Visual study workbench
+- Added a first-run study center for DICOM folders, multiple folders, DICOMDIR media, ordinary images, privacy-aware recent studies, and three offline example studies.
+- Added a read-only Patient → Study → Series DICOMDIR browser with explicit reporting for invalid records, missing references, unsupported objects, and unsafe media paths.
+- Reworked the series navigator around a filterable Qt item model with compact/card density, loading and orientation filters, binding badges, and one-click comparison layouts for up to twelve series.
+- Added a transactional layout gallery with clinical presets, special layouts, splitter-ratio persistence, favorites/recent choices, and geometry-only user presets.
+
+### Reading controls, settings, and privacy
+- Grouped the 24 px adaptive toolbar into browse, measure, compare, and advanced workflows, with density, labels, visibility, and group-order preferences.
+- Unified toolbar controls as orientation-aware square tiles, centered custom widgets on a shared vertical axis, reflowed Cine controls, and separated active-tool, toggle, and synchronization state styling across light and dark themes.
+- Expanded orthogonal MPR with color-and-line-style plane identity, per-plane position controls, three-column and 1+2 arrangements, linked state, and compact viewport shortcuts.
+- Added a typed settings registry and staged Settings Center 2.0 flow with search, per-page defaults, apply policies, storage usage, and safe atomic settings import/export.
+- Added persistent screen privacy presentation, session aliases, DICOM tag copy protection, and whitelist-based cache cleanup that preserves workspaces, drafts, and annotation sidecars.
+
+### Offline examples and quality
+- Added deterministic CT Multiphase, MR Brain, and Geometry Lab studies generated asynchronously from fixed seeds and de-identified UUID5-derived DICOM UIDs.
+- Added validated, atomic example caching without shipping patient pixels in the installer; cached studies can be regenerated or cleared independently.
+- Upgraded workspace and recent-study persistence schemas while avoiding raw patient identifiers and DICOM UIDs in saved navigation metadata.
+- Added five-language UI coverage plus focused DICOMDIR, local-source, settings, privacy, layout, example-data, visual-regression, and packaging checks.
+
 ## 2.5.0 - 2026-08-30
 
 ### Study workspace and navigation

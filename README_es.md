@@ -19,11 +19,11 @@
 
 </div>
 
-MedImager es un visor de imágenes médicas y herramienta de análisis de código abierto con el objetivo a largo plazo de acercarse a flujos de trabajo de lectura tipo RadiAnt. La versión 2.5 añade al núcleo MPR ortogonal un espacio Paciente→Estudio→Serie, sincronización entre series en espacio del paciente, líneas de referencia reales, protocolos de presentación, restauración de estado y caché/prefetch en segundo plano.
+MedImager es un visor de imágenes médicas y herramienta de análisis de código abierto con el objetivo a largo plazo de acercarse a flujos de trabajo de lectura tipo RadiAnt. La versión 2.6 convierte el núcleo 2D/MPR en un espacio visual y fácil de descubrir con centro de inicio, navegación DICOMDIR de solo lectura, series filtrables, galería de diseños, Centro de ajustes 2.0, presentación privada y tres estudios de ejemplo sin conexión.
 
 ## 1. Visión del Proyecto
 
-Crear un visor de código abierto pragmático que pueda crecer hacia flujos de trabajo tipo RadiAnt. MedImager 2.5 combina MPR ortogonal validada geométricamente con un espacio de lectura centrado en el estudio; las versiones posteriores añadirán DICOMDIR/PACS, reconstrucción oblicua y flujos clínicos más completos.
+Crear un visor de código abierto pragmático que pueda crecer hacia flujos de trabajo tipo RadiAnt. MedImager 2.6 combina MPR ortogonal validada, descubrimiento de medios locales y lectura entre series. PACS, reconstrucción oblicua, renderizado 3D, fusión y validación diagnóstica siguen siendo trabajo futuro.
 
 <div align="center">
 
@@ -69,12 +69,19 @@ Crear un visor de código abierto pragmático que pueda crecer hacia flujos de t
     - [x] Benchmarks de carga de series grandes, visualización window/level, aciertos de caché y conversión QImage.
     - [x] Persistencia JSON versionada para anotaciones ROI, mediciones de distancia y mediciones de ángulo.
 
+### ✅ V2.6 - Espacio Visual de Estudios y Centro de Ejemplos
+- [x] Centro de inicio, estudios recientes respetuosos con la privacidad y navegador DICOMDIR Paciente→Estudio→Serie de solo lectura.
+- [x] Navegador compacto de series con búsqueda/filtros, comparación, galería clínica y diseños de usuario.
+- [x] Barra adaptativa de 24 px, controles MPR ortogonales ampliados y Centro de ajustes 2.0.
+- [x] Presentación privada, limpieza segura de caché y ejemplos deterministas CT, MR y Geometry Lab.
+
 ### Próxima Hoja de Ruta - Flujo Tipo RadiAnt
 - [x] **Reconstrucción multiplanar ortogonal (MPR):** Vistas axial, coronal y sagital enlazadas en el espacio LPS del paciente.
 - [ ] **Renderizado de Volumen 3D:** Visualización 3D básica de series DICOM.
 - [ ] **Fusión de Imágenes:** Superponer dos series diferentes (ej. PET/CT).
-- [ ] **DICOMDIR / PACS:** Navegación de medios locales y consulta/recuperación DICOM en red después de estabilizar la base 2D.
-- [ ] **Protocolos de Colgado:** Guardar y restaurar diseños prácticos para revisión repetida de estudios.
+- [x] **DICOMDIR:** Navegación local de solo lectura y selección de estudios/series (v2.6).
+- [ ] **PACS:** Consulta y recuperación DICOM en red.
+- [x] **Protocolos de presentación:** Preajustes CT/MR/general, galería visual y restauración por estudio (v2.6).
 - [ ] **Sistema de Plugins:** Permitir a los usuarios extender funciones mediante scripts Python personalizados para investigación.
 
 ## 3. Stack Tecnológico
@@ -179,6 +186,12 @@ Primero, asegúrese de tener [uv](https://github.com/astral-sh/uv) instalado. Es
     # `uv run` ejecuta el comando dentro del entorno virtual del proyecto,
     # evitando la necesidad de activarlo en su shell.
     uv run python medimager/main.py
+    ```
+    También puede abrir directamente una fuente local o iniciar un ejemplo determinista para automatización de UI:
+    ```bash
+    uv run python medimager/main.py "D:\DICOM\Study"
+    uv run python medimager/main.py --demo ct_multiphase
+    # --demo también admite mr_brain y geometry_lab
     ```
     Para desarrolladores que prefieren un entorno activo:
     ```bash

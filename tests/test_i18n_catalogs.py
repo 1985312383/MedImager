@@ -63,6 +63,43 @@ def test_compiled_catalogs_do_not_embed_legacy_source_maps():
     assert "legacy_source_map" not in payload
 
 
+def test_v26_catalogs_have_complete_key_parity():
+    compiled_dir = Path("medimager/i18n/compiled")
+    payloads = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in compiled_dir.glob("*.json")
+    }
+    expected_languages = {"en_US", "zh_CN", "de_DE", "es_ES", "fr_FR"}
+    assert set(payloads) == expected_languages
+
+    english_keys = set(payloads["en_US"]["messages"])
+    v26_keys = {
+        "startcenter.title",
+        "startcenter.disclaimer",
+        "startcenter.private_study",
+        "mediabrowser.title",
+        "localsource.issue.unsafe_reference",
+        "serieslistwidget.compare_selected",
+        "layoutgallery.study_overview",
+        "mpr.layout_one_plus_two",
+        "mpr.slice_status",
+        "settingsdialog.privacy_screen_mode",
+        "settingsdialog.toolbar_configuration",
+        "settingsdialog.sync_position_auto_lps",
+        "settingsdialog.modified_count",
+        "settingsdialog.clear_temporary_caches",
+        "demo.ct_multiphase.title",
+        "demo.geometry_lab.description",
+        "demo.generation_failed",
+    }
+    assert v26_keys <= english_keys
+
+    for payload in payloads.values():
+        assert set(payload["messages"]) == english_keys
+        assert payload["diagnostics"]["missing"] == []
+        assert payload["diagnostics"]["extra"] == []
+
+
 def test_migrated_main_window_key_uses_stable_catalog_key(qapp):
     manager = get_translation_manager()
     original_language = manager.current_language()

@@ -504,6 +504,34 @@ class ThemeManager(QObject):
         QToolButton[syncState="all"] {{
             border: 1px solid {success_color};
         }}
+
+        /* Main-toolbar hierarchy: modes are solid; persistent aids are outlined. */
+        QToolBar#MainToolBar QToolButton[toolbarRole="toggle"]:checked {{
+            background-color: {surface_raised_color};
+            color: {text_color};
+            border: 1px solid {highlight_color};
+            border-bottom: 3px solid {highlight_color};
+        }}
+
+        QToolBar#MainToolBar QToolButton[toolbarRole="sync"][syncState="off"] {{
+            background-color: {surface_color};
+            color: {text_color};
+            border: 1px solid {border_color};
+        }}
+
+        QToolBar#MainToolBar QToolButton[toolbarRole="sync"][syncState="partial"] {{
+            background-color: {surface_raised_color};
+            color: {text_color};
+            border: 1px solid {warning_color};
+            border-bottom: 3px solid {warning_color};
+        }}
+
+        QToolBar#MainToolBar QToolButton[toolbarRole="sync"][syncState="all"] {{
+            background-color: {surface_raised_color};
+            color: {text_color};
+            border: 1px solid {success_color};
+            border-bottom: 3px solid {success_color};
+        }}
         
         /* 工具栏下拉按钮 - 右侧箭头条 */
         QToolButton::menu-button {{
@@ -844,13 +872,29 @@ class ThemeManager(QObject):
             # 对于其他类别，使用全局函数
             return get_theme_settings(category, theme_name)
     
-    def create_themed_icon(self, svg_path: str) -> QIcon:
+    def create_themed_icon(
+        self,
+        svg_path: str,
+        *,
+        preserve_on_color: bool = False,
+    ) -> QIcon:
         """Create a semantic, high-DPI vector icon from an SVG path."""
-        return self.icon_registry.icon_from_path(svg_path)
+        return self.icon_registry.icon_from_path(
+            svg_path,
+            preserve_on_color=preserve_on_color,
+        )
 
-    def create_icon(self, semantic_name: str) -> QIcon:
+    def create_icon(
+        self,
+        semantic_name: str,
+        *,
+        preserve_on_color: bool = False,
+    ) -> QIcon:
         """Create an icon by a stable semantic registry name."""
-        return self.icon_registry.icon(semantic_name)
+        return self.icon_registry.icon(
+            semantic_name,
+            preserve_on_color=preserve_on_color,
+        )
 
     def get_theme_tokens(self, theme_name: Optional[str] = None) -> Dict[str, Any]:
         """Return the complete semantic token set for the selected UI theme."""

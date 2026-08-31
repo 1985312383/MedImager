@@ -149,6 +149,8 @@ class SyncManager(QObject):
         
         # 交叉参考线状态
         self._cross_reference = CrossReferenceState()
+        self._reference_lines_visible = True
+        self._shared_cursor_visible = True
         
         # 自定义分组
         self._custom_groups: Dict[str, Set[str]] = {}  # group_name -> view_ids
@@ -239,6 +241,29 @@ class SyncManager(QObject):
             self.clear_cross_reference()
             logger.info(f"[SyncManager.set_sync_group] 同步分组已更新: {group}")
             self.sync_group_changed.emit(group)
+
+    def set_cross_reference_visibility(
+        self,
+        *,
+        reference_lines: bool,
+        shared_cursor: bool,
+    ) -> None:
+        """Control plane intersections and cursor markers independently."""
+
+        self._reference_lines_visible = bool(reference_lines)
+        self._shared_cursor_visible = bool(shared_cursor)
+        for view_id in self._series_manager.get_all_view_ids():
+            viewer = self._get_image_viewer(view_id)
+            if viewer is None:
+                continue
+            if not self._reference_lines_visible and hasattr(
+                viewer, "hide_reference_line"
+            ):
+                viewer.hide_reference_line()
+            if not self._shared_cursor_visible and hasattr(
+                viewer, "hide_patient_cursor"
+            ):
+                viewer.hide_patient_cursor()
     
     def create_custom_group(self, group_name: str, view_ids: Set[str]) -> bool:
         """创建自定义同步分组
@@ -440,12 +465,17 @@ class SyncManager(QObject):
             # The source cursor defines one patient-space point.  Each
             # target receives both that point (when it intersects the displayed
             # slice) and the clipped intersection of the two image planes.
-            self.patient_cursor_updated.emit(source_view_id, QPointF(cursor_pos))
+            if self._shared_cursor_visible:
+                self.patient_cursor_updated.emit(source_view_id, QPointF(cursor_pos))
             target_views = self._get_sync_targets(source_view_id)
 
             for target_view_id in target_views:
-                line = self._plane_intersection_segment(source_view_id, target_view_id)
-                if line is not None:
+                line = (
+                    self._plane_intersection_segment(source_view_id, target_view_id)
+                    if self._reference_lines_visible
+                    else None
+                )
+                if self._reference_lines_visible and line is not None:
                     self.cross_reference_line_updated.emit(
                         target_view_id, line[0], line[1]
                     )
@@ -460,7 +490,11 @@ class SyncManager(QObject):
                     cursor_pos,
                     require_on_target_plane=True,
                 )
-                if target_pos.x() >= 0 and target_pos.y() >= 0:
+                if (
+                    self._shared_cursor_visible
+                    and target_pos.x() >= 0
+                    and target_pos.y() >= 0
+                ):
                     # Keep the old signal for extensions written against v2.4.
                     self.cross_reference_updated.emit(target_view_id, target_pos)
                     self.patient_cursor_updated.emit(target_view_id, target_pos)

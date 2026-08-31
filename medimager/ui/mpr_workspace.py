@@ -3,22 +3,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from threading import Event
 from typing import Optional, Sequence
 from uuid import uuid4
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QSlider,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -43,10 +57,36 @@ from medimager.core.volume_geometry import (
 from medimager.ui.qt_image_utils import qimage_from_display_data
 from medimager.utils.i18n import t
 from medimager.utils.logger import get_logger
+from medimager.utils.resource_path import get_icon_path
 from medimager.utils.settings import get_performance_manager
 
 
 logger = get_logger(__name__)
+
+
+class MprLayoutMode(str, Enum):
+    THREE_COLUMNS = "three_columns"
+    ONE_PLUS_TWO = "one_plus_two"
+    SINGLE = "single"
+
+
+_PLANE_COLORS = {
+    MprPlane.AXIAL: "#ef5350",
+    MprPlane.CORONAL: "#4caf70",
+    MprPlane.SAGITTAL: "#4b8df8",
+}
+
+_PLANE_LINE_STYLES = {
+    MprPlane.AXIAL: Qt.PenStyle.SolidLine,
+    MprPlane.CORONAL: Qt.PenStyle.DashLine,
+    MprPlane.SAGITTAL: Qt.PenStyle.DotLine,
+}
+
+_PLANE_LINE_LABELS = {
+    MprPlane.AXIAL: "A",
+    MprPlane.CORONAL: "C",
+    MprPlane.SAGITTAL: "S",
+}
 
 
 @dataclass
@@ -90,6 +130,8 @@ class MprViewport(QGraphicsView):
         self._last_drag_position = None
         self._wl_drag_origin = None
         self._fit_mode = True
+        self._intersection_lines_visible = True
+        self._quick_bar: Optional[QFrame] = None
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setBackgroundBrush(QColor("#080b10"))
         self.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform)
@@ -176,6 +218,17 @@ class MprViewport(QGraphicsView):
         self.presentation_state.inverted = False
         self.fit_to_window()
 
+    def set_intersection_lines_visible(self, visible: bool) -> None:
+        self._intersection_lines_visible = bool(visible)
+        self.viewport().update()
+
+    def attach_quick_bar(self, quick_bar: QFrame) -> None:
+        self._quick_bar = quick_bar
+        quick_bar.setParent(self.viewport())
+        quick_bar.adjustSize()
+        quick_bar.show()
+        self._position_quick_bar()
+
     def invert(self) -> None:
         self.presentation_state.inverted = not self.presentation_state.inverted
         self.set_view_window(
@@ -187,6 +240,16 @@ class MprViewport(QGraphicsView):
         super().resizeEvent(event)
         if self._fit_mode:
             self.fit_to_window()
+        self._position_quick_bar()
+
+    def _position_quick_bar(self) -> None:
+        if self._quick_bar is None:
+            return
+        self._quick_bar.adjustSize()
+        margin = 8
+        x = max(margin, self.viewport().width() - self._quick_bar.width() - margin)
+        self._quick_bar.move(x, margin)
+        self._quick_bar.raise_()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         self.activated.emit(self.plane)
@@ -347,19 +410,56 @@ class MprViewport(QGraphicsView):
             return
         x, y = geometry.patient_to_pixel(cursor)
         bounds = self._scene.sceneRect()
-        colors = {
-            MprPlane.AXIAL: QColor("#4aa3ff"),
-            MprPlane.CORONAL: QColor("#56d364"),
-            MprPlane.SAGITTAL: QColor("#ff6b6b"),
-        }
         other_planes = [candidate for candidate in MprPlane if candidate is not self.plane]
         painter.save()
-        painter.setPen(QPen(colors[other_planes[0]], 0))
-        painter.drawLine(QPointF(bounds.left(), y), QPointF(bounds.right(), y))
-        painter.setPen(QPen(colors[other_planes[1]], 0))
-        painter.drawLine(QPointF(x, bounds.top()), QPointF(x, bounds.bottom()))
+        # ``drawForeground`` uses scene coordinates.  Without inverse scaling,
+        # Fit magnifies text on small/anisotropic reconstructions and shrinks
+        # it on large CT volumes.  Keep every overlay at a stable 12 device
+        # pixels while retaining patient-space lines in scene coordinates.
+        view_transform = self.transform()
+        view_scale = max(
+            float(np.hypot(view_transform.m11(), view_transform.m12())),
+            1e-6,
+        )
+        device_to_scene = 1.0 / view_scale
+        overlay_font = QFont(painter.font())
+        overlay_font.setPixelSize(
+            max(1, int(round(12.0 * device_to_scene)))
+        )
+        painter.setFont(overlay_font)
+        if self._intersection_lines_visible:
+            horizontal_plane, vertical_plane = other_planes
+            horizontal_pen = QPen(QColor(_PLANE_COLORS[horizontal_plane]), 0)
+            horizontal_pen.setStyle(_PLANE_LINE_STYLES[horizontal_plane])
+            painter.setPen(horizontal_pen)
+            painter.drawLine(QPointF(bounds.left(), y), QPointF(bounds.right(), y))
+            painter.drawText(
+                QPointF(
+                    bounds.left() + 12 * device_to_scene,
+                    max(
+                        bounds.top() + 24 * device_to_scene,
+                        y - 4 * device_to_scene,
+                    ),
+                ),
+                _PLANE_LINE_LABELS[horizontal_plane],
+            )
+            vertical_pen = QPen(QColor(_PLANE_COLORS[vertical_plane]), 0)
+            vertical_pen.setStyle(_PLANE_LINE_STYLES[vertical_plane])
+            painter.setPen(vertical_pen)
+            painter.drawLine(QPointF(x, bounds.top()), QPointF(x, bounds.bottom()))
+            painter.drawText(
+                QPointF(
+                    min(
+                        bounds.right() - 18 * device_to_scene,
+                        x + 5 * device_to_scene,
+                    ),
+                    bounds.top() + 36 * device_to_scene,
+                ),
+                _PLANE_LINE_LABELS[vertical_plane],
+            )
         painter.setPen(QPen(QColor("#f0f3f6"), 0))
-        inset = bounds.adjusted(8, 8, -8, -8)
+        margin = 8 * device_to_scene
+        inset = bounds.adjusted(margin, margin, -margin, -margin)
         position_axis = {
             MprPlane.AXIAL: 2,
             MprPlane.CORONAL: 1,
@@ -379,11 +479,19 @@ class MprViewport(QGraphicsView):
         painter.drawText(inset, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right)
         painter.drawText(inset, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter, top)
         painter.drawText(inset, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, bottom)
-        self._draw_annotation_overlays(painter, geometry)
+        self._draw_annotation_overlays(
+            painter,
+            geometry,
+            device_to_scene=device_to_scene,
+        )
         painter.restore()
 
     def _draw_annotation_overlays(
-        self, painter: QPainter, geometry: PlaneGeometry
+        self,
+        painter: QPainter,
+        geometry: PlaneGeometry,
+        *,
+        device_to_scene: float = 1.0,
     ) -> None:
         painter.setPen(QPen(QColor("#ffd43b"), 0))
         for _annotation_id, kind, points_lps, label in self._annotation_overlays:
@@ -393,15 +501,24 @@ class MprViewport(QGraphicsView):
             }
             if kind == "measurement":
                 painter.drawLine(points["start"], points["end"])
-                painter.drawText(points["end"] + QPointF(5, -5), label)
+                painter.drawText(
+                    points["end"]
+                    + QPointF(5 * device_to_scene, -5 * device_to_scene),
+                    label,
+                )
             elif kind == "angle":
                 painter.drawLine(points["vertex"], points["point1"])
                 painter.drawLine(points["vertex"], points["point3"])
-                painter.drawText(points["vertex"] + QPointF(5, -5), label)
+                painter.drawText(
+                    points["vertex"]
+                    + QPointF(5 * device_to_scene, -5 * device_to_scene),
+                    label,
+                )
             elif kind == "rectangle_roi":
                 painter.drawRect(QRectF(points["top_left"], points["bottom_right"]).normalized())
                 painter.drawText(
-                    points["bottom_right"] + QPointF(5, -5),
+                    points["bottom_right"]
+                    + QPointF(5 * device_to_scene, -5 * device_to_scene),
                     self._roi_stats_label(kind, points),
                 )
             elif kind == "circle_roi":
@@ -411,7 +528,8 @@ class MprViewport(QGraphicsView):
                 )
                 painter.drawEllipse(points["center"], radius, radius)
                 painter.drawText(
-                    points["radius_edge"] + QPointF(5, -5),
+                    points["radius_edge"]
+                    + QPointF(5 * device_to_scene, -5 * device_to_scene),
                     self._roi_stats_label(kind, points),
                 )
             elif kind == "ellipse_roi":
@@ -425,7 +543,8 @@ class MprViewport(QGraphicsView):
                 )
                 painter.drawEllipse(points["center"], rx, ry)
                 painter.drawText(
-                    points["radius_x_edge"] + QPointF(5, -5),
+                    points["radius_x_edge"]
+                    + QPointF(5 * device_to_scene, -5 * device_to_scene),
                     self._roi_stats_label(kind, points),
                 )
 
@@ -474,6 +593,9 @@ class MprWorkspace(QWidget):
         self._build_generation = 0
         self._active_plane = MprPlane.AXIAL
         self._maximized_plane: Optional[MprPlane] = None
+        self._layout_mode = MprLayoutMode.THREE_COLUMNS
+        self._layout_before_single = MprLayoutMode.THREE_COLUMNS
+        self._intersection_lines_visible = True
         self._pending_cursor: Optional[np.ndarray] = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -491,6 +613,29 @@ class MprWorkspace(QWidget):
         header_layout = QGridLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
         self._status = QLabel(t("mpr.ready"), header)
+
+        layout_switcher = QFrame(header)
+        layout_switcher.setObjectName("mprLayoutSwitcher")
+        switcher_layout = QHBoxLayout(layout_switcher)
+        switcher_layout.setContentsMargins(2, 2, 2, 2)
+        switcher_layout.setSpacing(2)
+        self._layout_buttons: dict[MprLayoutMode, QToolButton] = {}
+        for mode, label, tooltip_key in (
+            (MprLayoutMode.THREE_COLUMNS, "|||", "mpr.layout_three_columns"),
+            (MprLayoutMode.ONE_PLUS_TWO, "1+2", "mpr.layout_one_plus_two"),
+            (MprLayoutMode.SINGLE, "□", "mpr.layout_single"),
+        ):
+            button = QToolButton(layout_switcher)
+            button.setText(label)
+            button.setCheckable(True)
+            button.setToolTip(t(tooltip_key))
+            button.setAccessibleName(t(tooltip_key))
+            button.clicked.connect(
+                lambda _checked=False, selected=mode: self.set_layout_mode(selected)
+            )
+            switcher_layout.addWidget(button)
+            self._layout_buttons[mode] = button
+
         self._progress = QProgressBar(header)
         self._progress.setVisible(False)
         self._progress.setTextVisible(True)
@@ -499,10 +644,19 @@ class MprWorkspace(QWidget):
         self._cancel_button.clicked.connect(self.cancel_build)
         self._back_button = QPushButton(t("mpr.return_to_2d"), header)
         self._back_button.clicked.connect(self.request_return_to_2d)
+        self._orientation_cube = QLabel(header)
+        self._orientation_cube.setFixedSize(44, 44)
+        self._orientation_cube.setPixmap(
+            QIcon(get_icon_path("mpr-orientation-cube.svg")).pixmap(42, 42)
+        )
+        self._orientation_cube.setToolTip(t("mpr.orientation_cube"))
+        self._orientation_cube.setAccessibleName(t("mpr.orientation_cube"))
         header_layout.addWidget(self._status, 0, 0)
-        header_layout.addWidget(self._progress, 0, 1)
-        header_layout.addWidget(self._cancel_button, 0, 2)
-        header_layout.addWidget(self._back_button, 0, 3)
+        header_layout.addWidget(layout_switcher, 0, 1)
+        header_layout.addWidget(self._progress, 0, 2)
+        header_layout.addWidget(self._cancel_button, 0, 3)
+        header_layout.addWidget(self._orientation_cube, 0, 4)
+        header_layout.addWidget(self._back_button, 0, 5)
         header_layout.setColumnStretch(0, 1)
         root.addWidget(header)
 
@@ -511,18 +665,267 @@ class MprWorkspace(QWidget):
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._grid.setSpacing(3)
         self.viewports: dict[MprPlane, MprViewport] = {}
-        for column, plane in enumerate(MprPlane):
-            viewport = MprViewport(plane, self._viewport_container)
+        self._plane_panels: dict[MprPlane, QFrame] = {}
+        self._plane_titles: dict[MprPlane, QLabel] = {}
+        self._slice_sliders: dict[MprPlane, QSlider] = {}
+        self._slice_labels: dict[MprPlane, QLabel] = {}
+        self._line_buttons: dict[MprPlane, QToolButton] = {}
+        self._interpolation_boxes: dict[MprPlane, QComboBox] = {}
+        for plane in MprPlane:
+            panel = QFrame(self._viewport_container)
+            panel.setObjectName(f"mprPlanePanel_{plane.value}")
+            panel.setProperty("active", plane is self._active_plane)
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(1, 1, 1, 1)
+            panel_layout.setSpacing(0)
+
+            plane_header = QFrame(panel)
+            plane_header_layout = QHBoxLayout(plane_header)
+            plane_header_layout.setContentsMargins(8, 3, 8, 3)
+            line_sample = {
+                MprPlane.AXIAL: "━━━━",
+                MprPlane.CORONAL: "– – –",
+                MprPlane.SAGITTAL: "······",
+            }[plane]
+            title = QLabel(f"{line_sample}  {t(f'mpr.{plane.value}')}", plane_header)
+            title.setStyleSheet(f"color: {_PLANE_COLORS[plane]}; font-weight: 600;")
+            plane_header_layout.addWidget(title)
+            plane_header_layout.addStretch(1)
+            linked = QLabel(t("mpr.linked"), plane_header)
+            linked.setProperty("tone", "positive")
+            plane_header_layout.addWidget(linked)
+            panel_layout.addWidget(plane_header)
+
+            viewport = MprViewport(plane, panel)
             viewport.cursor_requested.connect(self.set_cursor)
             viewport.scroll_requested.connect(self.scroll_plane)
             viewport.activated.connect(self.set_active_plane)
             viewport.maximize_requested.connect(self.toggle_maximize)
             viewport.annotation_requested.connect(self._create_annotation)
             viewport.annotation_edit_requested.connect(self._edit_annotation)
-            self._grid.addWidget(viewport, 0, column)
-            self._grid.setColumnStretch(column, 1)
+            panel_layout.addWidget(viewport, 1)
+
+            quick_bar = self._create_quick_bar(plane, viewport)
+            viewport.attach_quick_bar(quick_bar)
+
+            footer = QFrame(panel)
+            footer_layout = QHBoxLayout(footer)
+            footer_layout.setContentsMargins(8, 3, 8, 4)
+            footer_layout.setSpacing(8)
+            slider = QSlider(Qt.Orientation.Horizontal, footer)
+            slider.setRange(0, 0)
+            slider.setTracking(True)
+            slider.setAccessibleName(t("mpr.slice_slider", plane=t(f"mpr.{plane.value}")))
+            slider.valueChanged.connect(
+                lambda value, selected=plane: self._set_plane_index(selected, value)
+            )
+            position = QLabel(t("mpr.slice_unavailable"), footer)
+            position.setMinimumWidth(150)
+            position.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            footer_layout.addWidget(slider, 1)
+            footer_layout.addWidget(position)
+            panel_layout.addWidget(footer)
+
+            self._plane_panels[plane] = panel
+            self._plane_titles[plane] = title
+            self._slice_sliders[plane] = slider
+            self._slice_labels[plane] = position
             self.viewports[plane] = viewport
+        self.set_layout_mode(MprLayoutMode.THREE_COLUMNS)
+        self._update_plane_panel_styles()
         root.addWidget(self._viewport_container, 1)
+
+    def _create_quick_bar(self, plane: MprPlane, viewport: MprViewport) -> QFrame:
+        quick_bar = QFrame(viewport.viewport())
+        quick_bar.setObjectName("mprQuickBar")
+        quick_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        quick_bar.setStyleSheet(
+            "QFrame#mprQuickBar { background: rgba(20, 25, 34, 218); "
+            "border: 1px solid rgba(150, 165, 185, 90); border-radius: 4px; }"
+        )
+        bar_layout = QHBoxLayout(quick_bar)
+        bar_layout.setContentsMargins(4, 3, 4, 3)
+        bar_layout.setSpacing(3)
+
+        wl = QComboBox(quick_bar)
+        wl.setToolTip(t("mpr.wl_presets"))
+        wl.setAccessibleName(t("mpr.wl_presets"))
+        wl.addItem(t("mpr.wl_current"), None)
+        wl.addItem(t("mpr.wl_soft_tissue"), (400.0, 40.0))
+        wl.addItem(t("mpr.wl_lung"), (1500.0, -600.0))
+        wl.addItem(t("mpr.wl_bone"), (2500.0, 500.0))
+        wl.addItem(t("mpr.wl_brain"), (80.0, 40.0))
+        wl.activated.connect(lambda index, selected=plane: self._apply_wl_preset(selected, index))
+        bar_layout.addWidget(wl)
+
+        fit = QToolButton(quick_bar)
+        fit.setText(t("mpr.fit"))
+        fit.setToolTip(t("mpr.fit"))
+        fit.clicked.connect(viewport.fit_to_window)
+        bar_layout.addWidget(fit)
+
+        interpolation = QComboBox(quick_bar)
+        interpolation.setToolTip(t("mpr.interpolation"))
+        interpolation.setAccessibleName(t("mpr.interpolation"))
+        interpolation.addItem(t("mpr.interpolation_adaptive"), InterpolationMode.ADAPTIVE)
+        interpolation.addItem(t("mpr.interpolation_linear"), InterpolationMode.SMOOTH)
+        interpolation.addItem(t("mpr.interpolation_nearest"), InterpolationMode.PIXEL_EXACT)
+        interpolation.activated.connect(
+            lambda index, selected=plane: self._set_interpolation(selected, index)
+        )
+        bar_layout.addWidget(interpolation)
+
+        lines = QToolButton(quick_bar)
+        lines.setText(t("mpr.lines"))
+        lines.setToolTip(t("mpr.lines"))
+        lines.setCheckable(True)
+        lines.setChecked(True)
+        lines.toggled.connect(self.set_intersection_lines_visible)
+        bar_layout.addWidget(lines)
+        self._line_buttons[plane] = lines
+        self._interpolation_boxes[plane] = interpolation
+        return quick_bar
+
+    @property
+    def layout_mode(self) -> MprLayoutMode:
+        return self._layout_mode
+
+    def set_layout_mode(self, mode: MprLayoutMode | str) -> None:
+        try:
+            selected = mode if isinstance(mode, MprLayoutMode) else MprLayoutMode(str(mode))
+        except ValueError:
+            selected = MprLayoutMode.THREE_COLUMNS
+        if selected is MprLayoutMode.SINGLE:
+            if self._layout_mode is not MprLayoutMode.SINGLE:
+                self._layout_before_single = self._layout_mode
+            self._maximized_plane = self._active_plane
+        else:
+            self._maximized_plane = None
+        self._layout_mode = selected
+
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().setVisible(False)
+        for row in range(2):
+            self._grid.setRowStretch(row, 0)
+        for column in range(3):
+            self._grid.setColumnStretch(column, 0)
+
+        if selected is MprLayoutMode.THREE_COLUMNS:
+            for column, plane in enumerate(MprPlane):
+                panel = self._plane_panels[plane]
+                self._grid.addWidget(panel, 0, column)
+                panel.setVisible(True)
+                self._grid.setColumnStretch(column, 1)
+            self._grid.setRowStretch(0, 1)
+        elif selected is MprLayoutMode.ONE_PLUS_TWO:
+            axial = self._plane_panels[MprPlane.AXIAL]
+            coronal = self._plane_panels[MprPlane.CORONAL]
+            sagittal = self._plane_panels[MprPlane.SAGITTAL]
+            self._grid.addWidget(axial, 0, 0, 2, 1)
+            self._grid.addWidget(coronal, 0, 1)
+            self._grid.addWidget(sagittal, 1, 1)
+            for panel in (axial, coronal, sagittal):
+                panel.setVisible(True)
+            self._grid.setColumnStretch(0, 1)
+            self._grid.setColumnStretch(1, 1)
+            self._grid.setRowStretch(0, 1)
+            self._grid.setRowStretch(1, 1)
+        else:
+            panel = self._plane_panels[self._active_plane]
+            self._grid.addWidget(panel, 0, 0)
+            panel.setVisible(True)
+            self._grid.setColumnStretch(0, 1)
+            self._grid.setRowStretch(0, 1)
+
+        for button_mode, button in self._layout_buttons.items():
+            with QSignalBlocker(button):
+                button.setChecked(button_mode is selected)
+        QTimer.singleShot(
+            0,
+            lambda: [viewport._position_quick_bar() for viewport in self.viewports.values()],
+        )
+        self.refresh()
+
+    def _apply_wl_preset(self, plane: MprPlane, index: int) -> None:
+        quick_bar = self.viewports[plane]._quick_bar
+        if quick_bar is None:
+            return
+        combo = next(
+            (child for child in quick_bar.findChildren(QComboBox) if child is not self._interpolation_boxes[plane]),
+            None,
+        )
+        preset = combo.itemData(index) if combo is not None else None
+        if isinstance(preset, tuple) and len(preset) == 2:
+            self.viewports[plane].set_view_window(float(preset[0]), float(preset[1]))
+
+    def _set_interpolation(self, plane: MprPlane, index: int) -> None:
+        combo = self._interpolation_boxes[plane]
+        mode = InterpolationMode.coerce(combo.itemData(index))
+        self.viewports[plane].presentation_state.interpolation = mode
+        self.refresh()
+
+    def set_intersection_lines_visible(self, visible: bool) -> None:
+        self._intersection_lines_visible = bool(visible)
+        for button in self._line_buttons.values():
+            with QSignalBlocker(button):
+                button.setChecked(self._intersection_lines_visible)
+        for viewport in self.viewports.values():
+            viewport.set_intersection_lines_visible(self._intersection_lines_visible)
+
+    def _set_plane_index(self, plane: MprPlane, index: int) -> None:
+        if not self.is_ready:
+            return
+        assert self._resampler is not None and self._state is not None
+        axis = {
+            MprPlane.SAGITTAL: 0,
+            MprPlane.CORONAL: 1,
+            MprPlane.AXIAL: 2,
+        }[plane]
+        bounds = self._resampler.volume.geometry.patient_bounds
+        point = self._state.cursor_lps.copy()
+        point[axis] = bounds[axis][0] + max(0, int(index)) * self._resampler.sampling_mm
+        point[axis] = float(np.clip(point[axis], *bounds[axis]))
+        self.set_cursor(point)
+
+    def _update_slice_controls(self) -> None:
+        if not self.is_ready:
+            return
+        assert self._resampler is not None and self._state is not None
+        bounds = self._resampler.volume.geometry.patient_bounds
+        spacing = self._resampler.sampling_mm
+        axes = {
+            MprPlane.SAGITTAL: (0, "X"),
+            MprPlane.CORONAL: (1, "Y"),
+            MprPlane.AXIAL: (2, "Z"),
+        }
+        for plane, (axis, axis_label) in axes.items():
+            total = max(1, int(np.floor((bounds[axis][1] - bounds[axis][0]) / spacing)) + 1)
+            current = max(0, min(self._state.plane_indices.get(plane, 0), total - 1))
+            slider = self._slice_sliders[plane]
+            with QSignalBlocker(slider):
+                slider.setRange(0, total - 1)
+                slider.setValue(current)
+            self._slice_labels[plane].setText(
+                t(
+                    "mpr.slice_status",
+                    current=current + 1,
+                    total=total,
+                    axis=axis_label,
+                    position=f"{self._state.cursor_lps[axis]:.1f}",
+                )
+            )
+
+    def _update_plane_panel_styles(self) -> None:
+        for plane, panel in self._plane_panels.items():
+            active = plane is self._active_plane
+            panel.setProperty("active", active)
+            border = _PLANE_COLORS[plane] if active else "#303846"
+            width = 2 if active else 1
+            panel.setStyleSheet(
+                f"QFrame#{panel.objectName()} {{ border: {width}px solid {border}; }}"
+            )
 
     @property
     def is_ready(self) -> bool:
@@ -582,6 +985,11 @@ class MprWorkspace(QWidget):
         self._series_id = None
         self._resampler = None
         self._state = None
+        for plane, slider in self._slice_sliders.items():
+            with QSignalBlocker(slider):
+                slider.setRange(0, 0)
+                slider.setValue(0)
+            self._slice_labels[plane].setText(t("mpr.slice_unavailable"))
 
     def _on_build_progress(self, done: int, total: int) -> None:
         self._progress.setRange(0, max(1, total))
@@ -664,6 +1072,7 @@ class MprWorkspace(QWidget):
             MprPlane.CORONAL: int(round((cursor[1] - bounds[1][0]) / spacing)),
             MprPlane.AXIAL: int(round((cursor[2] - bounds[2][0]) / spacing)),
         }
+        self._update_slice_controls()
 
     def scroll_plane(self, plane: MprPlane, steps: int) -> None:
         if not self.is_ready:
@@ -832,13 +1241,17 @@ class MprWorkspace(QWidget):
 
     def set_active_plane(self, plane: MprPlane) -> None:
         self._active_plane = plane
+        self._update_plane_panel_styles()
+        if self._layout_mode is MprLayoutMode.SINGLE:
+            self._maximized_plane = plane
+            self.set_layout_mode(MprLayoutMode.SINGLE)
         self.active_plane_changed.emit(plane)
 
     def toggle_maximize(self, plane: MprPlane) -> None:
-        self._maximized_plane = None if self._maximized_plane is plane else plane
-        for candidate, viewport in self.viewports.items():
-            viewport.setVisible(
-                self._maximized_plane is None or candidate is self._maximized_plane
-            )
-        self.refresh()
+        if self._layout_mode is MprLayoutMode.SINGLE and self._maximized_plane is plane:
+            self.set_layout_mode(self._layout_before_single)
+            return
+        self._active_plane = plane
+        self._update_plane_panel_styles()
+        self.set_layout_mode(MprLayoutMode.SINGLE)
 

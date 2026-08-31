@@ -4,9 +4,10 @@
 提供简约的布局选择功能，包含预设布局和动态调整。
 """
 
-from typing import Optional
+from typing import Optional, Sequence
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                             QFrame, QApplication, QGridLayout)
+                             QFrame, QApplication, QGridLayout, QScrollArea,
+                             QToolButton)
 from PySide6.QtCore import Qt, Signal, QRect, QPoint, QByteArray
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont, QKeyEvent, QMouseEvent, QPaintEvent, QIcon, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -14,6 +15,7 @@ from PySide6.QtSvg import QSvgRenderer
 from medimager.utils.logger import get_logger
 from medimager.utils.theme_manager import ThemeAwareMixin, get_theme_settings
 from medimager.utils.i18n import t
+from medimager.core.layout_presets import LayoutPreset, builtin_layout_presets
 
 logger = get_logger(__name__)
 
@@ -378,13 +380,18 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
     """布局下拉菜单"""
 
     layout_selected = Signal(object)
+    preset_requested = Signal(str)
+    favorite_toggled = Signal(str, bool)
+    save_current_requested = Signal()
     auto_assign_requested = Signal()
     clear_bindings_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._preset_buttons = []
+        self._clinical_buttons = {}
         self._action_buttons = []
+        self._saved_rows: list[QWidget] = []
         parent_theme_manager = None
         if parent is not None and hasattr(parent, 'theme_manager'):
             parent_theme_manager = parent.theme_manager
@@ -413,6 +420,8 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
             self.preset_label.setStyleSheet(f"color: {c['text_color']};")
         if hasattr(self, 'action_label'):
             self.action_label.setStyleSheet(f"color: {c['text_color']};")
+        if hasattr(self, 'saved_label'):
+            self.saved_label.setStyleSheet(f"color: {c['text_color']};")
         if hasattr(self, 'separator1'):
             self.separator1.setStyleSheet(f"color: {c['border_color']};")
         if hasattr(self, 'separator2'):
@@ -426,6 +435,33 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
+
+        clinical_label = QLabel(t("layoutgallery.clinical_presets"))
+        clinical_label.setAlignment(Qt.AlignLeft)
+        clinical_label.setFont(QFont("", 9, QFont.Bold))
+        clinical_label.setStyleSheet(f"color: {c['text_color']};")
+        layout.addWidget(clinical_label)
+
+        clinical_grid = QGridLayout()
+        clinical_grid.setSpacing(4)
+        for index, preset in enumerate(builtin_layout_presets()[:4]):
+            button = QPushButton(t(preset.title_key))
+            button.setToolTip(t(preset.description_key))
+            button.setProperty("presetId", preset.preset_id)
+            button.clicked.connect(
+                lambda checked=False, value=preset.preset_id:
+                self._on_clinical_preset(value)
+            )
+            self._clinical_buttons[preset.preset_id] = button
+            self._action_buttons.append(button)
+            clinical_grid.addWidget(button, index // 2, index % 2)
+        layout.addLayout(clinical_grid)
+
+        clinical_separator = QFrame()
+        clinical_separator.setFrameShape(QFrame.HLine)
+        clinical_separator.setFrameShadow(QFrame.Sunken)
+        clinical_separator.setStyleSheet(f"color: {c['border_color']};")
+        layout.addWidget(clinical_separator)
 
         # 预设布局
         self.preset_label = QLabel(t("layoutdropdown.preset_layout"))
@@ -465,6 +501,33 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         self.separator2.setStyleSheet(f"color: {c['border_color']};")
         layout.addWidget(self.separator2)
 
+        self.saved_label = QLabel(t("layoutgallery.saved_layouts"))
+        self.saved_label.setAlignment(Qt.AlignLeft)
+        self.saved_label.setFont(QFont("", 9, QFont.Bold))
+        self.saved_label.setStyleSheet(f"color: {c['text_color']};")
+        layout.addWidget(self.saved_label)
+
+        self.saved_scroll = QScrollArea()
+        self.saved_scroll.setWidgetResizable(True)
+        self.saved_scroll.setFrameShape(QFrame.NoFrame)
+        self.saved_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.saved_scroll.setMaximumHeight(176)
+        self.saved_content = QWidget()
+        self.saved_items_layout = QVBoxLayout(self.saved_content)
+        self.saved_items_layout.setContentsMargins(0, 0, 0, 0)
+        self.saved_items_layout.setSpacing(4)
+        self.saved_scroll.setWidget(self.saved_content)
+        layout.addWidget(self.saved_scroll)
+        self.set_user_presets(())
+
+        saved_separator = QFrame()
+        saved_separator.setFrameShape(QFrame.HLine)
+        saved_separator.setFrameShadow(QFrame.Sunken)
+        saved_separator.setStyleSheet(f"color: {c['border_color']};")
+        layout.addWidget(saved_separator)
+
         self.action_label = QLabel(t("layoutdropdown.sequence_operations"))
         self.action_label.setAlignment(Qt.AlignLeft)
         self.action_label.setFont(QFont("", 9, QFont.Bold))
@@ -484,6 +547,12 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
         self._action_buttons.append(clear_bindings_btn)
         action_layout.addWidget(clear_bindings_btn)
         layout.addLayout(action_layout)
+
+        save_layout_btn = QPushButton(t("layoutgallery.save_current"))
+        save_layout_btn.setToolTip(t("layoutgallery.save_current_description"))
+        save_layout_btn.clicked.connect(self._on_save_current)
+        self._action_buttons.append(save_layout_btn)
+        layout.addWidget(save_layout_btn)
 
     def _setup_style(self) -> None:
         c = self._colors
@@ -511,12 +580,135 @@ class LayoutDropdown(ThemeAwareMixin, QFrame):
             QPushButton:pressed {{
                 background-color: {self.adjust_color_brightness(c['highlight_color'], 20)};
             }}
+            QToolButton {{
+                min-width: 26px;
+                padding: 4px;
+                border: 1px solid {c['border_color']};
+                border-radius: 4px;
+                color: {c['text_color']};
+            }}
+            QToolButton:checked {{
+                color: #F4B942;
+                border-color: #F4B942;
+            }}
         """)
+
+    def set_user_presets(self, presets: Sequence[LayoutPreset]) -> None:
+        """Populate the scrollable saved-layout gallery.
+
+        Favorites are shown first, followed by recently used layouts and then
+        the remaining saved layouts.  Every preset appears exactly once, so a
+        full set of twenty user layouts remains reachable without making the
+        popup taller than the working screen.
+        """
+
+        for row in self._saved_rows:
+            self.saved_items_layout.removeWidget(row)
+            row.deleteLater()
+        self._saved_rows.clear()
+
+        ordered = tuple(presets)
+        groups = (
+            (
+                t("layoutgallery.favorites"),
+                tuple(item for item in ordered if item.favorite),
+            ),
+            (
+                t("layoutgallery.recent"),
+                tuple(
+                    item
+                    for item in ordered
+                    if not item.favorite and item.last_used_at > 0
+                ),
+            ),
+            (
+                t("layoutgallery.all_saved"),
+                tuple(
+                    item
+                    for item in ordered
+                    if not item.favorite and item.last_used_at <= 0
+                ),
+            ),
+        )
+        if not ordered:
+            empty = QLabel(t("layoutgallery.no_saved_layouts"))
+            empty.setEnabled(False)
+            empty.setContentsMargins(4, 2, 4, 2)
+            self.saved_items_layout.addWidget(empty)
+            self._saved_rows.append(empty)
+            return
+
+        for group_title, group_presets in groups:
+            if not group_presets:
+                continue
+            heading = QLabel(group_title)
+            heading.setProperty("layoutGalleryHeading", True)
+            heading.setContentsMargins(4, 4, 4, 0)
+            self.saved_items_layout.addWidget(heading)
+            self._saved_rows.append(heading)
+            for preset in group_presets:
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(4)
+                apply_button = QPushButton(preset.title_key)
+                apply_button.setToolTip(preset.title_key)
+                apply_button.clicked.connect(
+                    lambda checked=False, value=preset.preset_id:
+                    self._on_clinical_preset(value)
+                )
+                row_layout.addWidget(apply_button, 1)
+                favorite_button = QToolButton()
+                favorite_button.setCheckable(True)
+                favorite_button.setChecked(preset.favorite)
+                favorite_button.setText("★" if preset.favorite else "☆")
+                favorite_button.setToolTip(
+                    t("layoutgallery.remove_from_favorites")
+                    if preset.favorite
+                    else t("layoutgallery.add_to_favorites")
+                )
+                favorite_button.clicked.connect(
+                    lambda checked, value=preset.preset_id, button=favorite_button:
+                    self._on_favorite_toggled(value, button, checked)
+                )
+                row_layout.addWidget(favorite_button)
+                self.saved_items_layout.addWidget(row)
+                self._saved_rows.append(row)
+    def _on_favorite_toggled(
+        self, preset_id: str, button: QToolButton, checked: bool
+    ) -> None:
+        button.setText("★" if checked else "☆")
+        button.setToolTip(
+            t("layoutgallery.remove_from_favorites")
+            if checked
+            else t("layoutgallery.add_to_favorites")
+        )
+        self.favorite_toggled.emit(str(preset_id), bool(checked))
 
     def _on_preset_selected(self, layout_config) -> None:
         logger.debug(f"选择预设布局: {layout_config}")
         self.layout_selected.emit(layout_config)
         self.hide()
+
+    def _on_clinical_preset(self, preset_id: str) -> None:
+        logger.debug("选择临床布局预设: %s", preset_id)
+        self.preset_requested.emit(preset_id)
+        self.hide()
+
+    def _on_save_current(self) -> None:
+        self.save_current_requested.emit()
+        self.hide()
+
+    def set_mpr_availability(self, available: bool, reason: str = "") -> None:
+        button = self._clinical_buttons.get("current_mpr")
+        if button is None:
+            return
+        button.setEnabled(bool(available))
+        button.setToolTip(
+            t("layoutgallery.current_mpr_description")
+            if available
+            else (reason or t("layoutgallery.mpr_unavailable"))
+        )
 
     def _on_dynamic_selected(self, rows: int, cols: int) -> None:
         logger.debug(f"选择动态布局: {rows}x{cols}")

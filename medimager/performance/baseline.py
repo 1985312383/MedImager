@@ -152,9 +152,9 @@ def run_baseline(
             ),
         },
         "regression_policy": {
-            "baseline_version": "2.4",
+            "baseline_version": "2.6",
             "relative_limit": 1.20,
-            "description": "Flag a regression when duration or peak memory exceeds the recorded v2.4 baseline by more than 20% on the same host.",
+            "description": "Flag a regression when duration or peak memory exceeds the recorded v2.6 baseline by more than 20% on the same host.",
         },
     }
 

@@ -16,6 +16,7 @@ try:
     from PySide6.QtWidgets import QApplication
     
     from medimager.ui.main_window import MainWindow
+    from medimager.utils.i18n import t
     from medimager.utils.logger import get_logger
     
     logger = get_logger(__name__)
@@ -37,6 +38,25 @@ def _run_main_window_smoke(app: QApplication) -> None:
     assert hasattr(main_window, 'binding_manager'), "应有绑定管理器"
     assert hasattr(main_window, 'series_panel'), "应有序列面板"
     assert hasattr(main_window, 'multi_viewer_grid'), "应有多视图网格"
+
+    expected_tool_shortcuts = {
+        'tool.pointer': 'P',
+        'tool.pan': 'H',
+        'tool.zoom': 'Z',
+        'tool.window_level': 'W',
+        'workspace.mpr': 'M',
+    }
+    assert {
+        command_id: main_window.shortcut_registry.sequence(command_id)
+        for command_id in expected_tool_shortcuts
+    } == expected_tool_shortcuts
+    reset_action = next(
+        action
+        for action in main_window.main_toolbar.actions()
+        if action.text() == t('mainwindow.reset_view')
+    )
+    assert reset_action.property('shortcutHint') in (None, '')
+    assert 'Home' not in reset_action.toolTip()
 
     assert main_window.series_manager.get_series_count() == 0, "初始序列数量应为0"
     assert main_window.series_manager.get_current_layout() == (1, 1), "初始布局应为1x1"

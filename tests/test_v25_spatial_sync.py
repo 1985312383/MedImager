@@ -50,3 +50,36 @@ def test_reference_line_requires_the_same_frame_of_reference():
     sync.update_cross_reference("view_0_0", QPointF(5, 5))
 
     assert lines == []
+
+
+def test_reference_lines_and_shared_cursor_can_be_toggled_independently():
+    frame_uid = pydicom.uid.generate_uid()
+    source = _model_with_geometry([(0, 0, 10)], frame_uid=frame_uid)
+    target = _model_with_geometry(
+        [(0, 0, 0)],
+        orientation=(0, 1, 0, 0, 0, 1),
+        frame_uid=frame_uid,
+    )
+    _, sync = _bind_two_series(source, target)
+    sync.set_sync_mode(SyncMode.CROSS_REFERENCE)
+    lines = []
+    cursors = []
+    sync.cross_reference_line_updated.connect(lambda *args: lines.append(args))
+    sync.patient_cursor_updated.connect(lambda *args: cursors.append(args))
+
+    sync.set_cross_reference_visibility(
+        reference_lines=True,
+        shared_cursor=False,
+    )
+    sync.update_cross_reference("view_0_0", QPointF(5, 5))
+    assert lines
+    assert not cursors
+
+    lines.clear()
+    sync.set_cross_reference_visibility(
+        reference_lines=False,
+        shared_cursor=True,
+    )
+    sync.update_cross_reference("view_0_0", QPointF(5, 5))
+    assert not lines
+    assert cursors

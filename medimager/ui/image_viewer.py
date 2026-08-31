@@ -123,6 +123,13 @@ class ImageViewer(QGraphicsView):
         self._roi_stats_cache: dict[str, tuple[object, object]] = {}
         self._corner_overlay_info: Dict[str, str] = {}
         self._orientation_override: Optional[Dict[str, str]] = None
+        self._overlay_options: Dict[str, bool] = {
+            "orientation": True,
+            "slice_position": True,
+            "scale": True,
+            "patient": True,
+            "pixel_value": False,
+        }
         
         # 测量线状态：用于在工具切换后保持测量线显示
         self.measurement_start_point: Optional[QPointF] = None
@@ -273,6 +280,19 @@ class ImageViewer(QGraphicsView):
         """重新应用设置面板中可即时生效的查看器设置。"""
         self._apply_interpolation_setting()
         self._apply_viewport_backend()
+        settings = getattr(self, "settings_manager", None)
+        if settings is not None:
+            for name, key, default in (
+                ("orientation", "overlay.show_orientation", True),
+                ("slice_position", "overlay.show_slice_position", True),
+                ("scale", "overlay.show_scale", True),
+                ("patient", "overlay.show_patient", True),
+                ("pixel_value", "overlay.show_pixel_value", False),
+            ):
+                value = settings.get_setting(key, default)
+                if isinstance(value, str):
+                    value = value.strip().casefold() in ("1", "true", "yes", "on")
+                self._overlay_options[name] = bool(value)
         self.viewport().update()
 
     def _apply_viewport_backend(self) -> None:
@@ -976,8 +996,16 @@ class ImageViewer(QGraphicsView):
             line_height = QFontMetrics(font).height() + 2
 
             left_lines = [
-                self._corner_overlay_info.get("title", ""),
-                self._corner_overlay_info.get("slice", ""),
+                (
+                    self._corner_overlay_info.get("title", "")
+                    if self._overlay_options["patient"]
+                    else ""
+                ),
+                (
+                    self._corner_overlay_info.get("slice", "")
+                    if self._overlay_options["slice_position"]
+                    else ""
+                ),
                 self._corner_overlay_info.get("window", ""),
             ]
             laterality = str(
@@ -1030,7 +1058,11 @@ class ImageViewer(QGraphicsView):
                 f"{state.zoom * 100:.0f}%",
             )
 
-            markers = self._orientation_markers(metadata)
+            markers = (
+                self._orientation_markers(metadata)
+                if self._overlay_options["orientation"]
+                else {}
+            )
             marker_rects = {
                 "top": (QRect(bounds.left(), bounds.top(), bounds.width(), line_height), Qt.AlignHCenter | Qt.AlignTop),
                 "bottom": (QRect(bounds.left(), bounds.bottom() - line_height, bounds.width(), line_height), Qt.AlignHCenter | Qt.AlignBottom),
@@ -1041,7 +1073,8 @@ class ImageViewer(QGraphicsView):
                 if marker and edge in marker_rects:
                     marker_rect, alignment = marker_rects[edge]
                     self._draw_contrast_text(painter, marker_rect, alignment, marker)
-            self._draw_scale_bar(painter, bounds, line_height)
+            if self._overlay_options["scale"]:
+                self._draw_scale_bar(painter, bounds, line_height)
             painter.restore()
         except Exception as error:
             self.logger.debug(f"绘制医学覆盖层失败: {error}")

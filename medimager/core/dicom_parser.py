@@ -95,8 +95,14 @@ class DicomParser(QObject):
                     ds = pydicom.dcmread(normalized_path, stop_before_pixels=True)
                     datasets.append(ds)
                     source_paths[id(ds)] = normalized_path
-                except Exception as e:
-                    self.logger.warning(f"Could not read {file_path}: {e}")
+                except Exception as error:
+                    # Source paths can contain patient names or accession
+                    # numbers. Keep diagnostics useful without placing either
+                    # the path or decoder-provided metadata in persistent logs.
+                    self.logger.warning(
+                        "Could not read a DICOM file (%s)",
+                        type(error).__name__,
+                    )
                     continue
 
             if not datasets:
@@ -123,10 +129,10 @@ class DicomParser(QObject):
             self.data_loaded.emit()
             return True
 
-        except Exception as e:
+        except Exception as error:
             self.logger.error(
-                f"An unexpected error occurred during DICOM series loading: {e}",
-                exc_info=True,
+                "DICOM series loading failed (%s)",
+                type(error).__name__,
             )
             self._reset_loaded_state()
             return False
@@ -204,8 +210,13 @@ class DicomParser(QObject):
                 self.logger.warning(
                     "Could not determine slice order. Using file list order."
                 )
-        except Exception as e:
-            self.logger.warning(f"Slice sorting failed, using file list order: {e}")
+        except Exception as error:
+            # Dataset exceptions can contain element values or source paths.
+            # Keep logs useful without echoing potentially identifying data.
+            self.logger.warning(
+                "Slice sorting failed; using file list order (%s)",
+                type(error).__name__,
+            )
 
         return dicom_datasets
 

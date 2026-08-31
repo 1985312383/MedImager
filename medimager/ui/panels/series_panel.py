@@ -6,19 +6,25 @@
 """
 
 from typing import Dict, List, Optional, Set
+from dataclasses import dataclass, field
 from pathlib import Path
-import hashlib
 import numpy as np
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem, QLabel, QPushButton, QGroupBox, QComboBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QScrollArea, QFrame, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QTreeView, QLabel, QPushButton, QGroupBox, QComboBox, QLineEdit,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QScrollArea, QFrame,
+    QMessageBox, QStyledItemDelegate, QAbstractItemView, QStyle
 )
-from PySide6.QtCore import Qt, Signal, QPoint, QSize, QMimeData, QSignalBlocker
+from PySide6.QtCore import (
+    Qt, Signal, QPoint, QSize, QMimeData, QSignalBlocker, QAbstractItemModel,
+    QSortFilterProxyModel, QModelIndex, QItemSelectionModel, QTimer, QRect
+)
 from PySide6.QtGui import QPixmap, QIcon, QFont, QColor, QDrag, QPainter, QBrush, QPen, QFontMetrics
 
 from medimager.core.multi_series_manager import MultiSeriesManager, SeriesInfo
 from medimager.core.series_view_binding import SeriesViewBindingManager
 from medimager.core.image_data_model import ImageDataModel
+from medimager.core.thumbnail_cache import ThumbnailDiskCache
 from medimager.core.view_presentation_state import (
     ViewPresentationState,
     build_render_request,
@@ -157,6 +163,616 @@ class DraggableTreeWidget(QTreeWidget):
         return pixmap
 
 
+@dataclass
+class _StudyBrowserNode:
+    kind: str
+    values: tuple[str, str, str]
+    parent: Optional["_StudyBrowserNode"] = None
+    series_id: str = ""
+    modality: str = ""
+    series_number: str = ""
+    orientation: str = ""
+    slice_count: int = 0
+    loaded: bool = False
+    bound_views: tuple[str, ...] = ()
+    search_blob: str = ""
+    children: list["_StudyBrowserNode"] = field(default_factory=list)
+
+    def append(self, child: "_StudyBrowserNode") -> None:
+        child.parent = self
+        self.children.append(child)
+
+    def row(self) -> int:
+        if self.parent is None:
+            return 0
+        return self.parent.children.index(self)
+
+
+@dataclass(frozen=True)
+class SeriesCardPresentation:
+    """Structured, display-only values consumed by the series-card delegate."""
+
+    title: str
+    modality: str
+    series_number: str
+    orientation: str
+    slice_count: int
+    loaded: bool
+    bound_views: tuple[str, ...]
+
+
+class StudyBrowserModel(QAbstractItemModel):
+    """Patient -> Study -> Series model used by the visible v2.6 navigator."""
+
+    KindRole = Qt.UserRole
+    SeriesIdRole = Qt.UserRole + 1
+    SearchRole = Qt.UserRole + 2
+    ModalityRole = Qt.UserRole + 3
+    OrientationRole = Qt.UserRole + 4
+    LoadedRole = Qt.UserRole + 5
+    TitleRole = Qt.UserRole + 6
+    SeriesNumberRole = Qt.UserRole + 7
+    SliceCountRole = Qt.UserRole + 8
+    BoundViewsRole = Qt.UserRole + 9
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root = _StudyBrowserNode("root", ("", "", ""))
+        self._series_nodes: Dict[str, _StudyBrowserNode] = {}
+        self._icons: Dict[str, QIcon] = {}
+        self._placeholder = QIcon()
+
+    def rebuild(
+        self,
+        manager: MultiSeriesManager,
+        icons: Dict[str, QIcon],
+        placeholder: QIcon,
+        *,
+        privacy: bool = False,
+    ) -> None:
+        # Build the Python tree off-model first.  A proxy view may query this
+        # model synchronously while Qt processes a reset; mutating the active
+        # root during that window can leave proxy indexes pointing at detached
+        # internal pointers.  Swap the completed snapshot atomically instead.
+        new_root = _StudyBrowserNode("root", ("", "", ""))
+        new_series_nodes: Dict[str, _StudyBrowserNode] = {}
+        hierarchy = manager.get_study_hierarchy()
+        for patient_index, patient in enumerate(hierarchy.patients, start=1):
+            if privacy:
+                patient_label = t("serieslistwidget.anonymous_patient").replace(
+                    "%1", f"{patient_index:02d}"
+                )
+            else:
+                patient_label = patient.display_name or t(
+                    "serieslistwidget.unknown_patient"
+                )
+                if patient.patient_id:
+                    patient_label = f"{patient_label} · {patient.patient_id}"
+            patient_node = _StudyBrowserNode(
+                "patient",
+                (
+                    patient_label,
+                    t("serieslistwidget.study_count").replace(
+                        "%1", str(len(patient.studies))
+                    ),
+                    "",
+                ),
+                search_blob=patient_label.casefold(),
+            )
+            new_root.append(patient_node)
+            for study_index, study in enumerate(patient.studies, start=1):
+                date = SeriesListWidget._format_dicom_date(study.study_date)
+                if privacy:
+                    description = t("serieslistwidget.anonymous_study").replace(
+                        "%1", f"{study_index:02d}"
+                    )
+                else:
+                    description = study.description or t(
+                        "serieslistwidget.unknown_research"
+                    )
+                modalities = "/".join(study.modalities) or "—"
+                study_node = _StudyBrowserNode(
+                    "study",
+                    (
+                        description,
+                        date or "—",
+                        f"{modalities} · {study.series_count}",
+                    ),
+                    search_blob=f"{description} {date} {modalities}".casefold(),
+                )
+                patient_node.append(study_node)
+                for series_index, series in enumerate(study.series, start=1):
+                    info = manager.get_series_info(series.series_id)
+                    if info is None:
+                        continue
+                    if privacy:
+                        label = t("serieslistwidget.anonymous_series").replace(
+                            "%1", f"{series_index:02d}"
+                        )
+                    else:
+                        label = SeriesListWidget._series_label(info)
+                    status = (
+                        t("serieslistwidget.loaded")
+                        if info.is_loaded
+                        else t("seriesinfowidget.not_loaded")
+                    )
+                    bound = sorted(
+                        manager.get_bound_views_for_series(series.series_id)
+                    )
+                    binding_text = (
+                        " · ".join(value.replace("view_", "V") for value in bound)
+                        if bound
+                        else t("seriesinfowidget.unbound")
+                    )
+                    series_number = str(info.series_number or "").strip()
+                    sequence_details = [str(info.modality or "—")]
+                    if series_number:
+                        sequence_details.append(f"#{series_number}")
+                    sequence_details.extend(
+                        (
+                            str(info.orientation or "unknown").capitalize(),
+                            str(int(info.slice_count or 0)),
+                        )
+                    )
+                    series_node = _StudyBrowserNode(
+                        "series",
+                        (
+                            label,
+                            " · ".join(sequence_details),
+                            f"{status} · {binding_text}",
+                        ),
+                        series_id=series.series_id,
+                        modality=str(info.modality or "").upper(),
+                        series_number=series_number,
+                        orientation=str(info.orientation or "unknown").lower(),
+                        slice_count=max(0, int(info.slice_count or 0)),
+                        loaded=bool(info.is_loaded),
+                        bound_views=tuple(bound),
+                        search_blob=" ".join(
+                            (
+                                label,
+                                str(info.modality or ""),
+                                str(info.series_number or ""),
+                                str(info.orientation or ""),
+                                str(info.protocol_name or ""),
+                                str(info.body_part_examined or ""),
+                            )
+                        ).casefold(),
+                    )
+                    study_node.append(series_node)
+                    new_series_nodes[series.series_id] = series_node
+        self.beginResetModel()
+        self._root = new_root
+        self._series_nodes = new_series_nodes
+        self._icons = dict(icons)
+        self._placeholder = placeholder
+        self.endResetModel()
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 3
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        # A tree can expose children only from its first column.  Returning
+        # children for columns 1/2 violates QAbstractItemModel's contract and
+        # can make QTreeView.expandToDepth walk invalid proxy indexes.
+        if parent.isValid() and parent.column() != 0:
+            return 0
+        node = self._node(parent)
+        return len(node.children)
+
+    def index(self, row: int, column: int, parent=QModelIndex()) -> QModelIndex:
+        if parent.isValid() and parent.column() != 0:
+            return QModelIndex()
+        parent_node = self._node(parent)
+        if row < 0 or row >= len(parent_node.children) or not 0 <= column < 3:
+            return QModelIndex()
+        return self.createIndex(row, column, parent_node.children[row])
+
+    def parent(self, index: QModelIndex) -> QModelIndex:
+        if not index.isValid():
+            return QModelIndex()
+        node = self._node(index)
+        parent = node.parent
+        if parent is None or parent is self._root:
+            return QModelIndex()
+        return self.createIndex(parent.row(), 0, parent)
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        node = self._node(index)
+        if role == Qt.DisplayRole:
+            return node.values[index.column()]
+        if role == Qt.DecorationRole and index.column() == 0 and node.kind == "series":
+            return self._icons.get(node.series_id, self._placeholder)
+        if role == Qt.FontRole and node.kind in {"patient", "study"}:
+            return QFont("", 9, QFont.Bold)
+        if role == self.KindRole:
+            return node.kind
+        if role == self.SeriesIdRole:
+            return node.series_id
+        if role == self.SearchRole:
+            return node.search_blob
+        if role == self.ModalityRole:
+            return node.modality
+        if role == self.OrientationRole:
+            return node.orientation
+        if role == self.LoadedRole:
+            return node.loaded
+        if role == self.TitleRole:
+            return node.values[0]
+        if role == self.SeriesNumberRole:
+            return node.series_number
+        if role == self.SliceCountRole:
+            return node.slice_count
+        if role == self.BoundViewsRole:
+            return node.bound_views
+        if role == Qt.ToolTipRole and node.kind == "series":
+            return " · ".join(value for value in node.values if value)
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            return (
+                t("serieslistwidget.series"),
+                t("serieslistwidget.status"),
+                t("serieslistwidget.view"),
+            )[section]
+        return None
+
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.NoItemFlags
+        flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        if self.data(index, self.KindRole) == "series":
+            flags |= Qt.ItemIsDragEnabled
+        return flags
+
+    def mimeTypes(self):
+        return ["application/x-medimager-series", "text/plain"]
+
+    def mimeData(self, indexes):
+        series_ids = []
+        for index in indexes:
+            if index.column() != 0:
+                continue
+            series_id = self.data(index, self.SeriesIdRole)
+            if series_id and series_id not in series_ids:
+                series_ids.append(series_id)
+        mime = QMimeData()
+        if series_ids:
+            mime.setData(
+                "application/x-medimager-series", series_ids[0].encode("utf-8")
+            )
+            mime.setText(f"series:{series_ids[0]}")
+        return mime
+
+    def supportedDragActions(self):
+        return Qt.CopyAction
+
+    def index_for_series(self, series_id: str) -> QModelIndex:
+        node = self._series_nodes.get(series_id)
+        if node is None:
+            return QModelIndex()
+        return self.createIndex(node.row(), 0, node)
+
+    def set_series_icon(self, series_id: str, icon: QIcon) -> None:
+        self._icons[series_id] = icon
+        index = self.index_for_series(series_id)
+        if index.isValid():
+            self.dataChanged.emit(index, index, [Qt.DecorationRole])
+
+    def _node(self, index: QModelIndex) -> _StudyBrowserNode:
+        if index.isValid():
+            return index.internalPointer()
+        return self._root
+
+
+class StudyBrowserProxyModel(QSortFilterProxyModel):
+    """Recursive multi-field filter for the study browser."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._query = ""
+        self._modality = ""
+        self._orientation = ""
+        self._load_state = "all"
+        self.setDynamicSortFilter(True)
+
+    def set_filters(
+        self,
+        *,
+        query: str = "",
+        modality: str = "",
+        orientation: str = "",
+        load_state: str = "all",
+    ) -> None:
+        self._query = str(query or "").strip().casefold()
+        self._modality = str(modality or "").upper()
+        self._orientation = str(orientation or "").lower()
+        self._load_state = str(load_state or "all")
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        model = self.sourceModel()
+        index = model.index(source_row, 0, source_parent)
+        kind = model.data(index, StudyBrowserModel.KindRole)
+        if kind == "series":
+            if self._query and self._query not in str(
+                model.data(index, StudyBrowserModel.SearchRole) or ""
+            ):
+                return False
+            if self._modality and model.data(
+                index, StudyBrowserModel.ModalityRole
+            ) != self._modality:
+                return False
+            if self._orientation and model.data(
+                index, StudyBrowserModel.OrientationRole
+            ) != self._orientation:
+                return False
+            loaded = bool(model.data(index, StudyBrowserModel.LoadedRole))
+            if self._load_state == "loaded" and not loaded:
+                return False
+            if self._load_state == "pending" and loaded:
+                return False
+            return True
+        for child_row in range(model.rowCount(index)):
+            if self.filterAcceptsRow(child_row, index):
+                return True
+        return not any(
+            (self._query, self._modality, self._orientation)
+        ) and self._load_state == "all"
+
+
+class StudyBrowserDelegate(QStyledItemDelegate):
+    CARD_HEIGHT = 92
+    CARD_MARGIN_X = 4
+    CARD_MARGIN_Y = 3
+    THUMBNAIL_WIDTH = 76
+    THUMBNAIL_HEIGHT = 64
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._card_mode = False
+
+    def set_card_mode(self, enabled: bool) -> None:
+        self._card_mode = bool(enabled)
+
+    def uses_card_painting(self, index: QModelIndex) -> bool:
+        return (
+            self._card_mode
+            and index.column() == 0
+            and index.data(StudyBrowserModel.KindRole) == "series"
+        )
+
+    def card_data(self, index: QModelIndex) -> SeriesCardPresentation:
+        return SeriesCardPresentation(
+            title=str(index.data(StudyBrowserModel.TitleRole) or ""),
+            modality=str(index.data(StudyBrowserModel.ModalityRole) or "—"),
+            series_number=str(
+                index.data(StudyBrowserModel.SeriesNumberRole) or ""
+            ),
+            orientation=str(
+                index.data(StudyBrowserModel.OrientationRole) or "unknown"
+            ),
+            slice_count=max(
+                0, int(index.data(StudyBrowserModel.SliceCountRole) or 0)
+            ),
+            loaded=bool(index.data(StudyBrowserModel.LoadedRole)),
+            bound_views=tuple(
+                str(view_id)
+                for view_id in (
+                    index.data(StudyBrowserModel.BoundViewsRole) or ()
+                )
+            ),
+        )
+
+    @staticmethod
+    def viewport_badge_text(view_id: str) -> str:
+        parts = str(view_id or "").split("_")
+        if (
+            len(parts) == 3
+            and parts[0] == "view"
+            and parts[1].isdigit()
+            and parts[2].isdigit()
+        ):
+            return f"V{int(parts[1]) + 1}:{int(parts[2]) + 1}"
+        return str(view_id or "—").replace("view_", "V", 1)
+
+    @staticmethod
+    def metadata_text(card: SeriesCardPresentation) -> str:
+        values = [card.modality or "—"]
+        if card.series_number:
+            values.append(f"#{card.series_number}")
+        values.extend(
+            (
+                (card.orientation or "unknown").capitalize(),
+                t("serieslistwidget.slices_count").replace(
+                    "%1", str(card.slice_count)
+                ),
+            )
+        )
+        return " · ".join(values)
+
+    def paint(self, painter, option, index):
+        kind = index.data(StudyBrowserModel.KindRole)
+        if self._card_mode and kind == "series":
+            if index.column() == 0:
+                self._paint_series_card(painter, option, index)
+            return
+        super().paint(painter, option, index)
+
+    def _paint_series_card(self, painter, option, index) -> None:
+        card = self.card_data(index)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        palette = option.palette
+        card_rect = option.rect.adjusted(
+            self.CARD_MARGIN_X,
+            self.CARD_MARGIN_Y,
+            -self.CARD_MARGIN_X,
+            -self.CARD_MARGIN_Y,
+        )
+
+        if selected:
+            background = palette.highlight().color()
+            border = palette.highlight().color().lighter(118)
+            primary_text = palette.highlightedText().color()
+        else:
+            background = (
+                palette.alternateBase().color()
+                if hovered
+                else palette.base().color()
+            )
+            border = (
+                palette.highlight().color()
+                if hovered
+                else palette.mid().color()
+            )
+            primary_text = palette.text().color()
+
+        painter.save()
+        painter.setClipRect(option.rect)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(QBrush(background))
+        painter.setPen(QPen(border, 2 if selected else 1))
+        painter.drawRoundedRect(card_rect, 8, 8)
+
+        thumbnail_rect = QRect(
+            card_rect.left() + 8,
+            card_rect.top() + 11,
+            self.THUMBNAIL_WIDTH,
+            self.THUMBNAIL_HEIGHT,
+        )
+        thumbnail_background = QColor(20, 23, 28)
+        painter.setBrush(QBrush(thumbnail_background))
+        painter.setPen(QPen(border, 1))
+        painter.drawRoundedRect(thumbnail_rect, 5, 5)
+
+        icon = index.data(Qt.DecorationRole)
+        pixmap = icon.pixmap(thumbnail_rect.size()) if isinstance(icon, QIcon) else QPixmap()
+        if not pixmap.isNull():
+            fitted = pixmap.scaled(
+                thumbnail_rect.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            origin = QPoint(
+                thumbnail_rect.center().x() - fitted.width() // 2,
+                thumbnail_rect.center().y() - fitted.height() // 2,
+            )
+            painter.drawPixmap(origin, fitted)
+        else:
+            painter.setPen(QPen(QColor(220, 224, 230)))
+            fallback_font = QFont(option.font)
+            fallback_font.setBold(True)
+            painter.setFont(fallback_font)
+            painter.drawText(
+                thumbnail_rect,
+                Qt.AlignCenter,
+                (card.modality or "—")[:3],
+            )
+
+        text_left = thumbnail_rect.right() + 11
+        text_width = max(0, card_rect.right() - text_left - 8)
+        title_rect = QRect(text_left, card_rect.top() + 7, text_width, 22)
+        metadata_rect = QRect(text_left, title_rect.bottom() + 1, text_width, 18)
+        badges_rect = QRect(text_left, metadata_rect.bottom() + 3, text_width, 22)
+
+        title_font = QFont(option.font)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.setPen(QPen(primary_text))
+        title = QFontMetrics(title_font).elidedText(
+            card.title or "—", Qt.ElideRight, title_rect.width()
+        )
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, title)
+
+        metadata_font = QFont(option.font)
+        if metadata_font.pointSizeF() > 0:
+            metadata_font.setPointSizeF(max(7.5, metadata_font.pointSizeF() - 1.0))
+        painter.setFont(metadata_font)
+        secondary_text = QColor(primary_text)
+        secondary_text.setAlpha(205)
+        painter.setPen(QPen(secondary_text))
+        metadata = QFontMetrics(metadata_font).elidedText(
+            self.metadata_text(card), Qt.ElideRight, metadata_rect.width()
+        )
+        painter.drawText(metadata_rect, Qt.AlignLeft | Qt.AlignVCenter, metadata)
+
+        badge_font = QFont(metadata_font)
+        badge_font.setBold(True)
+        painter.setFont(badge_font)
+        next_left = self._draw_badge(
+            painter,
+            badges_rect,
+            badges_rect.left(),
+            t("serieslistwidget.loaded")
+            if card.loaded
+            else t("seriesinfowidget.not_loaded"),
+            QColor(42, 128, 82) if card.loaded else QColor(176, 116, 32),
+            QColor(255, 255, 255),
+        )
+        if card.bound_views:
+            binding_background = palette.link().color()
+            binding_foreground = QColor(255, 255, 255)
+            for view_id in card.bound_views:
+                next_left = self._draw_badge(
+                    painter,
+                    badges_rect,
+                    next_left,
+                    self.viewport_badge_text(view_id),
+                    binding_background,
+                    binding_foreground,
+                )
+                if next_left > badges_rect.right():
+                    break
+        else:
+            self._draw_badge(
+                painter,
+                badges_rect,
+                next_left,
+                t("seriesinfowidget.unbound"),
+                palette.mid().color(),
+                primary_text,
+            )
+        painter.restore()
+
+    @staticmethod
+    def _draw_badge(
+        painter,
+        bounds: QRect,
+        left: int,
+        text: str,
+        background: QColor,
+        foreground: QColor,
+    ) -> int:
+        available = bounds.right() - left + 1
+        if available < 16:
+            return bounds.right() + 1
+        metrics = painter.fontMetrics()
+        display_text = metrics.elidedText(
+            str(text), Qt.ElideRight, max(1, available - 12)
+        )
+        width = min(available, metrics.horizontalAdvance(display_text) + 14)
+        badge_rect = QRect(left, bounds.top() + 1, width, bounds.height() - 2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(background))
+        painter.drawRoundedRect(badge_rect, 7, 7)
+        painter.setPen(QPen(foreground))
+        painter.drawText(badge_rect, Qt.AlignCenter, display_text)
+        return badge_rect.right() + 5
+
+    def sizeHint(self, option, index):
+        hint = super().sizeHint(option, index)
+        kind = index.data(StudyBrowserModel.KindRole)
+        if kind == "series":
+            hint.setHeight(self.CARD_HEIGHT if self._card_mode else 64)
+        else:
+            hint.setHeight(max(28, hint.height()))
+        return hint
+
+
 class SeriesListWidget(QWidget):
     """序列列表组件
     
@@ -171,9 +787,16 @@ class SeriesListWidget(QWidget):
     series_selected = Signal(str)
     series_double_clicked = Signal(str)
     series_context_menu = Signal(str, QPoint)
+    compare_requested = Signal(object)
     thumbnail_ready = Signal(str, object)
     
-    def __init__(self, series_manager: MultiSeriesManager, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        series_manager: MultiSeriesManager,
+        parent: Optional[QWidget] = None,
+        *,
+        thumbnail_loading: bool = True,
+    ) -> None:
         """初始化序列列表组件
         
         Args:
@@ -184,10 +807,17 @@ class SeriesListWidget(QWidget):
         logger.debug("[SeriesListWidget.__init__] 初始化序列列表组件")
         
         self._series_manager = series_manager
+        self._thumbnail_loading_enabled = bool(thumbnail_loading)
         self._series_items: Dict[str, QTreeWidgetItem] = {}
         self._thumbnail_cache: Dict[str, QIcon] = {}
         self._thumbnail_pending: Set[str] = set()
         self._thumbnail_placeholder = self._create_thumbnail_placeholder()
+        settings_manager = get_settings_manager()
+        self._thumbnail_disk_cache = ThumbnailDiskCache(settings_manager)
+        self._thumbnail_disk_cache.prune()
+        self._privacy_enabled = self._to_bool(
+            settings_manager.get_setting("privacy.screen_mode", False)
+        )
         self.thumbnail_ready.connect(self._on_thumbnail_ready)
 
         self._setup_ui()
@@ -225,8 +855,90 @@ class SeriesListWidget(QWidget):
         self._group_combo.setCurrentIndex(0)
         self._group_combo.currentTextChanged.connect(self._on_group_changed)
         header_layout.addWidget(self._group_combo)
+        self._group_combo.hide()
         
         layout.addLayout(header_layout)
+
+        search_row = QHBoxLayout()
+        search_row.setSpacing(4)
+        self._search_edit = QLineEdit()
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setPlaceholderText(
+            t("serieslistwidget.search_placeholder")
+        )
+        search_row.addWidget(self._search_edit, 1)
+
+        self._modality_filter = QComboBox()
+        self._modality_filter.addItem(t("serieslistwidget.all_modalities"), "")
+        for modality in ("CT", "MR", "PT", "US", "CR", "DX", "NM"):
+            self._modality_filter.addItem(modality, modality)
+        self._modality_filter.setToolTip(t("serieslistwidget.filter_modality"))
+        search_row.addWidget(self._modality_filter)
+        layout.addLayout(search_row)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(4)
+        self._orientation_filter = QComboBox()
+        self._orientation_filter.addItem(
+            t("serieslistwidget.all_orientations"), ""
+        )
+        for key in ("axial", "coronal", "sagittal", "oblique", "unknown"):
+            self._orientation_filter.addItem(
+                t(f"serieslistwidget.orientation_{key}"), key
+            )
+        filter_row.addWidget(self._orientation_filter)
+
+        self._load_filter = QComboBox()
+        self._load_filter.addItem(t("serieslistwidget.all_states"), "all")
+        self._load_filter.addItem(t("serieslistwidget.loaded"), "loaded")
+        self._load_filter.addItem(
+            t("serieslistwidget.pending_or_failed"), "pending"
+        )
+        filter_row.addWidget(self._load_filter)
+
+        self._density_combo = QComboBox()
+        self._density_combo.addItem(
+            t("serieslistwidget.compact_view"), "compact"
+        )
+        self._density_combo.addItem(t("serieslistwidget.card_view"), "cards")
+        filter_row.addWidget(self._density_combo)
+
+        self._compare_button = QPushButton(
+            t("serieslistwidget.compare_selected")
+        )
+        self._compare_button.setEnabled(False)
+        self._compare_button.setToolTip(
+            t("serieslistwidget.compare_selected_tooltip")
+        )
+        filter_row.addWidget(self._compare_button)
+        layout.addLayout(filter_row)
+
+        self._browser_model = StudyBrowserModel(self)
+        self._browser_proxy = StudyBrowserProxyModel(self)
+        self._browser_proxy.setSourceModel(self._browser_model)
+        self._browser_view = QTreeView()
+        self._browser_view.setModel(self._browser_proxy)
+        self._browser_view.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+        )
+        self._browser_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._browser_view.setDragEnabled(True)
+        self._browser_view.setDragDropMode(QAbstractItemView.DragOnly)
+        self._browser_view.setIconSize(_THUMBNAIL_SIZE)
+        self._browser_view.setUniformRowHeights(False)
+        self._browser_view.setAlternatingRowColors(True)
+        self._browser_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._browser_delegate = StudyBrowserDelegate(self._browser_view)
+        self._browser_view.setItemDelegate(self._browser_delegate)
+        self._browser_expand_timer = QTimer(self)
+        self._browser_expand_timer.setSingleShot(True)
+        self._browser_expand_timer.timeout.connect(self._expand_browser_groups)
+        browser_header = self._browser_view.header()
+        browser_header.setStretchLastSection(False)
+        browser_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        browser_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        browser_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        layout.addWidget(self._browser_view, 1)
         
         # 序列树形列表
         self._tree_widget = DraggableTreeWidget()
@@ -250,13 +962,38 @@ class SeriesListWidget(QWidget):
         self._tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree_widget.customContextMenuRequested.connect(self._on_context_menu)
         self._tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tree_widget.hide()
         
-        layout.addWidget(self._tree_widget)
+        layout.addWidget(self._tree_widget, 0)
         
         # 统计信息
         self._stats_label = QLabel(t("serieslistwidget.total_0_sequences"))
         self._stats_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._stats_label)
+
+        self._search_edit.textChanged.connect(self._apply_browser_filters)
+        self._modality_filter.currentIndexChanged.connect(
+            self._apply_browser_filters
+        )
+        self._orientation_filter.currentIndexChanged.connect(
+            self._apply_browser_filters
+        )
+        self._load_filter.currentIndexChanged.connect(
+            self._apply_browser_filters
+        )
+        self._density_combo.currentIndexChanged.connect(
+            self._on_density_changed
+        )
+        self._compare_button.clicked.connect(self._emit_compare_requested)
+        self._browser_view.selectionModel().selectionChanged.connect(
+            self._on_browser_selection_changed
+        )
+        self._browser_view.doubleClicked.connect(
+            self._on_browser_double_clicked
+        )
+        self._browser_view.customContextMenuRequested.connect(
+            self._on_browser_context_menu
+        )
         
         logger.debug("[SeriesListWidget._setup_ui] 序列列表UI设置完成")
     
@@ -300,6 +1037,8 @@ class SeriesListWidget(QWidget):
                 top_level = self._tree_widget.topLevelItem(index)
                 if top_level.data(0, Qt.UserRole) is None:
                     top_level.setExpanded(True)
+
+            self._refresh_browser_model()
             
             logger.debug(f"[SeriesListWidget._refresh_tree] 树形列表刷新完成: {len(series_ids)}个序列")
             
@@ -426,7 +1165,11 @@ class SeriesListWidget(QWidget):
             
             # 存储项目引用
             self._series_items[series_id] = item
-            if series_info.is_loaded and series_id not in self._thumbnail_cache:
+            if (
+                self._thumbnail_loading_enabled
+                and series_info.is_loaded
+                and series_id not in self._thumbnail_cache
+            ):
                 self._schedule_thumbnail(series_id)
             
             logger.debug(f"[SeriesListWidget._add_series_item] 添加序列项目: {series_id}")
@@ -499,31 +1242,36 @@ class SeriesListWidget(QWidget):
         painter.end()
         return QIcon(pixmap)
 
-    def _thumbnail_disk_path(self, series_id: str) -> Path:
+    def _thumbnail_identity(self, series_id: str) -> str:
         info = self._series_manager.get_series_info(series_id)
-        identity = (
+        return (
             getattr(info, "series_instance_uid", "")
             or ("|".join(getattr(info, "file_paths", [])[:2]) if info else "")
             or series_id
         )
-        digest = hashlib.sha256(identity.encode("utf-8", "replace")).hexdigest()
-        directory = get_settings_manager().get_config_directory() / "thumbnail_cache"
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory / f"{digest}.png"
+
+    def _thumbnail_disk_path(self, series_id: str) -> Path:
+        return self._thumbnail_disk_cache.path_for_identity(
+            self._thumbnail_identity(series_id)
+        )
 
     def _schedule_thumbnail(self, series_id: str) -> None:
         """Snapshot on the GUI thread; render and resize on a worker."""
         if series_id in self._thumbnail_cache or series_id in self._thumbnail_pending:
             return
-        disk_path = self._thumbnail_disk_path(series_id)
-        if disk_path.is_file():
+        identity = self._thumbnail_identity(series_id)
+        disk_path = self._thumbnail_disk_cache.lookup(identity)
+        if disk_path is not None:
             icon = QIcon(str(disk_path))
             if not icon.isNull():
                 self._thumbnail_cache[series_id] = icon
+                if hasattr(self, "_browser_model"):
+                    self._browser_model.set_series_icon(series_id, icon)
                 item = self._series_items.get(series_id)
                 if item is not None:
                     item.setIcon(0, icon)
                 return
+            self._thumbnail_disk_cache.discard(identity)
         try:
             model = self._series_manager.get_series_model(series_id)
             if model is None or not model.has_image():
@@ -570,22 +1318,20 @@ class SeriesListWidget(QWidget):
         if display_data is not None:
             try:
                 image = qimage_from_display_data(display_data).copy()
-                disk_path = self._thumbnail_disk_path(series_id)
-                image.save(str(disk_path), "PNG")
-                cached_files = sorted(
-                    disk_path.parent.glob("*.png"),
-                    key=lambda candidate: candidate.stat().st_mtime,
-                    reverse=True,
-                )
-                for stale in cached_files[256:]:
-                    try:
-                        stale.unlink()
-                    except OSError:
-                        pass
                 icon = QIcon(QPixmap.fromImage(image))
             except Exception as error:
                 logger.warning("[SeriesListWidget] 缩略图转为图标失败: %s", error)
+            else:
+                try:
+                    self._thumbnail_disk_cache.write_png(
+                        self._thumbnail_identity(series_id),
+                        lambda path: image.save(str(path), "PNG"),
+                    )
+                except OSError as error:
+                    logger.warning("[SeriesListWidget] 无法写入缩略图缓存: %s", error)
         self._thumbnail_cache[series_id] = icon
+        if hasattr(self, "_browser_model"):
+            self._browser_model.set_series_icon(series_id, icon)
         item = self._series_items.get(series_id)
         if item is not None:
             item.setIcon(0, icon)
@@ -688,12 +1434,162 @@ class SeriesListWidget(QWidget):
 
     def _format_series_text(self, series_info: SeriesInfo) -> str:
         """格式化序列显示文本"""
+        return self._series_label(series_info)
+
+    @staticmethod
+    def _series_label(series_info: SeriesInfo) -> str:
         if series_info.series_description:
-            return f"{series_info.series_description}"
-        elif series_info.modality:
-            return f"{series_info.modality} - {t('serieslistwidget.series')}{series_info.series_number}"
-        else:
-            return t("viewbindingwidget.sequence_value").replace("%1", str(series_info.series_number))
+            return str(series_info.series_description)
+        if series_info.modality:
+            return (
+                f"{series_info.modality} - "
+                f"{t('serieslistwidget.series')}{series_info.series_number}"
+            )
+        return t("viewbindingwidget.sequence_value").replace(
+            "%1", str(series_info.series_number)
+        )
+
+    def _refresh_browser_model(self) -> None:
+        selected = set(self.get_selected_series_ids())
+        self._browser_model.rebuild(
+            self._series_manager,
+            self._thumbnail_cache,
+            self._thumbnail_placeholder,
+            privacy=self._privacy_enabled,
+        )
+        self._schedule_browser_expand()
+        if selected:
+            selection_model = self._browser_view.selectionModel()
+            for series_id in selected:
+                source_index = self._browser_model.index_for_series(series_id)
+                proxy_index = self._browser_proxy.mapFromSource(source_index)
+                if proxy_index.isValid():
+                    selection_model.select(
+                        proxy_index,
+                        QItemSelectionModel.Select | QItemSelectionModel.Rows,
+                    )
+        self._apply_browser_filters()
+
+    @staticmethod
+    def _to_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _apply_browser_filters(self, *_args) -> None:
+        self._browser_proxy.set_filters(
+            query=self._search_edit.text(),
+            modality=self._modality_filter.currentData() or "",
+            orientation=self._orientation_filter.currentData() or "",
+            load_state=self._load_filter.currentData() or "all",
+        )
+        self._schedule_browser_expand()
+
+    def _schedule_browser_expand(self) -> None:
+        # Expanding synchronously from a manager signal means QTreeView may
+        # recurse through proxy indexes in the same stack as modelReset.  Qt 6
+        # on Windows can dereference an invalid transient proxy index there.
+        # A zero-delay, widget-owned timer lets the reset settle first and is
+        # automatically cancelled when this panel is destroyed.
+        if self._browser_view.isVisible():
+            self._browser_expand_timer.start(0)
+
+    def _expand_browser_groups(self) -> None:
+        if not self._browser_view.isVisible():
+            return
+        for patient_row in range(self._browser_proxy.rowCount()):
+            patient_index = self._browser_proxy.index(patient_row, 0)
+            if not patient_index.isValid():
+                continue
+            self._browser_view.setExpanded(patient_index, True)
+            for study_row in range(self._browser_proxy.rowCount(patient_index)):
+                study_index = self._browser_proxy.index(study_row, 0, patient_index)
+                if study_index.isValid():
+                    self._browser_view.setExpanded(study_index, True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._schedule_browser_expand()
+
+    def _on_density_changed(self, *_args) -> None:
+        cards = self._density_combo.currentData() == "cards"
+        self._browser_delegate.set_card_mode(cards)
+        self._browser_view.setIconSize(
+            QSize(96, 72) if cards else _THUMBNAIL_SIZE
+        )
+        self._browser_view.setAlternatingRowColors(not cards)
+        self._browser_view.setMouseTracking(cards)
+        # Do not traverse proxy indexes here. This slot can run synchronously
+        # after a source-model reset; retaining recursive proxy QModelIndex
+        # parents in that window can dereference invalid Qt internal pointers
+        # on Windows. Hiding the secondary columns gives column zero the full
+        # viewport width without touching model indexes at all.
+        self._browser_view.setColumnHidden(1, cards)
+        self._browser_view.setColumnHidden(2, cards)
+        self._browser_view.doItemsLayout()
+        self._browser_view.viewport().update()
+
+    def _source_index(self, proxy_index: QModelIndex) -> QModelIndex:
+        return self._browser_proxy.mapToSource(proxy_index)
+
+    def get_selected_series_ids(self) -> List[str]:
+        if not hasattr(self, "_browser_view"):
+            return []
+        result = []
+        for proxy_index in self._browser_view.selectionModel().selectedRows(0):
+            source_index = self._source_index(proxy_index)
+            series_id = self._browser_model.data(
+                source_index, StudyBrowserModel.SeriesIdRole
+            )
+            if series_id and series_id not in result:
+                result.append(str(series_id))
+        return result
+
+    def _on_browser_selection_changed(self, *_args) -> None:
+        series_ids = self.get_selected_series_ids()
+        self._compare_button.setEnabled(bool(series_ids))
+        if series_ids:
+            self.series_selected.emit(series_ids[0])
+
+    def _on_browser_double_clicked(self, proxy_index: QModelIndex) -> None:
+        source_index = self._source_index(proxy_index)
+        series_id = self._browser_model.data(
+            source_index, StudyBrowserModel.SeriesIdRole
+        )
+        if series_id:
+            self.series_double_clicked.emit(str(series_id))
+
+    def _on_browser_context_menu(self, position: QPoint) -> None:
+        proxy_index = self._browser_view.indexAt(position)
+        if not proxy_index.isValid():
+            return
+        source_index = self._source_index(proxy_index)
+        series_id = self._browser_model.data(
+            source_index, StudyBrowserModel.SeriesIdRole
+        )
+        if series_id:
+            self.series_context_menu.emit(
+                str(series_id),
+                self._browser_view.viewport().mapToGlobal(position),
+            )
+
+    def _emit_compare_requested(self) -> None:
+        series_ids = self.get_selected_series_ids()
+        if series_ids:
+            self.compare_requested.emit(tuple(series_ids))
+
+    def set_privacy_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._privacy_enabled != enabled:
+            self._privacy_enabled = enabled
+            self._refresh_browser_model()
+
+    def set_density(self, density: str) -> None:
+        index = self._density_combo.findData(
+            "cards" if density == "cards" else "compact"
+        )
+        if index >= 0:
+            self._density_combo.setCurrentIndex(index)
     
     def _on_selection_changed(self) -> None:
         """处理选择变更"""
@@ -764,6 +1660,7 @@ class SeriesListWidget(QWidget):
             self._add_slice_items(item, series_id)
             item.setIcon(0, self._thumbnail_placeholder)
             self._schedule_thumbnail(series_id)
+        self._refresh_browser_model()
     
     def _on_binding_changed(self, view_id: str, series_id: str) -> None:
         """处理绑定变更事件"""
@@ -777,6 +1674,7 @@ class SeriesListWidget(QWidget):
                 item.setText(2, t("serieslistwidget.view_count").replace("%1", str(len(bound_views))))
             else:
                 item.setText(2, t("seriesinfowidget.unbound"))
+        self._refresh_browser_model()
 
 
 class ViewBindingWidget(QWidget):
@@ -1165,22 +2063,28 @@ class SeriesInfoWidget(QWidget):
 
 class SeriesPanel(QWidget):
     """序列面板
-    
+
     整合序列列表、视图绑定和序列信息等功能的完整面板。
-    
+
     Signals:
         series_selected (str): 序列被选中时发出
         binding_requested (str, str): 请求绑定时发出
         layout_change_requested (int, int): 请求布局变更时发出
     """
-    
+
     series_selected = Signal(str)
     binding_requested = Signal(str, str)
     layout_change_requested = Signal(int, int)
-    
-    def __init__(self, series_manager: MultiSeriesManager, 
-                 binding_manager: SeriesViewBindingManager,
-                 parent: Optional[QWidget] = None) -> None:
+    compare_requested = Signal(object)
+
+    def __init__(
+        self,
+        series_manager: MultiSeriesManager,
+        binding_manager: SeriesViewBindingManager,
+        parent: Optional[QWidget] = None,
+        *,
+        thumbnail_loading: bool = True,
+    ) -> None:
         """初始化序列面板
         
         Args:
@@ -1196,6 +2100,7 @@ class SeriesPanel(QWidget):
         self._connected_slice_signals: Dict[str, tuple[ImageDataModel, object]] = {}
         self._series_removal_handler = None
         
+        self._thumbnail_loading = bool(thumbnail_loading)
         self._setup_ui()
         self._connect_signals()
         
@@ -1213,24 +2118,37 @@ class SeriesPanel(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
+
+        details_row = QHBoxLayout()
+        details_row.addStretch()
+        self._details_button = QPushButton(t("seriespanel.show_details"))
+        self._details_button.setCheckable(True)
+        self._details_button.setChecked(False)
+        details_row.addWidget(self._details_button)
+        main_layout.addLayout(details_row)
         
         # 创建分割器
         splitter = QSplitter(Qt.Vertical)
         
         # 序列列表组件
-        self._series_list = SeriesListWidget(self._series_manager)
+        self._series_list = SeriesListWidget(
+            self._series_manager,
+            thumbnail_loading=self._thumbnail_loading,
+        )
         splitter.addWidget(self._series_list)
         
         # 视图绑定组件
         self._binding_widget = ViewBindingWidget(self._series_manager)
         splitter.addWidget(self._binding_widget)
+        self._binding_widget.hide()
         
         # 序列信息组件
         self._info_widget = SeriesInfoWidget(self._series_manager)
         splitter.addWidget(self._info_widget)
+        self._info_widget.hide()
         
         # 设置分割器比例
-        splitter.setSizes([200, 150, 150])
+        splitter.setSizes([500, 0, 0])
         
         main_layout.addWidget(splitter)
         
@@ -1244,6 +2162,8 @@ class SeriesPanel(QWidget):
         self._series_list.series_selected.connect(self._on_series_selected)
         self._series_list.series_double_clicked.connect(self._on_series_double_clicked)
         self._series_list.series_context_menu.connect(self._on_series_context_menu)
+        self._series_list.compare_requested.connect(self.compare_requested)
+        self._details_button.toggled.connect(self._info_widget.setVisible)
         
         # 序列管理器信号 - 监听切片变化
         self._series_manager.active_view_changed.connect(self._on_active_view_changed)

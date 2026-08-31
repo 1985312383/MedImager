@@ -3,7 +3,7 @@ import re
 
 
 def test_version_falls_back_to_pyproject():
-    assert app_info.get_version() == "2.5.0"
+    assert app_info.get_version() == "2.6.0"
 
 
 def test_latest_changelog_and_about_include_release_metadata():

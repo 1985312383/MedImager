@@ -5,16 +5,95 @@
 处理用户偏好设置的保存与加载
 """
 
+import base64
 import json
 import gc
+import os
 import sys
+import tempfile
 import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Mapping, Optional, Union
 from concurrent.futures import ThreadPoolExecutor
-from PySide6.QtCore import QSettings, QStandardPaths, QObject, Signal
+from PySide6.QtCore import QByteArray, QSettings, QStandardPaths, QObject, Signal
+from medimager.core.settings_registry import (
+    DEFAULT_SETTINGS_REGISTRY,
+    SettingSpec,
+    SettingsRegistry,
+)
 from medimager.utils.logger import get_logger
+
+
+_SETTINGS_EXPORT_FORMAT = "medimager-settings"
+_SETTINGS_SCHEMA_VERSION = 2
+_MAX_IMPORT_BYTES = 5 * 1024 * 1024
+_MAX_IMPORT_KEYS = 2048
+_MISSING = object()
+_STATE_KEYS = {
+    "recent_files",
+    "window_geometry",
+    "window_state",
+    "study_workspace.document",
+    "study_workspace.states",
+}
+
+
+def _encode_json_value(value: Any) -> Any:
+    """Encode QSettings-native values without stringifying their type."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (QByteArray, bytes, bytearray, memoryview)):
+        return {
+            "__medimager_type__": "bytes",
+            "base64": base64.b64encode(bytes(value)).decode("ascii"),
+        }
+    if isinstance(value, Path):
+        return {"__medimager_type__": "path", "value": str(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _encode_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_json_value(item) for item in value]
+    raise TypeError(f"Unsupported settings value type: {type(value).__name__}")
+
+
+def _decode_json_value(value: Any, depth: int = 0) -> Any:
+    if depth > 32:
+        raise ValueError("Settings document nesting is too deep")
+    if isinstance(value, list):
+        return [_decode_json_value(item, depth + 1) for item in value]
+    if not isinstance(value, dict):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        raise ValueError("Unsupported settings JSON value")
+    marker = value.get("__medimager_type__")
+    if marker is not None:
+        if set(value) == {"__medimager_type__", "base64"} and marker == "bytes":
+            try:
+                return QByteArray(base64.b64decode(value["base64"], validate=True))
+            except (TypeError, ValueError) as error:
+                raise ValueError("Invalid encoded byte array") from error
+        if set(value) == {"__medimager_type__", "value"} and marker == "path":
+            return str(value["value"])
+        raise ValueError("Unknown encoded settings value")
+    return {
+        str(key): _decode_json_value(item, depth + 1)
+        for key, item in value.items()
+    }
+
+
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate settings key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"Non-finite JSON number is not allowed: {value}")
 
 
 class PerformanceManager:
@@ -237,12 +316,16 @@ class SettingsManager(QObject):
     
     # 性能设置变化信号
     performance_settings_changed = Signal(str, object)  # 设置类型, 新值
+    setting_changed = Signal(str, object)
+    settings_imported = Signal(object)
     
     def __init__(self, 
                  app_name: str = "MedImager",
                  org_name: str = "MedImager Project",
                  use_json: bool = False,
-                 parent: Optional[QObject] = None) -> None:
+                 parent: Optional[QObject] = None,
+                 registry: Optional[SettingsRegistry] = None,
+                 config_dir: Optional[Union[str, Path]] = None) -> None:
         """初始化设置管理器
         
         Args:
@@ -255,14 +338,19 @@ class SettingsManager(QObject):
         self.app_name = app_name
         self.org_name = org_name
         self.use_json = use_json
+        self.registry = registry or DEFAULT_SETTINGS_REGISTRY
         
         # 初始化性能管理器
         self.performance_manager = PerformanceManager()
         
         if use_json:
             # 使用JSON文件存储
-            self.config_dir = Path(
-                QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+            self.config_dir = (
+                Path(config_dir).expanduser().resolve(strict=False)
+                if config_dir is not None
+                else Path(
+                    QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+                )
             )
             self.config_dir.mkdir(parents=True, exist_ok=True)
             self.config_file = self.config_dir / f"{app_name.lower()}_settings.json"
@@ -271,6 +359,8 @@ class SettingsManager(QObject):
         else:
             # 使用Qt的QSettings
             self.qt_settings = QSettings(org_name, app_name)
+
+        self._ensure_schema_version()
             
         # 初始化性能设置
         self._initialize_performance_settings()
@@ -286,199 +376,335 @@ class SettingsManager(QObject):
         self.performance_manager.set_cache_size(cache_size)
             
     def _load_json_settings(self) -> None:
-        """从JSON文件加载设置"""
+        """Load JSON settings, accepting both legacy and encoded values."""
         try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    self._settings_data = json.load(f)
-            else:
+            if not self.config_file.exists():
                 self._settings_data = {}
-        except Exception as e:
-            print(f"加载设置文件失败: {e}")
+                return
+            with self.config_file.open("r", encoding="utf-8") as handle:
+                loaded = json.load(
+                    handle,
+                    object_pairs_hook=_reject_duplicate_keys,
+                    parse_constant=_reject_json_constant,
+                )
+            decoded = _decode_json_value(loaded)
+            self._settings_data = decoded if isinstance(decoded, dict) else {}
+        except Exception as error:
+            get_logger(__name__).warning(
+                "Settings file could not be loaded: %s", error.__class__.__name__
+            )
             self._settings_data = {}
-            
-    def _save_json_settings(self) -> None:
-        """保存设置到JSON文件"""
+
+    def _save_json_settings(self) -> bool:
+        """Atomically save the JSON test/portable backend."""
+        temporary_path: Optional[Path] = None
         try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self._settings_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"保存设置文件失败: {e}")
-            
-    def get_setting(self, key: str, default_value: Any = None) -> Any:
-        """获取设置值
-        
-        Args:
-            key: 设置键名
-            default_value: 默认值
-            
-        Returns:
-            Any: 设置值
-        """
+            self.config_dir.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(
+                _encode_json_value(self._settings_data),
+                indent=2,
+                ensure_ascii=False,
+            ) + "\n"
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{self.config_file.name}.",
+                suffix=".tmp",
+                dir=self.config_dir,
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.config_file)
+            return True
+        except Exception as error:
+            get_logger(__name__).warning(
+                "Settings file could not be saved: %s", error.__class__.__name__
+            )
+            return False
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
+
+    def _raw_value(self, key: str, default: Any = _MISSING) -> Any:
         if self.use_json:
-            return self._settings_data.get(key, default_value)
-        else:
-            return self.qt_settings.value(key, default_value)
-            
-    def set_setting(self, key: str, value: Any) -> None:
-        """设置值
-        
-        Args:
-            key: 设置键名
-            value: 设置值
-        """
+            return self._settings_data.get(key, default)
+        if not self.qt_settings.contains(key):
+            return default
+        return self.qt_settings.value(key)
+
+    def _ensure_schema_version(self) -> None:
+        raw = self._raw_value("settings.schema_version", _MISSING)
+        try:
+            version = int(raw) if raw is not _MISSING else 0
+        except (TypeError, ValueError):
+            version = 0
+        if version >= _SETTINGS_SCHEMA_VERSION:
+            return
         if self.use_json:
-            self._settings_data[key] = value
+            self._settings_data["settings.schema_version"] = _SETTINGS_SCHEMA_VERSION
             self._save_json_settings()
         else:
-            self.qt_settings.setValue(key, value)
+            self.qt_settings.setValue("settings.schema_version", _SETTINGS_SCHEMA_VERSION)
             self.qt_settings.sync()
-            
-        # 处理性能设置的实时应用
-        if key == 'thread_count':
-            self.performance_manager.set_thread_count(int(value))
-            self.performance_settings_changed.emit('thread_count', value)
-        elif key == 'cache_size':
-            self.performance_manager.set_cache_size(int(value))
-            self.performance_settings_changed.emit('cache_size', value)
-            
-    def has_setting(self, key: str) -> bool:
-        """检查是否存在指定设置
-        
-        Args:
-            key: 设置键名
-            
-        Returns:
-            bool: 是否存在
-        """
+
+    def get_setting(self, key: str, default_value: Any = None) -> Any:
+        raw = self._raw_value(key, _MISSING)
+        spec = self.registry.spec(key)
+        if raw is _MISSING:
+            if default_value is not None:
+                return self.registry.coerce(key, default_value)
+            return spec.coerce(spec.default) if spec is not None else None
+        if spec is None:
+            return raw
+        fallback = spec.default if default_value is None else default_value
+        return spec.coerce(raw, fallback)
+
+    def get_typed(self, setting: str | SettingSpec[Any]) -> Any:
+        spec = setting if isinstance(setting, SettingSpec) else self.registry.require(setting)
+        return self.get_setting(spec.key, spec.default)
+
+    def set_setting(self, key: str, value: Any) -> None:
+        self.set_many({key: value})
+
+    def set_typed(self, setting: str | SettingSpec[Any], value: Any) -> Any:
+        spec = setting if isinstance(setting, SettingSpec) else self.registry.require(setting)
+        normalized = spec.coerce(value)
+        self.set_many({spec.key: normalized})
+        return normalized
+
+    def set_many(self, values: Mapping[str, Any]) -> None:
+        normalized = {
+            str(key): self.registry.coerce(str(key), value)
+            for key, value in values.items()
+        }
+        previous = {
+            key: self._raw_value(key, _MISSING)
+            for key in normalized
+        }
         if self.use_json:
-            return key in self._settings_data
+            self._settings_data.update(normalized)
+            if not self._save_json_settings():
+                for key, old_value in previous.items():
+                    if old_value is _MISSING:
+                        self._settings_data.pop(key, None)
+                    else:
+                        self._settings_data[key] = old_value
+                raise OSError("Settings could not be saved")
         else:
-            return self.qt_settings.contains(key)
-            
+            for key, value in normalized.items():
+                self.qt_settings.setValue(key, value)
+            self.qt_settings.sync()
+            if self.qt_settings.status() != QSettings.Status.NoError:
+                for key, old_value in previous.items():
+                    if old_value is _MISSING:
+                        self.qt_settings.remove(key)
+                    else:
+                        self.qt_settings.setValue(key, old_value)
+                self.qt_settings.sync()
+                raise OSError("Settings could not be saved")
+        for key, value in normalized.items():
+            self._apply_setting_change(key, value)
+
+    def _apply_setting_change(self, key: str, value: Any) -> None:
+        if key == "thread_count":
+            self.performance_manager.set_thread_count(int(value))
+            self.performance_settings_changed.emit(key, value)
+        elif key == "cache_size":
+            self.performance_manager.set_cache_size(int(value))
+            self.performance_settings_changed.emit(key, value)
+        self.setting_changed.emit(key, value)
+
+    def has_setting(self, key: str) -> bool:
+        return self._raw_value(key, _MISSING) is not _MISSING
+
     def remove_setting(self, key: str) -> None:
-        """删除设置
-        
-        Args:
-            key: 设置键名
-        """
         if self.use_json:
             if key in self._settings_data:
                 del self._settings_data[key]
                 self._save_json_settings()
         else:
             self.qt_settings.remove(key)
-            
+            self.qt_settings.sync()
+
     def get_all_settings(self) -> Dict[str, Any]:
-        """获取所有设置
-        
-        Returns:
-            Dict[str, Any]: 所有设置的字典
-        """
         if self.use_json:
             return self._settings_data.copy()
-        else:
-            settings = {}
-            for key in self.qt_settings.allKeys():
-                settings[key] = self.qt_settings.value(key)
-            return settings
-            
+        return {
+            key: self.qt_settings.value(key)
+            for key in self.qt_settings.allKeys()
+        }
+
     def clear_all_settings(self) -> None:
-        """清除所有设置"""
         if self.use_json:
             self._settings_data.clear()
             self._save_json_settings()
         else:
             self.qt_settings.clear()
-            
+            self.qt_settings.sync()
+
     def save_settings(self) -> None:
-        """保存设置（对于Qt设置这是同步操作）"""
         if self.use_json:
             self._save_json_settings()
         else:
             self.qt_settings.sync()
-            
-    def export_settings(self, file_path: Union[str, Path]) -> bool:
-        """导出设置到文件
-        
-        Args:
-            file_path: 导出文件路径
-            
-        Returns:
-            bool: 是否成功
-        """
+
+    def export_settings(
+        self,
+        file_path: Union[str, Path],
+        *,
+        include_state: bool = False,
+    ) -> bool:
+        """Atomically export a versioned, JSON-safe settings document."""
+        temporary_path: Optional[Path] = None
         try:
-            settings = self.get_all_settings()
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
+            exported = {}
+            for key, value in self.get_all_settings().items():
+                spec = self.registry.spec(key)
+                if key == "settings.schema_version":
+                    continue
+                if not include_state and key in _STATE_KEYS:
+                    continue
+                if spec is not None and not spec.exportable and not (
+                    include_state and key in _STATE_KEYS
+                ):
+                    continue
+                exported[key] = _encode_json_value(value)
+            document = {
+                "format": _SETTINGS_EXPORT_FORMAT,
+                "schema_version": _SETTINGS_SCHEMA_VERSION,
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "settings": exported,
+            }
+            destination = Path(file_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(document, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, destination)
             return True
-        except Exception as e:
-            print(f"导出设置失败: {e}")
+        except Exception as error:
+            get_logger(__name__).warning(
+                "Settings export failed: %s", error.__class__.__name__
+            )
             return False
-            
-    def import_settings(self, file_path: Union[str, Path]) -> bool:
-        """从文件导入设置
-        
-        Args:
-            file_path: 导入文件路径
-            
-        Returns:
-            bool: 是否成功
-        """
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
+
+    def import_settings(
+        self,
+        file_path: Union[str, Path],
+        *,
+        allow_unknown: bool = True,
+        include_state: bool = False,
+    ) -> bool:
+        """Validate the complete document before applying any imported value."""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                imported_settings = json.load(f)
-                
-            # 批量设置
-            for key, value in imported_settings.items():
-                self.set_setting(key, value)
-                
+            source = Path(file_path)
+            if source.stat().st_size > _MAX_IMPORT_BYTES:
+                raise ValueError("Settings document is too large")
+            with source.open("r", encoding="utf-8") as handle:
+                document = json.load(
+                    handle,
+                    object_pairs_hook=_reject_duplicate_keys,
+                    parse_constant=_reject_json_constant,
+                )
+            if not isinstance(document, dict):
+                raise ValueError("Settings document must be an object")
+            if document.get("format") == _SETTINGS_EXPORT_FORMAT:
+                version = int(document.get("schema_version", 0))
+                if version < 1 or version > _SETTINGS_SCHEMA_VERSION:
+                    raise ValueError("Unsupported settings schema")
+                imported = document.get("settings")
+            else:
+                # Legacy exports were a plain key/value mapping.
+                legacy_version = document.get("settings.schema_version")
+                if legacy_version is not None and int(legacy_version) > _SETTINGS_SCHEMA_VERSION:
+                    raise ValueError("Unsupported settings schema")
+                imported = document
+            if not isinstance(imported, dict) or len(imported) > _MAX_IMPORT_KEYS:
+                raise ValueError("Invalid settings mapping")
+            normalized: dict[str, Any] = {}
+            for raw_key, encoded in imported.items():
+                key = str(raw_key)
+                if (
+                    not key
+                    or len(key) > 256
+                    or any(ord(character) < 32 for character in key)
+                ):
+                    raise ValueError("Invalid settings key")
+                if key == "settings.schema_version":
+                    continue
+                if not include_state and key in _STATE_KEYS:
+                    continue
+                spec = self.registry.spec(key)
+                if spec is None and not allow_unknown:
+                    continue
+                if spec is not None and not spec.exportable and not (
+                    include_state and key in _STATE_KEYS
+                ):
+                    continue
+                decoded = _decode_json_value(encoded)
+                normalized[key] = (
+                    spec.coerce(decoded) if spec is not None else decoded
+                )
+            self.set_many(normalized)
+            self.settings_imported.emit(tuple(normalized))
             return True
-        except Exception as e:
-            print(f"导入设置失败: {e}")
+        except Exception as error:
+            get_logger(__name__).warning(
+                "Settings import failed: %s", error.__class__.__name__
+            )
             return False
-            
-    def backup_settings(self) -> Optional[Path]:
-        """备份当前设置
-        
-        Returns:
-            Optional[Path]: 备份文件路径，失败返回None
-        """
+
+    def backup_settings(self, *, include_state: bool = False) -> Optional[Path]:
         try:
-            from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = self.config_dir / f"{self.app_name.lower()}_backup_{timestamp}.json"
-            
-            if self.export_settings(backup_file):
-                return backup_file
+            directory = self.get_config_directory() / "settings_backups"
+            directory.mkdir(parents=True, exist_ok=True)
+            backup_file = directory / f"{self.app_name.lower()}_backup_{timestamp}.json"
+            return backup_file if self.export_settings(
+                backup_file, include_state=include_state
+            ) else None
+        except Exception as error:
+            get_logger(__name__).warning(
+                "Settings backup failed: %s", error.__class__.__name__
+            )
             return None
-        except Exception as e:
-            print(f"备份设置失败: {e}")
-            return None
-            
-    def restore_settings(self, backup_file: Union[str, Path]) -> bool:
-        """从备份恢复设置
-        
-        Args:
-            backup_file: 备份文件路径
-            
-        Returns:
-            bool: 是否成功
-        """
-        return self.import_settings(backup_file)
-        
+
+    def restore_settings(
+        self, backup_file: Union[str, Path], *, include_state: bool = False
+    ) -> bool:
+        return self.import_settings(backup_file, include_state=include_state)
     def get_config_directory(self) -> Path:
-        """获取配置目录路径
-        
-        Returns:
-            Path: 配置目录路径
+        """Return a writable directory for themes, caches, drafts, and backups.
+
+        Native QSettings is registry-backed on Windows, where ``fileName()``
+        is a registry path rather than a filesystem location.
         """
         if self.use_json:
-            return self.config_dir
+            directory = self.config_dir
         else:
-            # Qt设置的位置因平台而异
-            return Path(self.qt_settings.fileName()).parent
-            
+            directory = Path(
+                QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+            )
+            if directory.name.casefold() != self.app_name.casefold():
+                safe_app_name = "".join(
+                    character
+                    for character in self.app_name
+                    if character.isalnum() or character in {"-", "_", " "}
+                ).strip() or "MedImager"
+                directory = directory / safe_app_name
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
     def reset_to_defaults(self, default_settings: Dict[str, Any]) -> None:
         """重置为默认设置
         
@@ -486,8 +712,8 @@ class SettingsManager(QObject):
             default_settings: 默认设置字典
         """
         self.clear_all_settings()
-        for key, value in default_settings.items():
-            self.set_setting(key, value)
+        self.set_many(default_settings)
+        self._ensure_schema_version()
             
     def get_performance_manager(self) -> PerformanceManager:
         """获取性能管理器
@@ -530,7 +756,17 @@ def get_settings_manager() -> SettingsManager:
     if _settings_manager is None:
         with _settings_manager_lock:
             if _settings_manager is None:
-                _settings_manager = SettingsManager()
+                smoke_root = os.environ.get(
+                    "MEDIMAGER_SMOKE_APP_DATA_ROOT", ""
+                ).strip()
+                _settings_manager = (
+                    SettingsManager(
+                        use_json=True,
+                        config_dir=Path(smoke_root) / "config",
+                    )
+                    if smoke_root
+                    else SettingsManager()
+                )
     return _settings_manager
 
 

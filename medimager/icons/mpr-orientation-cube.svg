@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <path d="M24 3 42 13 24 23 6 13Z" fill="#273142" stroke="#9aa7b8" stroke-width="1.5"/>
+  <path d="M6 13 24 23v21L6 34Z" fill="#1c2430" stroke="#9aa7b8" stroke-width="1.5"/>
+  <path d="M42 13 24 23v21l18-10Z" fill="#222c3a" stroke="#9aa7b8" stroke-width="1.5"/>
+  <g fill="#f1f5f9" font-family="Segoe UI, sans-serif" font-size="8" font-weight="700" text-anchor="middle">
+    <text x="24" y="15">S</text>
+    <text x="14" y="31">A</text>
+    <text x="34" y="31">L</text>
+  </g>
+</svg>
